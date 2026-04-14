@@ -173,7 +173,7 @@ const ITEMS = [
   { id: 'uriage_sub', name: '小計', type: 'calc', level: 1, style: 'calc',
     calc: (m) => sum(m, ['gijutsu','yakuzai','chiryo','uriage_other']) },
 
-  { id: 'blank_uriage', name: '', type: 'blank' },
+  { id: 'blank_uriage', name: '', type: 'input', level: 0 },
 
   { id: 'uriage_total', name: '売上合計', type: 'calc', level: 0, style: 'subtotal',
     calc: (m) => val(m, 'uriage_sub') },
@@ -357,7 +357,7 @@ function renderBudgetTable() {
     html += `<tr class="${rowClass}">`;
     html += `<td>${it.name}</td>`;
 
-    if (it.type === 'header' || it.type === 'blank') {
+    if (it.type === 'header') {
       html += `<td></td><td></td>`;
       for (let m = 0; m < 12; m++) html += '<td></td>';
     } else if (it.type === 'input') {
@@ -405,7 +405,7 @@ function renderActualTable() {
     html += `<tr class="${rowClass}">`;
     html += `<td>${it.name}</td>`;
 
-    if (it.type === 'header' || it.type === 'blank') {
+    if (it.type === 'header') {
       html += '<td></td>';
       for (let m = 0; m < 12; m++) html += '<td></td>';
     } else if (it.type === 'input') {
@@ -440,7 +440,7 @@ function renderCompareTable() {
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
-    if (it.type === 'header' || it.type === 'blank') {
+    if (it.type === 'header') {
       html += `<tr class="${getRowClass(it)}"><td>${it.name}</td><td></td><td></td>`;
       for (let m = 0; m < 12; m++) html += '<td></td>';
       html += '</tr>';
@@ -556,7 +556,7 @@ function exportCSV(mode) {
     if (mode === 'all') csv += '【予算】\n';
     csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
     ITEMS.forEach(it => {
-      if (it.type === 'header' || it.type === 'blank') {
+      if (it.type === 'header') {
         csv += `"${it.name}"\n`;
         return;
       }
@@ -572,7 +572,7 @@ function exportCSV(mode) {
     if (mode === 'all') csv += '\n【実績】\n';
     csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
     ITEMS.forEach(it => {
-      if (it.type === 'header' || it.type === 'blank') {
+      if (it.type === 'header') {
         csv += `"${it.name}"\n`;
         return;
       }
@@ -587,7 +587,7 @@ function exportCSV(mode) {
     csv += '\n【差異（実績-予算）】\n';
     csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
     ITEMS.forEach(it => {
-      if (it.type === 'header' || it.type === 'blank') {
+      if (it.type === 'header') {
         csv += `"${it.name}"\n`;
         return;
       }

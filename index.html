@@ -14,6 +14,7 @@ body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; background: #f5f7fa;
 .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500; }
 .btn-primary { background: #2ecc71; color: #fff; }
 .btn-secondary { background: #ecf0f1; color: #333; }
+.btn-import { background: #3498db; color: #fff; }
 .btn-warn { background: #e74c3c; color: #fff; }
 .btn:hover { opacity: 0.85; }
 
@@ -51,7 +52,7 @@ input.cell-input.month1 { background: #fef9e7; border-color: #f39c12; }
 .calc-value { font-weight: 600; color: #2c3e50; }
 .negative { color: #e74c3c; }
 
-.legend { padding: 8px 24px; font-size: 12px; color: #777; display: flex; gap: 16px; }
+.legend { padding: 8px 24px; font-size: 12px; color: #777; display: flex; gap: 16px; flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend .swatch { width: 14px; height: 14px; border: 1px solid #ccc; display: inline-block; }
 
@@ -62,6 +63,17 @@ input.cell-input.month1 { background: #fef9e7; border-color: #f39c12; }
 
 .tab-content { display: none; }
 .tab-content.active { display: block; }
+
+/* モーダル */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: #fff; border-radius: 8px; padding: 24px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+.modal h2 { margin-bottom: 16px; font-size: 16px; }
+.modal p { margin-bottom: 12px; color: #555; font-size: 13px; line-height: 1.6; }
+.modal .btn-group { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.import-result { margin-top: 12px; padding: 10px; border-radius: 4px; font-size: 13px; }
+.import-result.success { background: #d5f5e3; color: #1e8449; }
+.import-result.error { background: #fadbd8; color: #c0392b; }
 </style>
 </head>
 <body>
@@ -69,8 +81,11 @@ input.cell-input.month1 { background: #fef9e7; border-color: #f39c12; }
 <div class="header">
   <h1>予実管理ツール</h1>
   <div class="header-actions">
+    <button class="btn btn-import" onclick="openImportModal()">CSVインポート</button>
+    <button class="btn btn-primary" onclick="exportCSV('budget')">予算CSV出力</button>
+    <button class="btn btn-primary" onclick="exportCSV('actual')">実績CSV出力</button>
+    <button class="btn btn-primary" onclick="exportCSV('all')">全体CSV出力</button>
     <button class="btn btn-secondary" onclick="clearAll()">クリア</button>
-    <button class="btn btn-primary" onclick="exportCSV()">CSV出力</button>
   </div>
 </div>
 
@@ -83,8 +98,8 @@ input.cell-input.month1 { background: #fef9e7; border-color: #f39c12; }
 <div class="toolbar">
   <label>期首月: </label>
   <select id="startMonth" onchange="updateHeaders()">
-    <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
-    <option value="4" selected>4月</option><option value="5">5月</option><option value="6">6月</option>
+    <option value="1">1月</option><option value="2" selected>2月</option><option value="3">3月</option>
+    <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
     <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
     <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
   </select>
@@ -114,6 +129,33 @@ input.cell-input.month1 { background: #fef9e7; border-color: #f39c12; }
 <div id="tab-compare" class="tab-content">
   <div class="table-wrap">
     <table id="compareTable"></table>
+  </div>
+</div>
+
+<!-- インポートモーダル -->
+<div class="modal-overlay" id="importModal">
+  <div class="modal">
+    <h2>CSVインポート</h2>
+    <p>
+      エクスポートしたCSVファイルを編集して、ここから読み込めます。<br>
+      科目名が一致する行のデータが上書きされます。一致しない行は無視されます。
+    </p>
+    <p>
+      <strong>インポート先:</strong>
+    </p>
+    <div style="margin-bottom: 12px;">
+      <label><input type="radio" name="importTarget" value="budget" checked> 予算</label>
+      <label style="margin-left: 12px;"><input type="radio" name="importTarget" value="actual"> 実績</label>
+    </div>
+    <p>
+      <strong>CSVファイルを選択:</strong>
+    </p>
+    <input type="file" id="importFile" accept=".csv" style="margin-bottom: 8px;">
+    <div id="importResult"></div>
+    <div class="btn-group">
+      <button class="btn btn-secondary" onclick="closeImportModal()">閉じる</button>
+      <button class="btn btn-import" onclick="doImport()">インポート実行</button>
+    </div>
   </div>
 </div>
 
@@ -193,10 +235,19 @@ const ITEMS = [
     calc: (m) => val(m, 'gross_profit') - val(m, 'sga_total') },
 ];
 
+// 科目名 → itemマッピング（インポート用）
+const nameToItem = {};
+ITEMS.forEach(it => {
+  // 完全一致用
+  nameToItem[it.name] = it;
+  // 前後の空白・全角スペース除去版も登録
+  nameToItem[it.name.trim().replace(/\u3000/g, '')] = it;
+});
+
 // ===== データストア =====
-const budget = {};  // { itemId: [m1, m2, ..., m12] }
+const budget = {};
 const actual = {};
-const annualInputs = {}; // { itemId: annual_value }
+const annualInputs = {};
 
 ITEMS.forEach(it => {
   budget[it.id] = new Array(12).fill(0);
@@ -211,13 +262,9 @@ function sum(store, ids) { return ids.reduce((s, id) => s + (store[id] || 0), 0)
 function recalcBudget() {
   for (let m = 0; m < 12; m++) {
     const monthVals = {};
-    // まず入力項目の値をセット
     ITEMS.forEach(it => {
-      if (it.type === 'input') {
-        monthVals[it.id] = budget[it.id][m];
-      }
+      if (it.type === 'input') monthVals[it.id] = budget[it.id][m];
     });
-    // 計算項目を順番に計算
     ITEMS.forEach(it => {
       if (it.type === 'calc' && it.calc) {
         monthVals[it.id] = it.calc(monthVals);
@@ -231,9 +278,7 @@ function recalcActual() {
   for (let m = 0; m < 12; m++) {
     const monthVals = {};
     ITEMS.forEach(it => {
-      if (it.type === 'input') {
-        monthVals[it.id] = actual[it.id][m];
-      }
+      if (it.type === 'input') monthVals[it.id] = actual[it.id][m];
     });
     ITEMS.forEach(it => {
       if (it.type === 'calc' && it.calc) {
@@ -252,7 +297,6 @@ function distributeMonths(itemId) {
   for (let m = 1; m < 12; m++) {
     budget[itemId][m] = Math.round(remaining / 11);
   }
-  // 端数調整: 最終月で合わせる
   const currentTotal = budget[itemId].reduce((s, v) => s + v, 0);
   budget[itemId][11] += annual - currentTotal;
 }
@@ -366,20 +410,17 @@ function renderCompareTable() {
       return;
     }
 
-    // 予算行
     const bAnnual = budget[it.id].reduce((s, v) => s + v, 0);
     html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td>`;
     html += `<td>予算</td><td>${fmt(bAnnual)}</td>`;
     for (let m = 0; m < 12; m++) html += `<td>${fmt(budget[it.id][m])}</td>`;
     html += '</tr>';
 
-    // 実績行
     const aAnnual = actual[it.id].reduce((s, v) => s + v, 0);
     html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmt(aAnnual)}</td>`;
     for (let m = 0; m < 12; m++) html += `<td>${fmt(actual[it.id][m])}</td>`;
     html += '</tr>';
 
-    // 差異行
     const dAnnual = aAnnual - bAnnual;
     html += `<tr style="background:#ffeaea"><td>差異</td>`;
     html += `<td class="${dAnnual < 0 ? 'negative' : ''}">${fmt(dAnnual)}</td>`;
@@ -404,7 +445,6 @@ function onAnnualChange(itemId, value) {
 function onBudgetCellChange(itemId, month, value) {
   budget[itemId][month] = parseInt(value) || 0;
   if (month === 0 && annualInputs[itemId]) {
-    // 初月変更時は再分配
     distributeMonths(itemId);
   }
   renderBudgetTable();
@@ -416,6 +456,7 @@ function onActualCellChange(itemId, month, value) {
 }
 
 function updateHeaders() {
+  saveToStorage();
   renderCurrentTab();
 }
 
@@ -441,64 +482,207 @@ function clearAll() {
     actual[it.id] = new Array(12).fill(0);
     annualInputs[it.id] = 0;
   });
+  saveToStorage();
   renderCurrentTab();
 }
 
 // ===== CSV出力 =====
-function exportCSV() {
+function exportCSV(mode) {
   const months = getMonthHeaders();
   const bom = '\uFEFF';
   let csv = '';
 
-  // 予算シート
-  csv += '【予算】\n';
-  csv += '科目,年間合計,' + months.join(',') + '\n';
-  ITEMS.forEach(it => {
-    if (it.type === 'header') {
-      csv += `"${it.name}"\n`;
-      return;
-    }
-    const annual = budget[it.id].reduce((s, v) => s + v, 0);
-    csv += `"${it.name}",${annual}`;
-    for (let m = 0; m < 12; m++) csv += `,${budget[it.id][m]}`;
-    csv += '\n';
-  });
+  if (mode === 'budget' || mode === 'all') {
+    recalcBudget();
+    if (mode === 'all') csv += '【予算】\n';
+    csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
+    ITEMS.forEach(it => {
+      if (it.type === 'header') {
+        csv += `"${it.name}"\n`;
+        return;
+      }
+      const annual = budget[it.id].reduce((s, v) => s + v, 0);
+      csv += `"${it.name}",${annual}`;
+      for (let m = 0; m < 12; m++) csv += `,${budget[it.id][m]}`;
+      csv += '\n';
+    });
+  }
 
-  csv += '\n【実績】\n';
-  csv += '科目,年間合計,' + months.join(',') + '\n';
-  ITEMS.forEach(it => {
-    if (it.type === 'header') {
-      csv += `"${it.name}"\n`;
-      return;
-    }
-    const annual = actual[it.id].reduce((s, v) => s + v, 0);
-    csv += `"${it.name}",${annual}`;
-    for (let m = 0; m < 12; m++) csv += `,${actual[it.id][m]}`;
-    csv += '\n';
-  });
+  if (mode === 'actual' || mode === 'all') {
+    recalcActual();
+    if (mode === 'all') csv += '\n【実績】\n';
+    csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
+    ITEMS.forEach(it => {
+      if (it.type === 'header') {
+        csv += `"${it.name}"\n`;
+        return;
+      }
+      const annual = actual[it.id].reduce((s, v) => s + v, 0);
+      csv += `"${it.name}",${annual}`;
+      for (let m = 0; m < 12; m++) csv += `,${actual[it.id][m]}`;
+      csv += '\n';
+    });
+  }
 
-  csv += '\n【差異（実績-予算）】\n';
-  csv += '科目,年間合計,' + months.join(',') + '\n';
-  ITEMS.forEach(it => {
-    if (it.type === 'header') {
-      csv += `"${it.name}"\n`;
-      return;
-    }
-    const diff = actual[it.id].map((v, i) => v - budget[it.id][i]);
-    const annual = diff.reduce((s, v) => s + v, 0);
-    csv += `"${it.name}",${annual}`;
-    diff.forEach(d => csv += `,${d}`);
-    csv += '\n';
-  });
+  if (mode === 'all') {
+    csv += '\n【差異（実績-予算）】\n';
+    csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
+    ITEMS.forEach(it => {
+      if (it.type === 'header') {
+        csv += `"${it.name}"\n`;
+        return;
+      }
+      const diff = actual[it.id].map((v, i) => v - budget[it.id][i]);
+      const annual = diff.reduce((s, v) => s + v, 0);
+      csv += `"${it.name}",${annual}`;
+      diff.forEach(d => csv += `,${d}`);
+      csv += '\n';
+    });
+  }
 
   const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   const year = document.getElementById('fiscalYear').value;
+  const label = mode === 'budget' ? '予算' : mode === 'actual' ? '実績' : '予実管理';
   a.href = url;
-  a.download = `予実管理_${year}年度.csv`;
+  a.download = `${label}_${year}年度.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ===== CSVインポート =====
+function openImportModal() {
+  document.getElementById('importModal').classList.add('show');
+  document.getElementById('importResult').innerHTML = '';
+  document.getElementById('importFile').value = '';
+}
+
+function closeImportModal() {
+  document.getElementById('importModal').classList.remove('show');
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"' && line[i+1] === '"') { current += '"'; i++; }
+      else if (c === '"') { inQuotes = false; }
+      else { current += c; }
+    } else {
+      if (c === '"') { inQuotes = true; }
+      else if (c === ',') { result.push(current.trim()); current = ''; }
+      else { current += c; }
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+function findItemByName(name) {
+  // 前後空白除去、全角スペース除去、「・」の有無も考慮
+  const clean = name.trim().replace(/\u3000/g, '').replace(/^[\s"]+|[\s"]+$/g, '');
+  if (nameToItem[clean]) return nameToItem[clean];
+  // 「・」付きで探す
+  if (nameToItem['・' + clean]) return nameToItem['・' + clean];
+  // 「・」除去で探す
+  const noMark = clean.replace(/^・/, '');
+  for (const it of ITEMS) {
+    const itClean = it.name.replace(/^・/, '').trim();
+    if (itClean === noMark) return it;
+  }
+  return null;
+}
+
+function doImport() {
+  const fileInput = document.getElementById('importFile');
+  const resultDiv = document.getElementById('importResult');
+  const target = document.querySelector('input[name="importTarget"]:checked').value;
+
+  if (!fileInput.files.length) {
+    resultDiv.innerHTML = '<div class="import-result error">ファイルを選択してください</div>';
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const text = e.target.result.replace(/^\uFEFF/, ''); // BOM除去
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+
+    let matched = 0;
+    let skipped = 0;
+    let skippedNames = [];
+    const store = target === 'budget' ? budget : actual;
+
+    for (const line of lines) {
+      // セクションヘッダーやヘッダー行をスキップ
+      if (line.startsWith('【') || line.startsWith('"科目"') || line.startsWith('科目')) continue;
+
+      const cols = parseCSVLine(line);
+      if (cols.length < 2) continue;
+
+      const itemName = cols[0].replace(/^"|"$/g, '');
+      const item = findItemByName(itemName);
+
+      if (!item) {
+        // ヘッダー行（売上、販管費）はスキップ扱いにしない
+        const isHeader = ITEMS.some(it => it.type === 'header' && it.name === itemName);
+        if (!isHeader && itemName) {
+          skipped++;
+          skippedNames.push(itemName);
+        }
+        continue;
+      }
+
+      // 計算行はスキップ（自動計算されるため）
+      if (item.type === 'calc') continue;
+
+      // cols[1] = 年間合計, cols[2..13] = 月別
+      // 月別データがあればそれを使う。なければ年間合計から均等割り
+      if (cols.length >= 14) {
+        // 12か月分のデータがある
+        for (let m = 0; m < 12; m++) {
+          store[item.id][m] = parseInt(cols[m + 2]) || 0;
+        }
+        if (target === 'budget') {
+          annualInputs[item.id] = parseInt(cols[1]) || store[item.id].reduce((s, v) => s + v, 0);
+        }
+      } else if (cols.length >= 2) {
+        // 年間合計のみ
+        const annual = parseInt(cols[1]) || 0;
+        if (target === 'budget') {
+          annualInputs[item.id] = annual;
+          for (let m = 0; m < 12; m++) {
+            store[item.id][m] = Math.round(annual / 12);
+          }
+          // 端数調整
+          const total = store[item.id].reduce((s, v) => s + v, 0);
+          store[item.id][11] += annual - total;
+        } else {
+          for (let m = 0; m < 12; m++) {
+            store[item.id][m] = Math.round(annual / 12);
+          }
+          const total = store[item.id].reduce((s, v) => s + v, 0);
+          store[item.id][11] += annual - total;
+        }
+      }
+      matched++;
+    }
+
+    saveToStorage();
+    renderCurrentTab();
+
+    let msg = `<div class="import-result success">${matched}件の科目をインポートしました（${target === 'budget' ? '予算' : '実績'}）</div>`;
+    if (skipped > 0) {
+      msg += `<div class="import-result error" style="margin-top:4px">スキップ: ${skippedNames.join(', ')}（${skipped}件 - 科目名が一致しません）</div>`;
+    }
+    resultDiv.innerHTML = msg;
+  };
+
+  reader.readAsText(fileInput.files[0], 'UTF-8');
 }
 
 // ===== タブ切替 =====

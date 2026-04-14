@@ -308,9 +308,9 @@ const ITEMS = [
     calc: (m) => val(m, 'gross_profit') - val(m, 'sga_sub') },
   { id: 'honbu', name: '本部経費（按分）', type: 'calc', level: 1, style: 'calc',
     calc: (m) => sum(m, ['honbu_yakuin','honbu_somu','naibu_ryuho']) },
-  { id: 'honbu_yakuin', name: '・役員', type: 'input', level: 2 },
-  { id: 'honbu_somu', name: '・総務', type: 'input', level: 2 },
-  { id: 'naibu_ryuho', name: '・内部留保', type: 'input', level: 2 },
+  { id: 'honbu_yakuin', name: '・役員', type: 'input', level: 2, adminOnly: true },
+  { id: 'honbu_somu', name: '・総務', type: 'input', level: 2, adminOnly: true },
+  { id: 'naibu_ryuho', name: '・内部留保', type: 'input', level: 2, adminOnly: true },
   { id: 'sga_total', name: '販管費合計', type: 'calc', level: 0, style: 'subtotal',
     calc: (m) => val(m, 'sga_sub') + val(m, 'honbu') },
   { id: 'op_profit', name: '営業利益', type: 'calc', level: 0, style: 'profit',
@@ -569,6 +569,11 @@ function getBudgetActual() {
   return getTotalData();
 }
 
+function isItemVisible(it) {
+  if (it.adminOnly && userRole === 'viewer') return false;
+  return true;
+}
+
 function renderBudgetTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
@@ -580,6 +585,7 @@ function renderBudgetTable() {
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
+    if (!isItemVisible(it)) return;
     html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
     if (it.type === 'header') {
       html += (isSingleDept() ? '<td></td>' : '') + '<td></td>';
@@ -623,6 +629,7 @@ function renderActualTable() {
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
+    if (!isItemVisible(it)) return;
     html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
     if (it.type === 'header') { html += '<td></td>'; for (let m=0;m<12;m++) html+='<td></td>'; }
     else if (it.type === 'input') {
@@ -648,6 +655,7 @@ function renderCompareTable() {
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
+    if (!isItemVisible(it)) return;
     if (it.type === 'header') {
       html += `<tr class="${getRowClass(it)}"><td>${it.name}</td><td></td><td></td>`;
       for (let m=0;m<12;m++) html+='<td></td>';

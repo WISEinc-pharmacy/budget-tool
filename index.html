@@ -49,6 +49,8 @@ input.cell-input:focus { outline: none; border-color: #3498db; background: #fff;
 input.cell-input.annual { background: #e8f8f5; border-color: #1abc9c; width: 90px; }
 input.cell-input.month1 { background: #fef9e7; border-color: #f39c12; }
 
+select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; border-radius: 3px; background: #f8f8f8; width: 80px; }
+
 .calc-value { font-weight: 600; color: #2c3e50; }
 .negative { color: #e74c3c; }
 
@@ -248,11 +250,13 @@ ITEMS.forEach(it => {
 const budget = {};
 const actual = {};
 const annualInputs = {};
+const distMethod = {}; // 配分方法: 'even'=均等割り, 'growth'=均等増加, 'flat'=全月同額
 
 ITEMS.forEach(it => {
   budget[it.id] = new Array(12).fill(0);
   actual[it.id] = new Array(12).fill(0);
   annualInputs[it.id] = 0;
+  distMethod[it.id] = 'even';
 });
 
 function val(store, id) { return store[id] || 0; }
@@ -289,14 +293,36 @@ function recalcActual() {
   }
 }
 
-// 初月 + 年間 → 2〜12月を均等割り
+// 配分計算
 function distributeMonths(itemId) {
+  const method = distMethod[itemId] || 'even';
   const m1 = budget[itemId][0];
   const annual = annualInputs[itemId];
-  const remaining = annual - m1;
-  for (let m = 1; m < 12; m++) {
-    budget[itemId][m] = Math.round(remaining / 11);
+
+  if (method === 'flat') {
+    // 全月同額: 年間 ÷ 12
+    const perMonth = Math.round(annual / 12);
+    for (let m = 0; m < 12; m++) {
+      budget[itemId][m] = perMonth;
+    }
+  } else if (method === 'growth') {
+    // 均等増加: 初月から毎月一定額ずつ増加
+    // month(k) = m1 + k*d, k=0..11
+    // sum = 12*m1 + d*(0+1+...+11) = 12*m1 + 66*d = annual
+    // d = (annual - 12*m1) / 66
+    const d = (annual - 12 * m1) / 66;
+    for (let m = 0; m < 12; m++) {
+      budget[itemId][m] = Math.round(m1 + m * d);
+    }
+  } else {
+    // 均等割り（デフォルト）: (年間 - 初月) ÷ 11
+    const remaining = annual - m1;
+    for (let m = 1; m < 12; m++) {
+      budget[itemId][m] = Math.round(remaining / 11);
+    }
   }
+
+  // 端数調整: 最終月で合わせる
   const currentTotal = budget[itemId].reduce((s, v) => s + v, 0);
   budget[itemId][11] += annual - currentTotal;
 }
@@ -319,7 +345,7 @@ function renderBudgetTable() {
   recalcBudget();
   const table = document.getElementById('budgetTable');
   const months = getMonthHeaders();
-  let html = '<thead><tr><th>科目</th><th>年間合計</th>';
+  let html = '<thead><tr><th>科目</th><th>配分</th><th>年間合計</th>';
   months.forEach(m => html += `<th>${m}</th>`);
   html += '</tr></thead><tbody>';
 
@@ -329,19 +355,27 @@ function renderBudgetTable() {
     html += `<td>${it.name}</td>`;
 
     if (it.type === 'header') {
-      html += `<td></td>`;
+      html += `<td></td><td></td>`;
       for (let m = 0; m < 12; m++) html += '<td></td>';
     } else if (it.type === 'input') {
+      const dm = distMethod[it.id] || 'even';
+      html += `<td><select class="dist-select" onchange="onDistChange('${it.id}', this.value)">
+        <option value="even" ${dm==='even'?'selected':''}>均等割り</option>
+        <option value="growth" ${dm==='growth'?'selected':''}>均等増加</option>
+        <option value="flat" ${dm==='flat'?'selected':''}>全月同額</option>
+      </select></td>`;
       const annualVal = annualInputs[it.id] || '';
       html += `<td><input class="cell-input annual" type="number" value="${annualVal || ''}"
         onchange="onAnnualChange('${it.id}', this.value)" placeholder="年間"></td>`;
       for (let m = 0; m < 12; m++) {
-        const cls = m === 0 ? 'cell-input month1' : 'cell-input';
+        const isMonth1 = m === 0 && dm !== 'flat';
+        const cls = isMonth1 ? 'cell-input month1' : 'cell-input';
         html += `<td><input class="${cls}" type="number" value="${budget[it.id][m] || ''}"
           onchange="onBudgetCellChange('${it.id}', ${m}, this.value)" placeholder="0"></td>`;
       }
     } else if (it.type === 'calc') {
       const annual = budget[it.id].reduce((s, v) => s + v, 0);
+      html += `<td></td>`;
       html += `<td class="calc-value ${annual < 0 ? 'negative' : ''}">${fmt(annual)}</td>`;
       for (let m = 0; m < 12; m++) {
         const v = budget[it.id][m];
@@ -442,9 +476,17 @@ function onAnnualChange(itemId, value) {
   renderBudgetTable();
 }
 
+function onDistChange(itemId, method) {
+  distMethod[itemId] = method;
+  if (annualInputs[itemId]) {
+    distributeMonths(itemId);
+  }
+  renderBudgetTable();
+}
+
 function onBudgetCellChange(itemId, month, value) {
   budget[itemId][month] = parseInt(value) || 0;
-  if (month === 0 && annualInputs[itemId]) {
+  if (month === 0 && annualInputs[itemId] && distMethod[itemId] !== 'flat') {
     distributeMonths(itemId);
   }
   renderBudgetTable();
@@ -704,13 +746,14 @@ function renderCurrentTab() {
 
 // ===== ローカルストレージ保存・復元 =====
 function saveToStorage() {
-  const data = { budget: {}, actual: {}, annualInputs: {},
+  const data = { budget: {}, actual: {}, annualInputs: {}, distMethod: {},
     startMonth: document.getElementById('startMonth').value,
     fiscalYear: document.getElementById('fiscalYear').value };
   ITEMS.forEach(it => {
     data.budget[it.id] = budget[it.id];
     data.actual[it.id] = actual[it.id];
     data.annualInputs[it.id] = annualInputs[it.id];
+    data.distMethod[it.id] = distMethod[it.id];
   });
   localStorage.setItem('budgetTool', JSON.stringify(data));
 }
@@ -724,6 +767,7 @@ function loadFromStorage() {
       if (data.budget[it.id]) budget[it.id] = data.budget[it.id];
       if (data.actual[it.id]) actual[it.id] = data.actual[it.id];
       if (data.annualInputs[it.id] !== undefined) annualInputs[it.id] = data.annualInputs[it.id];
+      if (data.distMethod && data.distMethod[it.id]) distMethod[it.id] = data.distMethod[it.id];
     });
     if (data.startMonth) document.getElementById('startMonth').value = data.startMonth;
     if (data.fiscalYear) document.getElementById('fiscalYear').value = data.fiscalYear;
@@ -734,9 +778,11 @@ function loadFromStorage() {
 const origOnAnnual = onAnnualChange;
 const origOnBudget = onBudgetCellChange;
 const origOnActual = onActualCellChange;
+const origOnDist = onDistChange;
 window.onAnnualChange = function(id, v) { origOnAnnual(id, v); saveToStorage(); };
 window.onBudgetCellChange = function(id, m, v) { origOnBudget(id, m, v); saveToStorage(); };
 window.onActualCellChange = function(id, m, v) { origOnActual(id, m, v); saveToStorage(); };
+window.onDistChange = function(id, v) { origOnDist(id, v); saveToStorage(); };
 
 // ===== 初期化 =====
 loadFromStorage();

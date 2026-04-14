@@ -556,10 +556,7 @@ function exportCSV(mode) {
     if (mode === 'all') csv += '【予算】\n';
     csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
     ITEMS.forEach(it => {
-      if (it.type === 'header') {
-        csv += `"${it.name}"\n`;
-        return;
-      }
+      if (it.type === 'header') return;
       const annual = budget[it.id].reduce((s, v) => s + v, 0);
       csv += `"${it.name}",${annual || ''}`;
       for (let m = 0; m < 12; m++) csv += `,${budget[it.id][m] || ''}`;
@@ -572,10 +569,7 @@ function exportCSV(mode) {
     if (mode === 'all') csv += '\n【実績】\n';
     csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
     ITEMS.forEach(it => {
-      if (it.type === 'header') {
-        csv += `"${it.name}"\n`;
-        return;
-      }
+      if (it.type === 'header') return;
       const annual = actual[it.id].reduce((s, v) => s + v, 0);
       csv += `"${it.name}",${annual || ''}`;
       for (let m = 0; m < 12; m++) csv += `,${actual[it.id][m] || ''}`;
@@ -587,10 +581,7 @@ function exportCSV(mode) {
     csv += '\n【差異（実績-予算）】\n';
     csv += '"科目","年間合計",' + months.map(m => `"${m}"`).join(',') + '\n';
     ITEMS.forEach(it => {
-      if (it.type === 'header') {
-        csv += `"${it.name}"\n`;
-        return;
-      }
+      if (it.type === 'header') return;
       const diff = actual[it.id].map((v, i) => v - budget[it.id][i]);
       const annual = diff.reduce((s, v) => s + v, 0);
       csv += `"${it.name}",${annual}`;

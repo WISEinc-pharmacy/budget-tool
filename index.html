@@ -87,6 +87,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <button class="btn btn-primary" onclick="exportCSV('budget')">予算CSV出力</button>
     <button class="btn btn-primary" onclick="exportCSV('actual')">実績CSV出力</button>
     <button class="btn btn-primary" onclick="exportCSV('all')">全体CSV出力</button>
+    <button class="btn btn-warn" onclick="doRecalc()" style="background:#e67e22">再計算</button>
     <button class="btn btn-secondary" onclick="clearAll()">クリア</button>
   </div>
 </div>
@@ -502,6 +503,20 @@ function updateHeaders() {
   renderCurrentTab();
 }
 
+function doRecalc() {
+  // 年間合計がある入力項目を再配分
+  ITEMS.forEach(it => {
+    if (it.type === 'input' && annualInputs[it.id]) {
+      distributeMonths(it.id);
+    }
+  });
+  recalcBudget();
+  recalcActual();
+  saveToStorage();
+  renderCurrentTab();
+  alert('再計算しました');
+}
+
 // ===== ユーティリティ =====
 function getRowClass(it) {
   let cls = `level-${it.level || 0}`;
@@ -544,8 +559,8 @@ function exportCSV(mode) {
         return;
       }
       const annual = budget[it.id].reduce((s, v) => s + v, 0);
-      csv += `"${it.name}",${annual}`;
-      for (let m = 0; m < 12; m++) csv += `,${budget[it.id][m]}`;
+      csv += `"${it.name}",${annual || ''}`;
+      for (let m = 0; m < 12; m++) csv += `,${budget[it.id][m] || ''}`;
       csv += '\n';
     });
   }
@@ -560,8 +575,8 @@ function exportCSV(mode) {
         return;
       }
       const annual = actual[it.id].reduce((s, v) => s + v, 0);
-      csv += `"${it.name}",${annual}`;
-      for (let m = 0; m < 12; m++) csv += `,${actual[it.id][m]}`;
+      csv += `"${it.name}",${annual || ''}`;
+      for (let m = 0; m < 12; m++) csv += `,${actual[it.id][m] || ''}`;
       csv += '\n';
     });
   }
@@ -685,22 +700,30 @@ function doImport() {
       // cols[1] = 年間合計, cols[2..13] = 月別
       // 月別データがあればそれを使う。なければ年間合計から均等割り
       if (cols.length >= 14) {
-        // 12か月分のデータがある
+        // 12か月分のデータがある → 値があるセルだけ上書き
         for (let m = 0; m < 12; m++) {
-          store[item.id][m] = parseInt(cols[m + 2]) || 0;
+          const cellVal = cols[m + 2];
+          if (cellVal !== '' && cellVal !== undefined) {
+            store[item.id][m] = parseInt(cellVal) || 0;
+          }
+          // 空欄はそのまま（既存値を維持）
         }
         if (target === 'budget') {
-          annualInputs[item.id] = parseInt(cols[1]) || store[item.id].reduce((s, v) => s + v, 0);
+          const annualCell = cols[1];
+          if (annualCell !== '' && annualCell !== undefined) {
+            annualInputs[item.id] = parseInt(annualCell) || 0;
+          }
         }
       } else if (cols.length >= 2) {
         // 年間合計のみ
-        const annual = parseInt(cols[1]) || 0;
+        const annualCell = cols[1];
+        if (annualCell === '' || annualCell === undefined) continue;
+        const annual = parseInt(annualCell) || 0;
         if (target === 'budget') {
           annualInputs[item.id] = annual;
           for (let m = 0; m < 12; m++) {
             store[item.id][m] = Math.round(annual / 12);
           }
-          // 端数調整
           const total = store[item.id].reduce((s, v) => s + v, 0);
           store[item.id][11] += annual - total;
         } else {

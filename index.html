@@ -169,7 +169,7 @@ const ITEMS = [
   { id: 'gijutsu', name: '技術料(KGI)', type: 'input', level: 1 },
   { id: 'yakuzai', name: '薬剤料', type: 'input', level: 1 },
   { id: 'chiryo', name: '治療器材料', type: 'input', level: 1 },
-  { id: 'uriage_other', name: 'その他', type: 'input', level: 1 },
+  { id: 'uriage_other', name: 'その他売上', type: 'input', level: 1 },
   { id: 'uriage_sub', name: '小計', type: 'calc', level: 1, style: 'calc',
     calc: (m) => sum(m, ['gijutsu','yakuzai','chiryo','uriage_other']) },
 
@@ -379,10 +379,10 @@ function renderBudgetTable() {
     } else if (it.type === 'calc') {
       const annual = budget[it.id].reduce((s, v) => s + v, 0);
       html += `<td></td>`;
-      html += `<td class="calc-value ${annual < 0 ? 'negative' : ''}">${fmt(annual)}</td>`;
+      html += `<td class="calc-value ${annual < 0 ? 'negative' : ''}">${fmt(annual, true)}</td>`;
       for (let m = 0; m < 12; m++) {
         const v = budget[it.id][m];
-        html += `<td class="calc-value ${v < 0 ? 'negative' : ''}">${fmt(v)}</td>`;
+        html += `<td class="calc-value ${v < 0 ? 'negative' : ''}">${fmt(v, true)}</td>`;
       }
     }
     html += '</tr>';
@@ -417,10 +417,10 @@ function renderActualTable() {
       }
     } else if (it.type === 'calc') {
       const annual = actual[it.id].reduce((s, v) => s + v, 0);
-      html += `<td class="calc-value ${annual < 0 ? 'negative' : ''}">${fmt(annual)}</td>`;
+      html += `<td class="calc-value ${annual < 0 ? 'negative' : ''}">${fmt(annual, true)}</td>`;
       for (let m = 0; m < 12; m++) {
         const v = actual[it.id][m];
-        html += `<td class="calc-value ${v < 0 ? 'negative' : ''}">${fmt(v)}</td>`;
+        html += `<td class="calc-value ${v < 0 ? 'negative' : ''}">${fmt(v, true)}</td>`;
       }
     }
     html += '</tr>';
@@ -447,23 +447,24 @@ function renderCompareTable() {
       return;
     }
 
+    const isCalc = it.type === 'calc';
     const bAnnual = budget[it.id].reduce((s, v) => s + v, 0);
     html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td>`;
-    html += `<td>予算</td><td>${fmt(bAnnual)}</td>`;
-    for (let m = 0; m < 12; m++) html += `<td>${fmt(budget[it.id][m])}</td>`;
+    html += `<td>予算</td><td>${fmt(bAnnual, isCalc)}</td>`;
+    for (let m = 0; m < 12; m++) html += `<td>${fmt(budget[it.id][m], isCalc)}</td>`;
     html += '</tr>';
 
     const aAnnual = actual[it.id].reduce((s, v) => s + v, 0);
-    html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmt(aAnnual)}</td>`;
-    for (let m = 0; m < 12; m++) html += `<td>${fmt(actual[it.id][m])}</td>`;
+    html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmt(aAnnual, isCalc)}</td>`;
+    for (let m = 0; m < 12; m++) html += `<td>${fmt(actual[it.id][m], isCalc)}</td>`;
     html += '</tr>';
 
     const dAnnual = aAnnual - bAnnual;
     html += `<tr style="background:#ffeaea"><td>差異</td>`;
-    html += `<td class="${dAnnual < 0 ? 'negative' : ''}">${fmt(dAnnual)}</td>`;
+    html += `<td class="${dAnnual < 0 ? 'negative' : ''}">${fmt(dAnnual, true)}</td>`;
     for (let m = 0; m < 12; m++) {
       const d = actual[it.id][m] - budget[it.id][m];
-      html += `<td class="${d < 0 ? 'negative' : ''}">${fmt(d)}</td>`;
+      html += `<td class="${d < 0 ? 'negative' : ''}">${fmt(d, true)}</td>`;
     }
     html += '</tr>';
   });
@@ -529,8 +530,9 @@ function getRowClass(it) {
   return cls;
 }
 
-function fmt(n) {
-  if (n === 0 || isNaN(n)) return '-';
+function fmt(n, isCalc) {
+  if (isNaN(n)) return '-';
+  if (n === 0) return isCalc ? '0' : '-';
   return n.toLocaleString('ja-JP');
 }
 

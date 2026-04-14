@@ -19,6 +19,9 @@ body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; background: #f5f7fa;
 .btn:hover { opacity: 0.85; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.btn-group-export { display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; padding: 3px 6px; }
+.btn-group-label { font-size: 10px; color: rgba(255,255,255,0.7); margin-right: 2px; white-space: nowrap; }
+
 .toolbar { background: #fff; padding: 8px 24px; border-bottom: 1px solid #ddd; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .toolbar label { font-weight: 500; }
 .toolbar select, .toolbar input { padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
@@ -121,9 +124,12 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <h1>予実管理ダッシュボード <span class="save-status" id="saveStatus"></span></h1>
   <div class="header-actions">
     <button class="btn btn-import" onclick="openImportModal()" id="btnImport">CSVインポート</button>
-    <button class="btn btn-primary" onclick="exportCSV('budget')">予算CSV</button>
-    <button class="btn btn-primary" onclick="exportCSV('actual')">実績CSV</button>
-    <button class="btn btn-primary" onclick="exportCSV('all')">全体CSV</button>
+    <div class="btn-group-export">
+      <span class="btn-group-label">エクスポート</span>
+      <button class="btn btn-primary" onclick="exportCSV('budget')">予算</button>
+      <button class="btn btn-primary" onclick="exportCSV('actual')">実績</button>
+      <button class="btn btn-primary" onclick="exportCSV('all')">全体</button>
+    </div>
     <button class="btn" onclick="doRecalc()" style="background:#e67e22;color:#fff" id="btnRecalc">再計算</button>
     <button class="btn btn-secondary" onclick="clearAll()" id="btnClear">クリア</button>
   </div>

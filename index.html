@@ -204,7 +204,7 @@ const ITEMS = [
   { id: 'shokai', name: '諸会費', type: 'input', level: 1 },
   { id: 'chidai', name: '地代家賃', type: 'calc', level: 1, style: 'calc',
     calc: (m) => sum(m, ['tenpo','shatak']) },
-  { id: 'tenpo', name: '・店舗、駐車場', type: 'input', level: 2 },
+  { id: 'tenpo', name: '・店舗/駐車場', type: 'input', level: 2 },
   { id: 'shatak', name: '・社宅', type: 'input', level: 2 },
   { id: 'suido', name: '水道光熱費', type: 'input', level: 1 },
   { id: 'lease', name: 'リース料', type: 'calc', level: 1, style: 'calc',
@@ -216,7 +216,7 @@ const ITEMS = [
   { id: 'yakuin_hoshu', name: '役員報酬', type: 'input', level: 1 },
   { id: 'sozei', name: '租税公課', type: 'input', level: 1 },
   { id: 'hoken', name: '保険料', type: 'input', level: 1 },
-  { id: 'tesuryo', name: '支払手数料、支払報酬', type: 'input', level: 1 },
+  { id: 'tesuryo', name: '支払手数料/支払報酬', type: 'input', level: 1 },
 
   { id: 'sga_sub', name: '販管費小計', type: 'calc', level: 1, style: 'subtotal',
     calc: (m) => sum(m, [

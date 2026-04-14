@@ -49,6 +49,8 @@ tr.subtotal-row { background: #d5e8d4; }
 tr.subtotal-row td { font-weight: 700; }
 tr.profit-row { background: #fff2cc; }
 tr.profit-row td { font-weight: 700; }
+tr.ratio-row { background: #e8daef; }
+tr.ratio-row td { font-weight: 600; color: #6c3483; }
 tr.level-1 td:first-child { padding-left: 16px; }
 tr.level-2 td:first-child { padding-left: 32px; }
 
@@ -315,6 +317,14 @@ const ITEMS = [
     calc: (m) => val(m, 'sga_sub') + val(m, 'honbu') },
   { id: 'op_profit', name: '営業利益', type: 'calc', level: 0, style: 'profit',
     calc: (m) => val(m, 'gross_profit') - val(m, 'sga_total') },
+
+  { id: 'sec_kpi', name: 'KPI', type: 'header' },
+  { id: 'kpi_labor', name: '技術料労働分配率', type: 'ratio', level: 1,
+    numerator: (m) => sum(m, ['kyuryo','shoyo','gaicyu_fl','hotei']),
+    denominator: (m) => val(m, 'gijutsu') },
+  { id: 'kpi_labor_equip', name: '技術料労働/設備分配率', type: 'ratio', level: 1,
+    numerator: (m) => sum(m, ['kyuryo','shoyo','gaicyu_fl','hotei','lease','genka_shokyaku']),
+    denominator: (m) => val(m, 'gijutsu') },
 ];
 
 const nameToItem = {};
@@ -613,6 +623,10 @@ function renderBudgetTable() {
       html += (isSingleDept() ? '<td></td>' : '');
       html += `<td class="calc-value ${annual<0?'negative':''}">${fmt(annual,true)}</td>`;
       for (let m = 0; m < 12; m++) { const v = data.budget[it.id][m]; html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; }
+    } else if (it.type === 'ratio') {
+      html += (isSingleDept() ? '<td></td>' : '');
+      html += `<td class="calc-value">${calcRatioAnnual(it, data.budget)}</td>`;
+      for (let m = 0; m < 12; m++) { const mv = getMonthVals(data.budget, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; }
     }
     html += '</tr>';
   });
@@ -641,6 +655,9 @@ function renderActualTable() {
       const annual = data.actual[it.id].reduce((s,v)=>s+v,0);
       html += `<td class="calc-value ${annual<0?'negative':''}">${fmt(annual,true)}</td>`;
       for (let m=0;m<12;m++) { const v=data.actual[it.id][m]; html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; }
+    } else if (it.type === 'ratio') {
+      html += `<td class="calc-value">${calcRatioAnnual(it, data.actual)}</td>`;
+      for (let m=0;m<12;m++) { const mv = getMonthVals(data.actual, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; }
     }
     html += '</tr>';
   });
@@ -660,6 +677,15 @@ function renderCompareTable() {
       html += `<tr class="${getRowClass(it)}"><td>${it.name}</td><td></td><td></td>`;
       for (let m=0;m<12;m++) html+='<td></td>';
       html += '</tr>'; return;
+    }
+    if (it.type === 'ratio') {
+      html += `<tr class="${getRowClass(it)}"><td rowspan="2">${it.name}</td><td>予算</td><td>${calcRatioAnnual(it, data.budget)}</td>`;
+      for (let m=0;m<12;m++) { const mv=getMonthVals(data.budget,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; }
+      html += '</tr>';
+      html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${calcRatioAnnual(it, data.actual)}</td>`;
+      for (let m=0;m<12;m++) { const mv=getMonthVals(data.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; }
+      html += '</tr>';
+      return;
     }
     const isCalc = it.type === 'calc';
     const bA = data.budget[it.id].reduce((s,v)=>s+v,0);
@@ -692,10 +718,24 @@ function doRecalc() {
 
 function getRowClass(it) {
   let cls = `level-${it.level||0}`;
-  if (it.type==='header') cls+=' header-row'; else if (it.style==='subtotal') cls+=' subtotal-row'; else if (it.style==='profit') cls+=' profit-row'; else if (it.style==='calc') cls+=' calc-row';
+  if (it.type==='header') cls+=' header-row'; else if (it.type==='ratio') cls+=' ratio-row'; else if (it.style==='subtotal') cls+=' subtotal-row'; else if (it.style==='profit') cls+=' profit-row'; else if (it.style==='calc') cls+=' calc-row';
   return cls;
 }
 function fmt(n,isCalc) { if(isNaN(n)) return '-'; if(n===0) return isCalc?'0':'-'; return n.toLocaleString('ja-JP'); }
+function fmtPct(num, den) { if (!den || den === 0) return '-'; return (num / den * 100).toFixed(1) + '%'; }
+
+function getMonthVals(store, m) {
+  const mv = {};
+  ITEMS.forEach(it => { if (it.type === 'input') mv[it.id] = store[it.id][m]; });
+  ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) mv[it.id] = it.calc(mv); });
+  return mv;
+}
+
+function calcRatioAnnual(it, store) {
+  let numSum = 0, denSum = 0;
+  for (let m = 0; m < 12; m++) { const mv = getMonthVals(store, m); numSum += it.numerator(mv); denSum += it.denominator(mv); }
+  return fmtPct(numSum, denSum);
+}
 
 function clearAll() {
   if (!isSingleDept()) { alert('複数部門選択中はクリアできません。1つの部門を選択してください。'); return; }

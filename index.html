@@ -23,19 +23,16 @@ body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; background: #f5f7fa;
 .toolbar label { font-weight: 500; }
 .toolbar select, .toolbar input { padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
 
-/* 部門セレクター */
-.dept-bar { background: #2c3e50; padding: 8px 24px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.dept-btn { padding: 6px 14px; border: 1px solid #4a6a8a; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; background: #34495e; color: #ecf0f1; }
-.dept-btn:hover { background: #4a6a8a; }
-.dept-btn.active { background: #2ecc71; color: #fff; border-color: #27ae60; }
-.dept-btn.total-btn { background: #8e44ad; border-color: #7d3c98; color: #fff; }
-.dept-btn.total-btn.active { background: #a569bd; border-color: #8e44ad; }
-
-/* 合計時のチェックボックス */
-.dept-filter { background: #f4ecf7; padding: 8px 24px; border-bottom: 1px solid #d2b4de; display: none; flex-wrap: wrap; gap: 12px; align-items: center; }
-.dept-filter.show { display: flex; }
-.dept-filter label { font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
-.dept-filter input[type="checkbox"] { cursor: pointer; }
+/* 部門チェックボックス */
+.dept-bar { background: #2c3e50; padding: 10px 24px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dept-bar label { color: #ecf0f1; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 4px; border: 1px solid #4a6a8a; background: #34495e; transition: background 0.15s; }
+.dept-bar label:hover { background: #4a6a8a; }
+.dept-bar label.checked { background: #2ecc71; border-color: #27ae60; color: #fff; }
+.dept-bar input[type="checkbox"] { cursor: pointer; accent-color: #2ecc71; }
+.dept-bar .dept-actions { margin-left: auto; display: flex; gap: 6px; }
+.dept-bar .dept-actions button { font-size: 11px; padding: 4px 10px; background: #4a6a8a; color: #ecf0f1; border: none; border-radius: 3px; cursor: pointer; }
+.dept-bar .dept-actions button:hover { background: #5a7a9a; }
+.dept-bar .dept-count { color: #95a5a6; font-size: 11px; margin-left: 8px; }
 
 .table-wrap { overflow-x: auto; padding: 16px; }
 table { border-collapse: collapse; width: 100%; min-width: 1400px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -142,11 +139,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
 </div>
 
-<!-- 部門セレクター -->
+<!-- 部門チェックボックス -->
 <div class="dept-bar" id="deptBar"></div>
-
-<!-- 合計時の部門フィルター -->
-<div class="dept-filter" id="deptFilter"></div>
 
 <div class="tab-bar">
   <div class="tab active" onclick="switchTab('budget')">予算</div>
@@ -250,9 +244,7 @@ const DEPTS = [
   { id: 'gakujutsu', name: '学術研修企画運営室' },
 ];
 
-let currentDept = 'kashiwa';
-let isShowingTotal = false;
-let selectedDeptsForTotal = DEPTS.map(d => d.id); // 合計時に含める部門
+let selectedDepts = ['kashiwa']; // チェックされた部門
 
 // ===== 科目定義 =====
 const ITEMS = [
@@ -342,8 +334,9 @@ function initDeptData(deptId) {
 }
 DEPTS.forEach(d => initDeptData(d.id));
 
-// 現在の部門データへのショートカット
-function D() { return allData[currentDept]; }
+function isSingleDept() { return selectedDepts.length === 1; }
+function currentDeptId() { return selectedDepts[0]; }
+function D() { return allData[currentDeptId()]; }
 
 function val(store, id) { return store[id] || 0; }
 function sum(store, ids) { return ids.reduce((s, id) => s + (store[id] || 0), 0); }
@@ -354,7 +347,7 @@ function getTotalData() {
   ITEMS.forEach(it => {
     total.budget[it.id] = new Array(12).fill(0);
     total.actual[it.id] = new Array(12).fill(0);
-    selectedDeptsForTotal.forEach(deptId => {
+    selectedDepts.forEach(deptId => {
       if (!allData[deptId]) return;
       for (let m = 0; m < 12; m++) {
         total.budget[it.id][m] += allData[deptId].budget[it.id][m];
@@ -397,7 +390,7 @@ async function saveToFirestore() {
       data.annualInputs[it.id] = d.annualInputs[it.id];
       data.distMethod[it.id] = d.distMethod[it.id];
     });
-    await db.collection('budgetData').doc(currentDept).set(data);
+    await db.collection('budgetData').doc(currentDeptId()).set(data);
     showSaveStatus('saved', '保存しました');
   } catch(e) { showSaveStatus('error', '保存エラー: ' + e.message); }
 }
@@ -501,42 +494,40 @@ async function renderUserList() {
   document.getElementById('userList').innerHTML = html + '</table>';
 }
 
-// ===== 部門バー =====
+// ===== 部門チェックボックス =====
 function renderDeptBar() {
   let html = '';
   DEPTS.forEach(d => {
-    const cls = (!isShowingTotal && currentDept === d.id) ? 'dept-btn active' : 'dept-btn';
-    html += `<div class="${cls}" onclick="selectDept('${d.id}')">${d.name}</div>`;
+    const chk = selectedDepts.includes(d.id);
+    html += `<label class="${chk ? 'checked' : ''}"><input type="checkbox" ${chk ? 'checked' : ''} onchange="toggleDept('${d.id}', this.checked)"> ${d.name}</label>`;
   });
-  html += `<div class="dept-btn total-btn ${isShowingTotal ? 'active' : ''}" onclick="selectTotal()">合計</div>`;
+  const count = selectedDepts.length;
+  const label = count === 1 ? DEPTS.find(d => d.id === selectedDepts[0])?.name : `${count}部門合計`;
+  html += `<span class="dept-count">${label}</span>`;
+  html += `<div class="dept-actions">`;
+  html += `<button onclick="selectAllDepts()">全選択</button>`;
+  html += `<button onclick="selectStoresOnly()">店舗のみ</button>`;
+  html += `</div>`;
   document.getElementById('deptBar').innerHTML = html;
-
-  // フィルター
-  let fhtml = '<strong style="color:#7d3c98;font-size:12px">合計対象:</strong> ';
-  DEPTS.forEach(d => {
-    const chk = selectedDeptsForTotal.includes(d.id) ? 'checked' : '';
-    fhtml += `<label><input type="checkbox" value="${d.id}" ${chk} onchange="toggleDeptFilter('${d.id}', this.checked)"> ${d.name}</label>`;
-  });
-  document.getElementById('deptFilter').innerHTML = fhtml;
-  document.getElementById('deptFilter').className = 'dept-filter' + (isShowingTotal ? ' show' : '');
 }
 
-function selectDept(deptId) {
-  isShowingTotal = false;
-  currentDept = deptId;
+function toggleDept(deptId, checked) {
+  if (checked) { if (!selectedDepts.includes(deptId)) selectedDepts.push(deptId); }
+  else { selectedDepts = selectedDepts.filter(id => id !== deptId); }
+  if (selectedDepts.length === 0) selectedDepts = [deptId]; // 最低1つ
   renderDeptBar();
   renderCurrentTab();
 }
 
-function selectTotal() {
-  isShowingTotal = true;
+function selectAllDepts() {
+  selectedDepts = DEPTS.map(d => d.id);
   renderDeptBar();
   renderCurrentTab();
 }
 
-function toggleDeptFilter(deptId, checked) {
-  if (checked) { if (!selectedDeptsForTotal.includes(deptId)) selectedDeptsForTotal.push(deptId); }
-  else { selectedDeptsForTotal = selectedDeptsForTotal.filter(id => id !== deptId); }
+function selectStoresOnly() {
+  selectedDepts = ['kashiwa', 'adachi', 'nagareyama', 'ai_chozai', 'abiko', 'sakuradai'];
+  renderDeptBar();
   renderCurrentTab();
 }
 
@@ -570,28 +561,30 @@ function getMonthHeaders() {
 
 // ===== テーブル描画 =====
 function getBudgetActual() {
-  if (isShowingTotal) return getTotalData();
-  recalcDept(currentDept);
-  return { budget: D().budget, actual: D().actual };
+  if (isSingleDept()) {
+    recalcDept(currentDeptId());
+    return { budget: D().budget, actual: D().actual };
+  }
+  return getTotalData();
 }
 
 function renderBudgetTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
-  const canEdit = !isShowingTotal && (userRole === 'admin' || userRole === 'editor');
+  const canEdit = isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   const dis = canEdit ? '' : 'disabled';
-  let html = '<thead><tr><th>科目</th>' + (isShowingTotal ? '' : '<th>配分</th>') + '<th>年間合計</th>';
+  let html = '<thead><tr><th>科目</th>' + (isSingleDept() ? '<th>配分</th>' : '') + '<th>年間合計</th>';
   months.forEach(m => html += `<th>${m}</th>`);
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
     html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
     if (it.type === 'header') {
-      html += (isShowingTotal ? '' : '<td></td>') + '<td></td>';
+      html += (isSingleDept() ? '<td></td>' : '') + '<td></td>';
       for (let m = 0; m < 12; m++) html += '<td></td>';
     } else if (it.type === 'input') {
-      if (!isShowingTotal) {
+      if (isSingleDept()) {
         const dm = D().distMethod[it.id] || 'even';
         html += `<td><select class="dist-select" onchange="onDistChange('${it.id}',this.value)" ${dis}>
           <option value="even" ${dm==='even'?'selected':''}>均等割り</option>
@@ -610,7 +603,7 @@ function renderBudgetTable() {
       }
     } else if (it.type === 'calc') {
       const annual = data.budget[it.id].reduce((s,v)=>s+v,0);
-      html += (isShowingTotal ? '' : '<td></td>');
+      html += (isSingleDept() ? '<td></td>' : '');
       html += `<td class="calc-value ${annual<0?'negative':''}">${fmt(annual,true)}</td>`;
       for (let m = 0; m < 12; m++) { const v = data.budget[it.id][m]; html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; }
     }
@@ -622,7 +615,7 @@ function renderBudgetTable() {
 function renderActualTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
-  const canEdit = !isShowingTotal && (userRole === 'admin' || userRole === 'editor');
+  const canEdit = isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   let html = '<thead><tr><th>科目</th><th>年間合計</th>';
   months.forEach(m => html += `<th>${m}</th>`);
@@ -634,7 +627,7 @@ function renderActualTable() {
     else if (it.type === 'input') {
       const annual = data.actual[it.id].reduce((s,v)=>s+v,0);
       html += `<td class="calc-value">${fmt(annual)}</td>`;
-      if (isShowingTotal) { for (let m=0;m<12;m++) html += `<td class="calc-value">${fmt(data.actual[it.id][m],true)}</td>`; }
+      if (!isSingleDept()) { for (let m=0;m<12;m++) html += `<td class="calc-value">${fmt(data.actual[it.id][m],true)}</td>`; }
       else { for (let m=0;m<12;m++) html += `<td><input class="cell-input" type="number" value="${data.actual[it.id][m]||''}" onchange="onActualCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`; }
     } else if (it.type === 'calc') {
       const annual = data.actual[it.id].reduce((s,v)=>s+v,0);
@@ -677,15 +670,15 @@ function renderCompareTable() {
 }
 
 // ===== イベントハンドラ =====
-function onAnnualChange(id,v) { D().annualInputs[id]=parseInt(v)||0; distributeMonths(currentDept,id); renderBudgetTable(); scheduleSave(); }
-function onDistChange(id,v) { D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDept,id); renderBudgetTable(); scheduleSave(); }
-function onBudgetCellChange(id,m,v) { D().budget[id][m]=parseInt(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDept,id); renderBudgetTable(); scheduleSave(); }
+function onAnnualChange(id,v) { D().annualInputs[id]=parseInt(v)||0; distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
+function onDistChange(id,v) { D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
+function onBudgetCellChange(id,m,v) { D().budget[id][m]=parseInt(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onActualCellChange(id,m,v) { D().actual[id][m]=parseInt(v)||0; renderActualTable(); scheduleSave(); }
 function updateHeaders() { scheduleSave(); renderCurrentTab(); }
 function doRecalc() {
-  if (isShowingTotal) { alert('合計表示中は再計算できません。部門を選択してください。'); return; }
-  ITEMS.forEach(it => { if (it.type==='input'&&D().annualInputs[it.id]) distributeMonths(currentDept,it.id); });
-  recalcDept(currentDept); scheduleSave(); renderCurrentTab(); alert('再計算しました');
+  if (!isSingleDept()) { alert('複数部門選択中は再計算できません。1つの部門を選択してください。'); return; }
+  ITEMS.forEach(it => { if (it.type==='input'&&D().annualInputs[it.id]) distributeMonths(currentDeptId(),it.id); });
+  recalcDept(currentDeptId()); scheduleSave(); renderCurrentTab(); alert('再計算しました');
 }
 
 function getRowClass(it) {
@@ -696,8 +689,8 @@ function getRowClass(it) {
 function fmt(n,isCalc) { if(isNaN(n)) return '-'; if(n===0) return isCalc?'0':'-'; return n.toLocaleString('ja-JP'); }
 
 function clearAll() {
-  if (isShowingTotal) { alert('合計表示中はクリアできません。'); return; }
-  const deptName = DEPTS.find(d=>d.id===currentDept)?.name;
+  if (!isSingleDept()) { alert('複数部門選択中はクリアできません。1つの部門を選択してください。'); return; }
+  const deptName = DEPTS.find(d=>d.id===currentDeptId())?.name;
   if (!confirm(`「${deptName}」のデータをクリアしますか？`)) return;
   ITEMS.forEach(it => { D().budget[it.id]=new Array(12).fill(0); D().actual[it.id]=new Array(12).fill(0); D().annualInputs[it.id]=0; });
   scheduleSave(); renderCurrentTab();
@@ -709,7 +702,7 @@ function exportCSV(mode) {
   const months = getMonthHeaders();
   const bom = '\uFEFF';
   let csv = '';
-  const deptName = isShowingTotal ? '合計' : DEPTS.find(d=>d.id===currentDept)?.name;
+  const deptName = isSingleDept() ? DEPTS.find(d=>d.id===currentDeptId())?.name : `${selectedDepts.length}部門合計`;
 
   if (mode==='budget'||mode==='all') {
     if (mode==='all') csv+='【予算】\n';
@@ -734,11 +727,11 @@ function exportCSV(mode) {
 
 // ===== CSVインポート =====
 function openImportModal() {
-  if (isShowingTotal) { alert('合計表示中はインポートできません。部門を選択してください。'); return; }
+  if (!isSingleDept()) { alert('複数部門選択中はインポートできません。1つの部門を選択してください。'); return; }
   document.getElementById('importModal').classList.add('show');
   document.getElementById('importResult').innerHTML = '';
   document.getElementById('importFile').value = '';
-  document.getElementById('importDeptName').textContent = DEPTS.find(d=>d.id===currentDept)?.name;
+  document.getElementById('importDeptName').textContent = DEPTS.find(d=>d.id===currentDeptId())?.name;
 }
 function closeImportModal() { document.getElementById('importModal').classList.remove('show'); }
 

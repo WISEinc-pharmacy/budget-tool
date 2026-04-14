@@ -251,7 +251,7 @@ ITEMS.forEach(it => {
 const budget = {};
 const actual = {};
 const annualInputs = {};
-const distMethod = {}; // 配分方法: 'even'=均等割り, 'growth'=均等増加, 'flat'=全月同額
+const distMethod = {}; // 配分方法: 'even'=均等割り, 'growth'=均等増減, 'flat'=全月同額
 
 ITEMS.forEach(it => {
   budget[it.id] = new Array(12).fill(0);
@@ -307,7 +307,7 @@ function distributeMonths(itemId) {
       budget[itemId][m] = perMonth;
     }
   } else if (method === 'growth') {
-    // 均等増加: 初月から毎月一定額ずつ増加
+    // 均等増減: 初月から毎月一定額ずつ増加
     // month(k) = m1 + k*d, k=0..11
     // sum = 12*m1 + d*(0+1+...+11) = 12*m1 + 66*d = annual
     // d = (annual - 12*m1) / 66
@@ -362,7 +362,7 @@ function renderBudgetTable() {
       const dm = distMethod[it.id] || 'even';
       html += `<td><select class="dist-select" onchange="onDistChange('${it.id}', this.value)">
         <option value="even" ${dm==='even'?'selected':''}>均等割り</option>
-        <option value="growth" ${dm==='growth'?'selected':''}>均等増加</option>
+        <option value="growth" ${dm==='growth'?'selected':''}>均等増減</option>
         <option value="flat" ${dm==='flat'?'selected':''}>全月同額</option>
       </select></td>`;
       const annualVal = annualInputs[it.id] || '';

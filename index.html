@@ -123,6 +123,10 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <div class="header">
   <h1>予実管理ダッシュボード <span class="save-status" id="saveStatus"></span></h1>
   <div class="header-actions">
+    <div class="btn-group-export" style="background:rgba(255,255,255,0.1)">
+      <button class="btn btn-secondary" onclick="doUndo()" id="btnUndo" disabled title="元に戻す (Ctrl+Z)" style="padding:6px 10px">↩</button>
+      <button class="btn btn-secondary" onclick="doRedo()" id="btnRedo" disabled title="やり直し (Ctrl+Y)" style="padding:6px 10px">↪</button>
+    </div>
     <button class="btn btn-import" onclick="openImportModal()" id="btnImport">CSVインポート</button>
     <div class="btn-group-export">
       <span class="btn-group-label">エクスポート</span>
@@ -132,6 +136,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     </div>
     <button class="btn" onclick="doRecalc()" style="background:#e67e22;color:#fff" id="btnRecalc">再計算</button>
     <button class="btn btn-secondary" onclick="clearAll()" id="btnClear">クリア</button>
+    <button class="btn" onclick="openHistoryModal()" style="background:#8e44ad;color:#fff">履歴</button>
   </div>
 </div>
 
@@ -217,6 +222,16 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     </div>
     <div id="userList"></div>
     <div class="btn-group"><button class="btn btn-secondary" onclick="closeAdminModal()">閉じる</button></div>
+  </div>
+</div>
+
+<!-- 履歴モーダル -->
+<div class="modal-overlay" id="historyModal">
+  <div class="modal" style="max-width:700px">
+    <h2>操作履歴（バージョン管理）</h2>
+    <p>過去の保存状態に復元できます。対象部門: <strong id="historyDeptName"></strong></p>
+    <div id="historyList" style="margin-top:12px;max-height:400px;overflow-y:auto;"></div>
+    <div class="btn-group"><button class="btn btn-secondary" onclick="closeHistoryModal()">閉じる</button></div>
   </div>
 </div>
 
@@ -408,8 +423,19 @@ async function saveToFirestore() {
       data.distMethod[it.id] = d.distMethod[it.id];
     });
     await db.collection('budgetData').doc(currentDeptId()).set(data);
+    // バージョン保存（5分間隔）
+    scheduleVersionSave();
     showSaveStatus('saved', '保存しました');
   } catch(e) { showSaveStatus('error', '保存エラー: ' + e.message); }
+}
+
+let versionTimer = null;
+let lastVersionSave = 0;
+function scheduleVersionSave() {
+  const now = Date.now();
+  if (now - lastVersionSave < 300000) return; // 5分以内はスキップ
+  if (versionTimer) clearTimeout(versionTimer);
+  versionTimer = setTimeout(() => { lastVersionSave = Date.now(); saveVersion(); }, 3000);
 }
 
 function scheduleSave() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(saveToFirestore, 1000); }
@@ -710,11 +736,149 @@ function renderCompareTable() {
   document.getElementById('compareTable').innerHTML = html + '</tbody>';
 }
 
+// ===== Undo/Redo =====
+const undoStack = []; // { deptId, snapshot }
+const redoStack = [];
+const MAX_UNDO = 50;
+
+function takeSnapshot() {
+  if (!isSingleDept()) return;
+  const deptId = currentDeptId();
+  const d = allData[deptId];
+  const snap = JSON.stringify({ budget: d.budget, actual: d.actual, annualInputs: d.annualInputs, distMethod: d.distMethod });
+  undoStack.push({ deptId, snap });
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0;
+  updateUndoButtons();
+}
+
+function doUndo() {
+  if (undoStack.length === 0) return;
+  const entry = undoStack.pop();
+  // 現在の状態をredoに保存
+  const d = allData[entry.deptId];
+  redoStack.push({ deptId: entry.deptId, snap: JSON.stringify({ budget: d.budget, actual: d.actual, annualInputs: d.annualInputs, distMethod: d.distMethod }) });
+  // 復元
+  restoreSnapshot(entry.deptId, JSON.parse(entry.snap));
+  updateUndoButtons();
+  scheduleSave();
+  renderCurrentTab();
+}
+
+function doRedo() {
+  if (redoStack.length === 0) return;
+  const entry = redoStack.pop();
+  const d = allData[entry.deptId];
+  undoStack.push({ deptId: entry.deptId, snap: JSON.stringify({ budget: d.budget, actual: d.actual, annualInputs: d.annualInputs, distMethod: d.distMethod }) });
+  restoreSnapshot(entry.deptId, JSON.parse(entry.snap));
+  updateUndoButtons();
+  scheduleSave();
+  renderCurrentTab();
+}
+
+function restoreSnapshot(deptId, snap) {
+  const d = allData[deptId];
+  ITEMS.forEach(it => {
+    if (snap.budget[it.id]) d.budget[it.id] = snap.budget[it.id];
+    if (snap.actual[it.id]) d.actual[it.id] = snap.actual[it.id];
+    if (snap.annualInputs[it.id] !== undefined) d.annualInputs[it.id] = snap.annualInputs[it.id];
+    if (snap.distMethod[it.id]) d.distMethod[it.id] = snap.distMethod[it.id];
+  });
+}
+
+function updateUndoButtons() {
+  document.getElementById('btnUndo').disabled = undoStack.length === 0;
+  document.getElementById('btnRedo').disabled = redoStack.length === 0;
+}
+
+// Ctrl+Z / Ctrl+Y
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); doUndo(); }
+  if (e.ctrlKey && e.key === 'y') { e.preventDefault(); doRedo(); }
+});
+
+// ===== バージョン履歴（Firestore） =====
+async function saveVersion() {
+  if (userRole === 'viewer' || !isSingleDept()) return;
+  const deptId = currentDeptId();
+  const d = allData[deptId];
+  const versionData = {
+    budget: {}, actual: {}, annualInputs: {}, distMethod: {},
+    savedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    savedBy: currentUser.email,
+    userName: currentUser.displayName || currentUser.email
+  };
+  ITEMS.forEach(it => {
+    if (it.type === 'header' || it.type === 'ratio') return;
+    versionData.budget[it.id] = d.budget[it.id];
+    versionData.actual[it.id] = d.actual[it.id];
+    versionData.annualInputs[it.id] = d.annualInputs[it.id];
+    versionData.distMethod[it.id] = d.distMethod[it.id];
+  });
+  await db.collection('budgetData').doc(deptId).collection('versions').add(versionData);
+  // 古いバージョンを削除（30件まで保持）
+  const snap = await db.collection('budgetData').doc(deptId).collection('versions').orderBy('savedAt','desc').get();
+  const docs = snap.docs;
+  if (docs.length > 30) {
+    for (let i = 30; i < docs.length; i++) await docs[i].ref.delete();
+  }
+}
+
+function openHistoryModal() {
+  if (!isSingleDept()) { alert('1つの部門を選択してください。'); return; }
+  document.getElementById('historyModal').classList.add('show');
+  const deptName = DEPTS.find(d => d.id === currentDeptId())?.name;
+  document.getElementById('historyDeptName').textContent = deptName;
+  renderHistoryList();
+}
+
+function closeHistoryModal() { document.getElementById('historyModal').classList.remove('show'); }
+
+async function renderHistoryList() {
+  const deptId = currentDeptId();
+  const listEl = document.getElementById('historyList');
+  listEl.innerHTML = '<p style="color:#999">読み込み中...</p>';
+  try {
+    const snap = await db.collection('budgetData').doc(deptId).collection('versions').orderBy('savedAt','desc').limit(30).get();
+    if (snap.empty) { listEl.innerHTML = '<p style="color:#999">履歴がありません</p>'; return; }
+    let html = '<table style="width:100%;min-width:auto;font-size:12px;border-collapse:collapse">';
+    html += '<tr><th style="text-align:left;padding:6px;border-bottom:1px solid #ddd">日時</th><th style="text-align:left;padding:6px;border-bottom:1px solid #ddd">操作者</th><th style="padding:6px;border-bottom:1px solid #ddd">操作</th></tr>';
+    snap.forEach(doc => {
+      const v = doc.data();
+      const date = v.savedAt ? v.savedAt.toDate().toLocaleString('ja-JP') : '---';
+      const canRestore = userRole === 'admin' || userRole === 'editor';
+      html += `<tr style="border-bottom:1px solid #eee">
+        <td style="padding:6px">${date}</td>
+        <td style="padding:6px">${v.userName || v.savedBy || '-'}</td>
+        <td style="padding:6px;text-align:center">${canRestore ? '<button class="btn btn-secondary" style="font-size:11px;padding:3px 10px" onclick="restoreVersion(\'' + deptId + '\',\'' + doc.id + '\')">復元</button>' : '-'}</td>
+      </tr>`;
+    });
+    html += '</table>';
+    listEl.innerHTML = html;
+  } catch(e) { listEl.innerHTML = '<p style="color:#c44">読み込みエラー: ' + e.message + '</p>'; }
+}
+
+async function restoreVersion(deptId, versionId) {
+  if (!confirm('この時点のデータに復元しますか？現在のデータは上書きされます。')) return;
+  try {
+    const doc = await db.collection('budgetData').doc(deptId).collection('versions').doc(versionId).get();
+    if (!doc.exists) { alert('バージョンが見つかりません'); return; }
+    const v = doc.data();
+    takeSnapshot(); // 復元前の状態をUndoに保存
+    restoreSnapshot(deptId, v);
+    scheduleSave();
+    renderCurrentTab();
+    closeHistoryModal();
+    setStatus('復元しました', 'success');
+    alert('復元しました');
+  } catch(e) { alert('復元エラー: ' + e.message); }
+}
+
 // ===== イベントハンドラ =====
-function onAnnualChange(id,v) { D().annualInputs[id]=parseInt(v)||0; distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
-function onDistChange(id,v) { D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
-function onBudgetCellChange(id,m,v) { D().budget[id][m]=parseInt(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
-function onActualCellChange(id,m,v) { D().actual[id][m]=parseInt(v)||0; renderActualTable(); scheduleSave(); }
+function onAnnualChange(id,v) { takeSnapshot(); D().annualInputs[id]=parseInt(v)||0; distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
+function onDistChange(id,v) { takeSnapshot(); D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
+function onBudgetCellChange(id,m,v) { takeSnapshot(); D().budget[id][m]=parseInt(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
+function onActualCellChange(id,m,v) { takeSnapshot(); D().actual[id][m]=parseInt(v)||0; renderActualTable(); scheduleSave(); }
 function updateHeaders() { scheduleSave(); renderCurrentTab(); }
 function doRecalc() {
   if (!isSingleDept()) { alert('複数部門選択中は再計算できません。1つの部門を選択してください。'); return; }

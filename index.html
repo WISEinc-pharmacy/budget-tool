@@ -558,9 +558,9 @@ function renderDeptBar() {
   const selectedNames = selectedDepts.map(id => DEPTS.find(d => d.id === id)?.name).filter(Boolean);
   let deptLabel;
   if (count === 1) {
-    deptLabel = selectedNames[0];
+    deptLabel = '部門：' + selectedNames[0];
   } else {
-    deptLabel = selectedNames.join(' + ') + `（${count}部門合計）`;
+    deptLabel = '部門：' + selectedNames.join(' + ') + `（${count}部門合計）`;
   }
   document.getElementById('currentDeptLabel').textContent = deptLabel;
   html += `<div class="dept-actions">`;

@@ -262,9 +262,9 @@ const DEPTS = [
   { id: 'ai_chozai', name: 'アイ調剤' },
   { id: 'abiko', name: '我孫子' },
   { id: 'sakuradai', name: 'さくら台' },
-  { id: 'yakuin', name: '役員' },
-  { id: 'kanribu', name: '管理部・本部' },
-  { id: 'gakujutsu', name: '学術研修企画運営室' },
+  { id: 'yakuin', name: '役員', adminOnly: true },
+  { id: 'kanribu', name: '管理部・本部', adminOnly: true },
+  { id: 'gakujutsu', name: '学術研修企画運営室', adminOnly: true },
 ];
 
 let selectedDepts = ['kashiwa']; // チェックされた部門
@@ -538,9 +538,14 @@ async function renderUserList() {
 }
 
 // ===== 部門チェックボックス =====
+function getVisibleDepts() {
+  return DEPTS.filter(d => !d.adminOnly || userRole === 'admin' || userRole === 'editor');
+}
+
 function renderDeptBar() {
   let html = '';
-  DEPTS.forEach(d => {
+  const visibleDepts = getVisibleDepts();
+  visibleDepts.forEach(d => {
     const chk = selectedDepts.includes(d.id);
     html += `<label class="${chk ? 'checked' : ''}"><input type="checkbox" ${chk ? 'checked' : ''} onchange="toggleDept('${d.id}', this.checked)"> ${d.name}</label>`;
   });
@@ -563,7 +568,7 @@ function toggleDept(deptId, checked) {
 }
 
 function selectAllDepts() {
-  selectedDepts = DEPTS.map(d => d.id);
+  selectedDepts = getVisibleDepts().map(d => d.id);
   renderDeptBar();
   renderCurrentTab();
 }

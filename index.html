@@ -726,7 +726,27 @@ function getMonthHeaders() {
   return Array.from({length:12}, (_, i) => { const m = ((start-1+i)%12)+1; const y = (start+i>12)?year+1:year; return `${y}/${m}月`; });
 }
 
-// フィルターされた月インデックス
+// 拡張月ヘッダー（前年度12か月 + 当年度12か月 = 24か月）
+function getExtendedMonthHeaders() {
+  const start = parseInt(document.getElementById('startMonth').value);
+  const year = parseInt(document.getElementById('fiscalYear').value);
+  const headers = [];
+  // 前年度 (-12 ~ -1)
+  for (let i = 0; i < 12; i++) {
+    const m = ((start-1+i)%12)+1;
+    const y = (start+i>12) ? year : year-1;
+    headers.push({ label: `${y}/${m}月`, idx: i - 12, fy: 'prev' });
+  }
+  // 当年度 (0 ~ 11)
+  for (let i = 0; i < 12; i++) {
+    const m = ((start-1+i)%12)+1;
+    const y = (start+i>12) ? year+1 : year;
+    headers.push({ label: `${y}/${m}月`, idx: i, fy: 'current' });
+  }
+  return headers;
+}
+
+// フィルターされた月（拡張インデックス対応）
 function getVisibleMonths() {
   const from = parseInt(document.getElementById('filterFrom').value);
   const to = parseInt(document.getElementById('filterTo').value);
@@ -736,16 +756,17 @@ function getVisibleMonths() {
 }
 
 function updateFilterSelects() {
-  const headers = getMonthHeaders();
+  const ext = getExtendedMonthHeaders();
   const fromEl = document.getElementById('filterFrom');
   const toEl = document.getElementById('filterTo');
   const curFrom = fromEl.value || '0';
   const curTo = toEl.value || '11';
   fromEl.innerHTML = '';
   toEl.innerHTML = '';
-  headers.forEach((h, i) => {
-    fromEl.innerHTML += `<option value="${i}" ${i == curFrom ? 'selected' : ''}>${h}</option>`;
-    toEl.innerHTML += `<option value="${i}" ${i == curTo ? 'selected' : ''}>${h}</option>`;
+  ext.forEach(h => {
+    const sep = h.fy === 'prev' ? '(前年度) ' : '';
+    fromEl.innerHTML += `<option value="${h.idx}" ${h.idx == curFrom ? 'selected' : ''}>${sep}${h.label}</option>`;
+    toEl.innerHTML += `<option value="${h.idx}" ${h.idx == curTo ? 'selected' : ''}>${sep}${h.label}</option>`;
   });
 }
 
@@ -755,6 +776,43 @@ function resetFilter() {
   renderCurrentTab();
 }
 
+// 拡張月インデックスからヘッダーラベルを取得
+function getMonthLabel(idx) {
+  const ext = getExtendedMonthHeaders();
+  const found = ext.find(h => h.idx === idx);
+  return found ? found.label : '';
+}
+
+// 前年度データキャッシュ
+let prevYearCache = { fy: null, data: null };
+
+async function ensurePrevYearData() {
+  const prevFY = parseInt(getFiscalYear()) - 1;
+  if (prevYearCache.fy === prevFY && prevYearCache.data) return prevYearCache.data;
+  prevYearCache.fy = prevFY;
+  prevYearCache.data = await loadYoyData(prevFY);
+  return prevYearCache.data;
+}
+
+// 拡張月インデックスから値を取得（負=前年度、0+=当年度）
+function getExtVal(store, prevStore, itemId, extIdx) {
+  if (extIdx >= 0) return store[itemId] ? (store[itemId][extIdx] || 0) : 0;
+  if (!prevStore) return 0;
+  const prevIdx = extIdx + 12;
+  return prevStore[itemId] ? (prevStore[itemId][prevIdx] || 0) : 0;
+}
+
+// 予算/実績の拡張月対応取得
+function extBudget(data, prevData, itemId, m) { return m >= 0 ? (data.budget[itemId][m]||0) : (prevData ? (prevData.budget[itemId][m+12]||0) : 0); }
+function extActual(data, prevData, itemId, m) { return m >= 0 ? (data.actual[itemId][m]||0) : (prevData ? (prevData.actual[itemId][m+12]||0) : 0); }
+
+function getExtMonthVals(store, prevStore, extIdx) {
+  const mv = {};
+  ITEMS.forEach(it => { if (it.type === 'input') mv[it.id] = getExtVal(store, prevStore, it.id, extIdx); });
+  ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) mv[it.id] = it.calc(mv); });
+  return mv;
+}
+
 // ===== テーブル描画 =====
 function getBudgetActual() {
   if (isSingleDept()) {
@@ -762,6 +820,28 @@ function getBudgetActual() {
     return { budget: D().budget, actual: D().actual };
   }
   return getTotalData();
+}
+
+// 前年度の選択部門合計を取得
+function getPrevBudgetActual(prevAllData) {
+  const total = { budget: {}, actual: {} };
+  ITEMS.forEach(it => {
+    total.budget[it.id] = new Array(12).fill(0);
+    total.actual[it.id] = new Array(12).fill(0);
+    selectedDepts.forEach(deptId => {
+      if (!prevAllData[deptId]) return;
+      for (let m = 0; m < 12; m++) {
+        total.budget[it.id][m] += prevAllData[deptId].budget[it.id][m];
+        total.actual[it.id][m] += prevAllData[deptId].actual[it.id][m];
+      }
+    });
+  });
+  for (let m = 0; m < 12; m++) {
+    const bv = {}, av = {};
+    ITEMS.forEach(it => { if (it.type === 'input') { bv[it.id] = total.budget[it.id][m]; av[it.id] = total.actual[it.id][m]; } });
+    ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) { bv[it.id] = it.calc(bv); total.budget[it.id][m] = bv[it.id]; av[it.id] = it.calc(av); total.actual[it.id][m] = av[it.id]; } });
+  }
+  return total;
 }
 
 function isItemVisible(it) {
@@ -777,16 +857,17 @@ function isItemVisible(it) {
   return true;
 }
 
-function renderBudgetTable() {
+async function renderBudgetTable() {
   const data = getBudgetActual();
-  const months = getMonthHeaders();
   const vm = getVisibleMonths();
+  const needsPrev = vm.some(i => i < 0);
+  const prevData = needsPrev ? getPrevBudgetActual(await ensurePrevYearData()) : null;
   const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   const dis = canEdit ? '' : 'disabled';
   const showDist = canEdit;
   let html = '<thead><tr><th>科目</th>' + (showDist ? '<th>配分</th>' : '') + '<th>期間合計</th>';
-  vm.forEach(m => html += `<th>${months[m]}</th>`);
+  vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
@@ -802,41 +883,43 @@ function renderBudgetTable() {
           <option value="even" ${dm==='even'?'selected':''}>均等割り</option>
           <option value="growth" ${dm==='growth'?'selected':''}>均等増減</option>
           <option value="flat" ${dm==='flat'?'selected':''}>全月同額</option></select></td>`;
-        const periodTotal = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
+        const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
         html += `<td class="calc-value">${fmt(periodTotal, true)}</td>`;
         vm.forEach(m => {
+          if (m < 0) { html += `<td class="calc-value">${fmt(extBudget(data,prevData,it.id,m),true)}</td>`; return; }
           const cls = (m===0 && dm!=='flat') ? 'cell-input month1' : 'cell-input';
           html += `<td><input class="${cls}" type="number" value="${data.budget[it.id][m]||''}" onchange="onBudgetCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
         });
       } else {
-        const periodTotal = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
+        const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
         html += `<td class="calc-value">${fmt(periodTotal, true)}</td>`;
-        vm.forEach(m => html += `<td class="calc-value">${fmt(data.budget[it.id][m], true)}</td>`);
+        vm.forEach(m => html += `<td class="calc-value">${fmt(extBudget(data,prevData,it.id,m), true)}</td>`);
       }
     } else if (it.type === 'calc') {
-      const periodTotal = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
+      const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
       html += (showDist ? '<td></td>' : '');
       html += `<td class="calc-value ${periodTotal<0?'negative':''}">${fmt(periodTotal,true)}</td>`;
-      vm.forEach(m => { const v = data.budget[it.id][m]; html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      vm.forEach(m => { const v = extBudget(data,prevData,it.id,m); html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
     } else if (it.type === 'ratio') {
       html += (showDist ? '<td></td>' : '');
-      let numSum=0,denSum=0; vm.forEach(m => { const mv=getMonthVals(data.budget,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
+      let numSum=0,denSum=0; vm.forEach(m => { const pS = prevData?prevData.budget:null; const mv=getExtMonthVals(data.budget,pS,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
       html += `<td class="calc-value">${fmtPct(numSum,denSum)}</td>`;
-      vm.forEach(m => { const mv = getMonthVals(data.budget, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; });
+      vm.forEach(m => { const pS = prevData?prevData.budget:null; const mv = getExtMonthVals(data.budget,pS,m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; });
     }
     html += '</tr>';
   });
   document.getElementById('budgetTable').innerHTML = html + '</tbody>';
 }
 
-function renderActualTable() {
+async function renderActualTable() {
   const data = getBudgetActual();
-  const months = getMonthHeaders();
   const vm = getVisibleMonths();
+  const needsPrev = vm.some(i => i < 0);
+  const prevData = needsPrev ? getPrevBudgetActual(await ensurePrevYearData()) : null;
   const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   let html = '<thead><tr><th>科目</th><th>期間合計</th>';
-  vm.forEach(m => html += `<th>${months[m]}</th>`);
+  vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
@@ -844,30 +927,34 @@ function renderActualTable() {
     html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
     if (it.type === 'header') { html += '<td></td>'; vm.forEach(() => html+='<td></td>'); }
     else if (it.type === 'input') {
-      const periodTotal = vm.reduce((s,m) => s + (data.actual[it.id][m]||0), 0);
+      const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
       html += `<td class="calc-value">${fmt(periodTotal)}</td>`;
-      if (!isSingleDept()) { vm.forEach(m => html += `<td class="calc-value">${fmt(data.actual[it.id][m],true)}</td>`); }
-      else { vm.forEach(m => html += `<td><input class="cell-input" type="number" value="${data.actual[it.id][m]||''}" onchange="onActualCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`); }
+      if (!isSingleDept()) { vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`); }
+      else { vm.forEach(m => {
+        if (m < 0) { html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`; return; }
+        html += `<td><input class="cell-input" type="number" value="${data.actual[it.id][m]||''}" onchange="onActualCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
+      }); }
     } else if (it.type === 'calc') {
-      const periodTotal = vm.reduce((s,m) => s + (data.actual[it.id][m]||0), 0);
+      const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
       html += `<td class="calc-value ${periodTotal<0?'negative':''}">${fmt(periodTotal,true)}</td>`;
-      vm.forEach(m => { const v=data.actual[it.id][m]; html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      vm.forEach(m => { const v=extActual(data,prevData,it.id,m); html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
     } else if (it.type === 'ratio') {
-      let numSum=0,denSum=0; vm.forEach(m => { const mv=getMonthVals(data.actual,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
+      let numSum=0,denSum=0; vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
       html += `<td class="calc-value">${fmtPct(numSum,denSum)}</td>`;
-      vm.forEach(m => { const mv = getMonthVals(data.actual, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; });
+      vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); html+=`<td class="calc-value">${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
     }
     html += '</tr>';
   });
   document.getElementById('actualTable').innerHTML = html + '</tbody>';
 }
 
-function renderCompareTable() {
+async function renderCompareTable() {
   const data = getBudgetActual();
-  const months = getMonthHeaders();
   const vm = getVisibleMonths();
+  const needsPrev = vm.some(i => i < 0);
+  const prevData = needsPrev ? getPrevBudgetActual(await ensurePrevYearData()) : null;
   let html = '<thead><tr><th>科目</th><th>区分</th><th>期間合計</th>';
-  vm.forEach(m => html += `<th>${months[m]}</th>`);
+  vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
@@ -879,27 +966,27 @@ function renderCompareTable() {
     }
     if (it.type === 'ratio') {
       let bNum=0,bDen=0,aNum=0,aDen=0;
-      vm.forEach(m => { const bm=getMonthVals(data.budget,m); bNum+=it.numerator(bm); bDen+=it.denominator(bm); const am=getMonthVals(data.actual,m); aNum+=it.numerator(am); aDen+=it.denominator(am); });
+      vm.forEach(m => { const pB=prevData?prevData.budget:null; const pA=prevData?prevData.actual:null; const bm=getExtMonthVals(data.budget,pB,m); bNum+=it.numerator(bm); bDen+=it.denominator(bm); const am=getExtMonthVals(data.actual,pA,m); aNum+=it.numerator(am); aDen+=it.denominator(am); });
       html += `<tr class="${getRowClass(it)}"><td rowspan="2">${it.name}</td><td>予算</td><td>${fmtPct(bNum,bDen)}</td>`;
-      vm.forEach(m => { const mv=getMonthVals(data.budget,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
+      vm.forEach(m => { const pB=prevData?prevData.budget:null; const mv=getExtMonthVals(data.budget,pB,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
       html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmtPct(aNum,aDen)}</td>`;
-      vm.forEach(m => { const mv=getMonthVals(data.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
+      vm.forEach(m => { const pA=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pA,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
       return;
     }
     const isCalc = it.type === 'calc';
-    const bA = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
+    const bA = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
     html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>予算</td><td>${fmt(bA,isCalc)}</td>`;
-    vm.forEach(m => html+=`<td>${fmt(data.budget[it.id][m],isCalc)}</td>`);
+    vm.forEach(m => html+=`<td>${fmt(extBudget(data,prevData,it.id,m),isCalc)}</td>`);
     html += '</tr>';
-    const aA = vm.reduce((s,m) => s + (data.actual[it.id][m]||0), 0);
+    const aA = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
     html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmt(aA,isCalc)}</td>`;
-    vm.forEach(m => html+=`<td>${fmt(data.actual[it.id][m],isCalc)}</td>`);
+    vm.forEach(m => html+=`<td>${fmt(extActual(data,prevData,it.id,m),isCalc)}</td>`);
     html += '</tr>';
     const dA = aA - bA;
     html += `<tr style="background:#ffeaea"><td>差異</td><td class="${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
-    vm.forEach(m => { const d=data.actual[it.id][m]-data.budget[it.id][m]; html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`; });
+    vm.forEach(m => { const d=extActual(data,prevData,it.id,m)-extBudget(data,prevData,it.id,m); html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`; });
     html += '</tr>';
   });
   document.getElementById('compareTable').innerHTML = html + '</tbody>';
@@ -1406,11 +1493,11 @@ function switchTab(tab){
   document.getElementById(`tab-${tab}`).classList.add('active');
   renderCurrentTab();
 }
-function renderCurrentTab(){
-  if(currentTab==='budget') renderBudgetTable();
-  else if(currentTab==='actual') renderActualTable();
-  else if(currentTab==='compare') renderCompareTable();
-  else if(currentTab==='yoy') renderYoyTable();
+async function renderCurrentTab(){
+  if(currentTab==='budget') await renderBudgetTable();
+  else if(currentTab==='actual') await renderActualTable();
+  else if(currentTab==='compare') await renderCompareTable();
+  else if(currentTab==='yoy') await renderYoyTable();
 }
 </script>
 </body>

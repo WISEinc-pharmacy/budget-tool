@@ -188,7 +188,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <select id="filterFrom" onchange="renderCurrentTab()"></select>
   <span>〜</span>
   <select id="filterTo" onchange="renderCurrentTab()"></select>
-  <button class="btn btn-secondary" onclick="resetFilter()" style="padding:3px 10px;font-size:11px">全期間</button>
+  <span id="fyButtons"></span>
 </div>
 
 <div class="legend">
@@ -568,6 +568,7 @@ auth.onAuthStateChanged(async (user) => {
     updateModeUI();
     await loadAllFromFirestore();
     updateFilterSelects();
+    updateFyButtons();
     updateYoyYearSelect();
     renderDeptBar();
     renderCurrentTab();
@@ -799,6 +800,26 @@ function resetFilter() {
   document.getElementById('filterFrom').value = '0';
   document.getElementById('filterTo').value = '11';
   renderCurrentTab();
+}
+
+function selectPrevYear() {
+  document.getElementById('filterFrom').value = '-12';
+  document.getElementById('filterTo').value = '-1';
+  renderCurrentTab();
+}
+
+function selectBothYears() {
+  document.getElementById('filterFrom').value = '-12';
+  document.getElementById('filterTo').value = '11';
+  renderCurrentTab();
+}
+
+function updateFyButtons() {
+  const fy = parseInt(getFiscalYear());
+  const el = document.getElementById('fyButtons');
+  el.innerHTML = `<button class="btn btn-secondary" onclick="selectPrevYear()" style="padding:3px 10px;font-size:11px">${fy-1}年度</button>
+    <button class="btn btn-secondary" onclick="resetFilter()" style="padding:3px 10px;font-size:11px">${fy}年度</button>
+    <button class="btn btn-secondary" onclick="selectBothYears()" style="padding:3px 10px;font-size:11px">全期間</button>`;
 }
 
 // 拡張月インデックスからヘッダーラベルを取得

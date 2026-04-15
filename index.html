@@ -344,6 +344,34 @@ const ITEMS = [
   { id: 'op_profit', name: '営業利益', type: 'calc', level: 0, style: 'profit',
     calc: (m) => val(m, 'gross_profit') - val(m, 'sga_total') },
 
+  { id: 'sec_eigyogai_rev', name: '営業外収益', type: 'header', adminOnly: true },
+  { id: 'uketori_risoku', name: '受取利息', type: 'calc', level: 1, style: 'calc', adminOnly: true,
+    calc: (m) => sum(m, ['yokin_risoku','kashitsuke_risoku']) },
+  { id: 'yokin_risoku', name: '・預金利息', type: 'input', level: 2, adminOnly: true },
+  { id: 'kashitsuke_risoku', name: '・貸付金利息', type: 'input', level: 2, adminOnly: true },
+  { id: 'zatsu_shuunyu', name: '雑収入', type: 'calc', level: 1, style: 'calc', adminOnly: true,
+    calc: (m) => sum(m, ['shataku_yachin','joseikin','zatsu_other']) },
+  { id: 'shataku_yachin', name: '・社宅家賃', type: 'input', level: 2, adminOnly: true },
+  { id: 'joseikin', name: '・助成金', type: 'input', level: 2, adminOnly: true },
+  { id: 'zatsu_other', name: '・その他(営業外収益)', type: 'input', level: 2, adminOnly: true },
+  { id: 'eigyogai_rev_total', name: '営業外収益合計', type: 'calc', level: 0, style: 'subtotal', adminOnly: true,
+    calc: (m) => val(m, 'uketori_risoku') + val(m, 'zatsu_shuunyu') },
+
+  { id: 'sec_eigyogai_exp', name: '営業外費用', type: 'header', adminOnly: true },
+  { id: 'shiharai_risoku', name: '支払利息', type: 'calc', level: 1, style: 'calc', adminOnly: true,
+    calc: (m) => sum(m, ['kinyu_risoku','shiharai_risoku_other']) },
+  { id: 'kinyu_risoku', name: '・金融機関利息', type: 'input', level: 2, adminOnly: true },
+  { id: 'shiharai_risoku_other', name: '・その他(支払利息)', type: 'input', level: 2, adminOnly: true },
+  { id: 'eigyogai_tesuryo', name: '支払手数料', type: 'calc', level: 1, style: 'calc', adminOnly: true,
+    calc: (m) => sum(m, ['hoshoryo','factoring']) },
+  { id: 'hoshoryo', name: '・信用保証料', type: 'input', level: 2, adminOnly: true },
+  { id: 'factoring', name: '・ファクタリング手数料', type: 'input', level: 2, adminOnly: true },
+  { id: 'eigyogai_exp_total', name: '営業外費用合計', type: 'calc', level: 0, style: 'subtotal', adminOnly: true,
+    calc: (m) => val(m, 'shiharai_risoku') + val(m, 'eigyogai_tesuryo') },
+
+  { id: 'keijo_rieki', name: '経常利益', type: 'calc', level: 0, style: 'profit', adminOnly: true,
+    calc: (m) => val(m, 'op_profit') + val(m, 'eigyogai_rev_total') - val(m, 'eigyogai_exp_total') },
+
   { id: 'sec_kpi', name: 'KPI', type: 'header' },
   { id: 'kpi_labor', name: '技術料労働分配率', type: 'ratio', level: 1,
     numerator: (m) => sum(m, ['kyuryo','shoyo','gaicyu_fl','hotei']),
@@ -642,7 +670,15 @@ function getBudgetActual() {
 }
 
 function isItemVisible(it) {
-  if (it.adminOnly && userRole === 'viewer') return false;
+  if (!it.adminOnly) return true;
+  // 閲覧者は常に非表示
+  if (userRole === 'viewer') return false;
+  // 管理者・編集者でも、店舗のみ選択中は非表示（役員等の部門が含まれていなければ）
+  const hasAdminDept = selectedDepts.some(id => {
+    const dept = DEPTS.find(d => d.id === id);
+    return dept && dept.adminOnly;
+  });
+  if (!hasAdminDept) return false;
   return true;
 }
 

@@ -166,6 +166,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div class="tab active" onclick="switchTab('budget')">予算</div>
   <div class="tab" onclick="switchTab('actual')">実績</div>
   <div class="tab" onclick="switchTab('compare')">予実比較</div>
+  <div class="tab" onclick="switchTab('yoy')">年度比較</div>
 </div>
 
 <div class="toolbar">
@@ -198,6 +199,14 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <div id="tab-budget" class="tab-content active"><div class="table-wrap"><table id="budgetTable"></table></div></div>
 <div id="tab-actual" class="tab-content"><div class="table-wrap"><table id="actualTable"></table></div></div>
 <div id="tab-compare" class="tab-content"><div class="table-wrap"><table id="compareTable"></table></div></div>
+<div id="tab-yoy" class="tab-content">
+  <div style="padding:8px 24px;background:#f9f0ff;border-bottom:1px solid #d2b4de;display:flex;gap:12px;align-items:center;">
+    <label style="font-weight:500;color:#6c3483">比較年度:</label>
+    <select id="yoyYear" onchange="renderYoyTable()" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px"></select>
+    <span style="color:#999;font-size:12px">← 現在の年度と比較します</span>
+  </div>
+  <div class="table-wrap"><table id="yoyTable"></table></div>
+</div>
 
 </div>
 
@@ -555,6 +564,7 @@ auth.onAuthStateChanged(async (user) => {
     updateModeUI();
     await loadAllFromFirestore();
     updateFilterSelects();
+    updateYoyYearSelect();
     renderDeptBar();
     renderCurrentTab();
   } else {
@@ -893,6 +903,150 @@ function renderCompareTable() {
     html += '</tr>';
   });
   document.getElementById('compareTable').innerHTML = html + '</tbody>';
+}
+
+// ===== 年度比較 =====
+let yoyData = null; // 比較年度のデータ
+
+function updateYoyYearSelect() {
+  const el = document.getElementById('yoyYear');
+  const curFY = parseInt(getFiscalYear());
+  el.innerHTML = '';
+  for (let y = curFY - 3; y <= curFY + 1; y++) {
+    if (y === curFY) continue;
+    el.innerHTML += `<option value="${y}" ${y === curFY - 1 ? 'selected' : ''}>${y}年度</option>`;
+  }
+}
+
+async function loadYoyData(fy) {
+  const result = {};
+  DEPTS.forEach(d => {
+    result[d.id] = { budget: {}, actual: {} };
+    ITEMS.forEach(it => {
+      result[d.id].budget[it.id] = new Array(12).fill(0);
+      result[d.id].actual[it.id] = new Array(12).fill(0);
+    });
+  });
+  try {
+    const prefix = `FY${fy}_`;
+    const snap = await db.collection('budgetData').get();
+    snap.forEach(doc => {
+      if (!doc.id.startsWith(prefix)) return;
+      const deptId = doc.id.substring(prefix.length);
+      if (!result[deptId]) return;
+      const data = doc.data();
+      ITEMS.forEach(it => {
+        if (data.budget && data.budget[it.id]) result[deptId].budget[it.id] = data.budget[it.id];
+        if (data.actual && data.actual[it.id]) result[deptId].actual[it.id] = data.actual[it.id];
+      });
+    });
+  } catch(e) { console.error('YoY load error:', e); }
+  return result;
+}
+
+function getYoyBudgetActual(yoyAllData) {
+  // 選択部門の合計（比較年度）
+  const total = { budget: {}, actual: {} };
+  ITEMS.forEach(it => {
+    total.budget[it.id] = new Array(12).fill(0);
+    total.actual[it.id] = new Array(12).fill(0);
+    selectedDepts.forEach(deptId => {
+      if (!yoyAllData[deptId]) return;
+      for (let m = 0; m < 12; m++) {
+        total.budget[it.id][m] += yoyAllData[deptId].budget[it.id][m];
+        total.actual[it.id][m] += yoyAllData[deptId].actual[it.id][m];
+      }
+    });
+  });
+  // 計算項目を再計算
+  for (let m = 0; m < 12; m++) {
+    const bv = {}, av = {};
+    ITEMS.forEach(it => { if (it.type === 'input') { bv[it.id] = total.budget[it.id][m]; av[it.id] = total.actual[it.id][m]; } });
+    ITEMS.forEach(it => {
+      if (it.type === 'calc' && it.calc) {
+        bv[it.id] = it.calc(bv); total.budget[it.id][m] = bv[it.id];
+        av[it.id] = it.calc(av); total.actual[it.id][m] = av[it.id];
+      }
+    });
+  }
+  return total;
+}
+
+async function renderYoyTable() {
+  updateYoyYearSelect();
+  const table = document.getElementById('yoyTable');
+  const months = getMonthHeaders();
+  const vm = getVisibleMonths();
+  const curFY = getFiscalYear();
+  const cmpFY = document.getElementById('yoyYear').value;
+
+  table.innerHTML = '<tbody><tr><td style="text-align:center;padding:20px;color:#999">読み込み中...</td></tr></tbody>';
+
+  // 現在年度データ
+  const curData = getBudgetActual();
+  // 比較年度データ読込
+  const yoyAllData = await loadYoyData(cmpFY);
+  const cmpData = getYoyBudgetActual(yoyAllData);
+
+  let html = '<thead><tr><th>科目</th><th>区分</th><th>期間合計</th>';
+  vm.forEach(m => html += `<th>${months[m]}</th>`);
+  html += '</tr></thead><tbody>';
+
+  ITEMS.forEach(it => {
+    if (!isItemVisible(it)) return;
+    if (it.type === 'header') {
+      html += `<tr class="${getRowClass(it)}"><td>${it.name}</td><td></td><td></td>`;
+      vm.forEach(() => html += '<td></td>');
+      html += '</tr>'; return;
+    }
+    if (it.type === 'ratio') {
+      // 今年度実績
+      let cNum=0,cDen=0; vm.forEach(m => { const mv=getMonthVals(curData.actual,m); cNum+=it.numerator(mv); cDen+=it.denominator(mv); });
+      html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>${curFY}年度</td><td>${fmtPct(cNum,cDen)}</td>`;
+      vm.forEach(m => { const mv=getMonthVals(curData.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
+      html += '</tr>';
+      // 比較年度実績
+      let pNum=0,pDen=0; vm.forEach(m => { const mv=getMonthVals(cmpData.actual,m); pNum+=it.numerator(mv); pDen+=it.denominator(mv); });
+      html += `<tr class="${getRowClass(it)}"><td>${cmpFY}年度</td><td>${fmtPct(pNum,pDen)}</td>`;
+      vm.forEach(m => { const mv=getMonthVals(cmpData.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
+      html += '</tr>';
+      // 差異
+      const cPct = cDen ? cNum/cDen*100 : 0;
+      const pPct = pDen ? pNum/pDen*100 : 0;
+      const diff = cPct - pPct;
+      html += `<tr style="background:#ffeaea"><td>差異</td><td class="${diff<0?'negative':''}">${diff===0?'-':(diff>0?'+':'')+diff.toFixed(1)+'pt'}</td>`;
+      vm.forEach(m => {
+        const cmv=getMonthVals(curData.actual,m), pmv=getMonthVals(cmpData.actual,m);
+        const cd=cmv.gijutsu?it.numerator(cmv)/it.denominator(cmv)*100:0;
+        const pd=pmv.gijutsu?it.numerator(pmv)/it.denominator(pmv)*100:0;
+        const d=cd-pd;
+        html+=`<td class="${d<0?'negative':''}">${d===0?'-':(d>0?'+':'')+d.toFixed(1)+'pt'}</td>`;
+      });
+      html += '</tr>';
+      return;
+    }
+    const isCalc = it.type === 'calc';
+    // 今年度実績
+    const cA = vm.reduce((s,m) => s + (curData.actual[it.id][m]||0), 0);
+    html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>${curFY}年度</td><td>${fmt(cA,isCalc)}</td>`;
+    vm.forEach(m => html += `<td>${fmt(curData.actual[it.id][m],isCalc)}</td>`);
+    html += '</tr>';
+    // 比較年度実績
+    const pA = vm.reduce((s,m) => s + (cmpData.actual[it.id][m]||0), 0);
+    html += `<tr class="${getRowClass(it)}"><td>${cmpFY}年度</td><td>${fmt(pA,isCalc)}</td>`;
+    vm.forEach(m => html += `<td>${fmt(cmpData.actual[it.id][m],isCalc)}</td>`);
+    html += '</tr>';
+    // 差異
+    const dA = cA - pA;
+    html += `<tr style="background:#ffeaea"><td>差異</td><td class="${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
+    vm.forEach(m => {
+      const d = (curData.actual[it.id][m]||0) - (cmpData.actual[it.id][m]||0);
+      html += `<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`;
+    });
+    html += '</tr>';
+  });
+
+  table.innerHTML = html + '</tbody>';
 }
 
 // ===== Undo/Redo =====
@@ -1247,12 +1401,16 @@ function switchTab(tab){
   currentTab=tab;
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-  document.querySelector(`.tab:nth-child(${tab==='budget'?1:tab==='actual'?2:3})`).classList.add('active');
+  const tabIdx = {budget:1, actual:2, compare:3, yoy:4}[tab] || 1;
+  document.querySelector(`.tab:nth-child(${tabIdx})`).classList.add('active');
   document.getElementById(`tab-${tab}`).classList.add('active');
   renderCurrentTab();
 }
 function renderCurrentTab(){
-  if(currentTab==='budget')renderBudgetTable();else if(currentTab==='actual')renderActualTable();else renderCompareTable();
+  if(currentTab==='budget') renderBudgetTable();
+  else if(currentTab==='actual') renderActualTable();
+  else if(currentTab==='compare') renderCompareTable();
+  else if(currentTab==='yoy') renderYoyTable();
 }
 </script>
 </body>

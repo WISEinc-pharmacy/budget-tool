@@ -436,6 +436,8 @@ function getTotalData() {
 
 // ===== Firestore =====
 let saveTimer = null;
+function getFiscalYear() { return document.getElementById('fiscalYear').value; }
+function docId(deptId) { return `FY${getFiscalYear()}_${deptId}`; }
 function showSaveStatus(s, t) { const el = document.getElementById('saveStatus'); el.textContent = t; el.className = 'save-status ' + s; if (s === 'saved') setTimeout(() => el.textContent = '', 2000); }
 
 async function saveToFirestore() {
@@ -455,7 +457,7 @@ async function saveToFirestore() {
       data.annualInputs[it.id] = d.annualInputs[it.id];
       data.distMethod[it.id] = d.distMethod[it.id];
     });
-    await db.collection('budgetData').doc(currentDeptId()).set(data);
+    await db.collection('budgetData').doc(docId(currentDeptId())).set(data);
     // バージョン保存（5分間隔）
     scheduleVersionSave();
     showSaveStatus('saved', '保存しました');
@@ -474,12 +476,27 @@ function scheduleVersionSave() {
 function scheduleSave() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(saveToFirestore, 1000); }
 
 async function loadAllFromFirestore() {
+  // 全部門のデータをリセット
+  DEPTS.forEach(d => initDeptData(d.id));
+  // 各部門のデータを別々に初期化し直す
+  DEPTS.forEach(d => {
+    allData[d.id] = { budget: {}, actual: {}, annualInputs: {}, distMethod: {} };
+    ITEMS.forEach(it => {
+      allData[d.id].budget[it.id] = new Array(12).fill(0);
+      allData[d.id].actual[it.id] = new Array(12).fill(0);
+      allData[d.id].annualInputs[it.id] = 0;
+      allData[d.id].distMethod[it.id] = 'even';
+    });
+  });
   try {
+    const fy = getFiscalYear();
+    const prefix = `FY${fy}_`;
     const snap = await db.collection('budgetData').get();
     snap.forEach(doc => {
-      const deptId = doc.id;
+      if (!doc.id.startsWith(prefix)) return;
+      const deptId = doc.id.substring(prefix.length);
       const data = doc.data();
-      if (!allData[deptId]) initDeptData(deptId);
+      if (!allData[deptId]) return;
       ITEMS.forEach(it => {
         if (data.budget && data.budget[it.id]) allData[deptId].budget[it.id] = data.budget[it.id];
         if (data.actual && data.actual[it.id]) allData[deptId].actual[it.id] = data.actual[it.id];
@@ -487,7 +504,6 @@ async function loadAllFromFirestore() {
         if (data.distMethod && data.distMethod[it.id]) allData[deptId].distMethod[it.id] = data.distMethod[it.id];
       });
       if (data.startMonth) document.getElementById('startMonth').value = data.startMonth;
-      if (data.fiscalYear) document.getElementById('fiscalYear').value = data.fiscalYear;
     });
   } catch(e) { console.error('Load error:', e); }
 }
@@ -888,9 +904,9 @@ async function saveVersion() {
     versionData.annualInputs[it.id] = d.annualInputs[it.id];
     versionData.distMethod[it.id] = d.distMethod[it.id];
   });
-  await db.collection('budgetData').doc(deptId).collection('versions').add(versionData);
+  await db.collection('budgetData').doc(docId(deptId)).collection('versions').add(versionData);
   // 古いバージョンを削除（30件まで保持）
-  const snap = await db.collection('budgetData').doc(deptId).collection('versions').orderBy('savedAt','desc').get();
+  const snap = await db.collection('budgetData').doc(docId(deptId)).collection('versions').orderBy('savedAt','desc').get();
   const docs = snap.docs;
   if (docs.length > 30) {
     for (let i = 30; i < docs.length; i++) await docs[i].ref.delete();
@@ -898,32 +914,48 @@ async function saveVersion() {
 }
 
 function openHistoryModal() {
-  if (!isSingleDept()) { alert('1つの部門を選択してください。'); return; }
   document.getElementById('historyModal').classList.add('show');
-  const deptName = DEPTS.find(d => d.id === currentDeptId())?.name;
-  document.getElementById('historyDeptName').textContent = deptName;
+  document.getElementById('historyDeptName').textContent = `${getFiscalYear()}年度 全部門`;
   renderHistoryList();
 }
 
 function closeHistoryModal() { document.getElementById('historyModal').classList.remove('show'); }
 
 async function renderHistoryList() {
-  const deptId = currentDeptId();
   const listEl = document.getElementById('historyList');
   listEl.innerHTML = '<p style="color:#999">読み込み中...</p>';
   try {
-    const snap = await db.collection('budgetData').doc(deptId).collection('versions').orderBy('savedAt','desc').limit(30).get();
-    if (snap.empty) { listEl.innerHTML = '<p style="color:#999">履歴がありません</p>'; return; }
+    const fy = getFiscalYear();
+    const prefix = `FY${fy}_`;
+    // 全部門の履歴を取得してマージ
+    const allVersions = [];
+    for (const dept of DEPTS) {
+      const did = prefix + dept.id;
+      const snap = await db.collection('budgetData').doc(did).collection('versions').orderBy('savedAt','desc').limit(10).get();
+      snap.forEach(doc => {
+        const v = doc.data();
+        allVersions.push({ ...v, deptId: dept.id, deptName: dept.name, docId: did, versionId: doc.id });
+      });
+    }
+    // 日時でソート（新しい順）
+    allVersions.sort((a, b) => {
+      const ta = a.savedAt ? a.savedAt.toDate().getTime() : 0;
+      const tb = b.savedAt ? b.savedAt.toDate().getTime() : 0;
+      return tb - ta;
+    });
+
+    if (allVersions.length === 0) { listEl.innerHTML = '<p style="color:#999">履歴がありません</p>'; return; }
+
     let html = '<table style="width:100%;min-width:auto;font-size:12px;border-collapse:collapse">';
-    html += '<tr><th style="text-align:left;padding:6px;border-bottom:1px solid #ddd">日時</th><th style="text-align:left;padding:6px;border-bottom:1px solid #ddd">操作者</th><th style="padding:6px;border-bottom:1px solid #ddd">操作</th></tr>';
-    snap.forEach(doc => {
-      const v = doc.data();
+    html += '<tr><th style="text-align:left;padding:6px;border-bottom:1px solid #ddd">日時</th><th style="text-align:left;padding:6px;border-bottom:1px solid #ddd">部門</th><th style="text-align:left;padding:6px;border-bottom:1px solid #ddd">操作者</th><th style="padding:6px;border-bottom:1px solid #ddd">操作</th></tr>';
+    const canRestore = userRole === 'admin' || userRole === 'editor';
+    allVersions.slice(0, 50).forEach(v => {
       const date = v.savedAt ? v.savedAt.toDate().toLocaleString('ja-JP') : '---';
-      const canRestore = userRole === 'admin' || userRole === 'editor';
       html += `<tr style="border-bottom:1px solid #eee">
         <td style="padding:6px">${date}</td>
+        <td style="padding:6px;font-weight:500">${v.deptName}</td>
         <td style="padding:6px">${v.userName || v.savedBy || '-'}</td>
-        <td style="padding:6px;text-align:center">${canRestore ? '<button class="btn btn-secondary" style="font-size:11px;padding:3px 10px" onclick="restoreVersion(\'' + deptId + '\',\'' + doc.id + '\')">復元</button>' : '-'}</td>
+        <td style="padding:6px;text-align:center">${canRestore ? '<button class="btn btn-secondary" style="font-size:11px;padding:3px 10px" onclick="restoreVersion(\'' + v.deptId + '\',\'' + v.docId + '\',\'' + v.versionId + '\')">復元</button>' : '-'}</td>
       </tr>`;
     });
     html += '</table>';
@@ -931,18 +963,17 @@ async function renderHistoryList() {
   } catch(e) { listEl.innerHTML = '<p style="color:#c44">読み込みエラー: ' + e.message + '</p>'; }
 }
 
-async function restoreVersion(deptId, versionId) {
+async function restoreVersion(deptId, dId, versionId) {
   if (!confirm('この時点のデータに復元しますか？現在のデータは上書きされます。')) return;
   try {
-    const doc = await db.collection('budgetData').doc(deptId).collection('versions').doc(versionId).get();
+    const doc = await db.collection('budgetData').doc(dId).collection('versions').doc(versionId).get();
     if (!doc.exists) { alert('バージョンが見つかりません'); return; }
     const v = doc.data();
-    takeSnapshot(); // 復元前の状態をUndoに保存
+    takeSnapshot();
     restoreSnapshot(deptId, v);
     scheduleSave();
     renderCurrentTab();
     closeHistoryModal();
-    setStatus('復元しました', 'success');
     alert('復元しました');
   } catch(e) { alert('復元エラー: ' + e.message); }
 }
@@ -952,7 +983,19 @@ function onAnnualChange(id,v) { takeSnapshot(); D().annualInputs[id]=parseInt(v)
 function onDistChange(id,v) { takeSnapshot(); D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onBudgetCellChange(id,m,v) { takeSnapshot(); D().budget[id][m]=parseInt(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onActualCellChange(id,m,v) { takeSnapshot(); D().actual[id][m]=parseInt(v)||0; renderActualTable(); scheduleSave(); }
-function updateHeaders() { scheduleSave(); renderCurrentTab(); }
+let currentFiscalYear = '2026';
+async function updateHeaders() {
+  const newFY = getFiscalYear();
+  if (newFY !== currentFiscalYear) {
+    currentFiscalYear = newFY;
+    showSaveStatus('saving', '年度データ読込中...');
+    await loadAllFromFirestore();
+    showSaveStatus('saved', '読込完了');
+  } else {
+    scheduleSave();
+  }
+  renderCurrentTab();
+}
 function doRecalc() {
   if (!isSingleDept()) { alert('複数部門選択中は再計算できません。1つの部門を選択してください。'); return; }
   ITEMS.forEach(it => { if (it.type==='input'&&D().annualInputs[it.id]) distributeMonths(currentDeptId(),it.id); });

@@ -554,7 +554,9 @@ function renderDeptBar() {
   html += `<span class="dept-count">${label}</span>`;
   html += `<div class="dept-actions">`;
   html += `<button onclick="selectAllDepts()">全選択</button>`;
-  html += `<button onclick="selectStoresOnly()">店舗のみ</button>`;
+  html += `<button onclick="selectStoresOnly()">全店舗</button>`;
+  html += `<button onclick="selectTokatsu()">東葛</button>`;
+  html += `<button onclick="selectJohoku()">城北</button>`;
   html += `</div>`;
   document.getElementById('deptBar').innerHTML = html;
 }
@@ -575,6 +577,18 @@ function selectAllDepts() {
 
 function selectStoresOnly() {
   selectedDepts = ['kashiwa', 'adachi', 'nagareyama', 'ai_chozai', 'abiko', 'sakuradai'];
+  renderDeptBar();
+  renderCurrentTab();
+}
+
+function selectTokatsu() {
+  selectedDepts = ['kashiwa', 'sakuradai', 'abiko', 'nagareyama'];
+  renderDeptBar();
+  renderCurrentTab();
+}
+
+function selectJohoku() {
+  selectedDepts = ['adachi', 'ai_chozai'];
   renderDeptBar();
   renderCurrentTab();
 }

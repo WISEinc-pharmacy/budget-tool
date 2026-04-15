@@ -105,7 +105,10 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .role-badge.viewer { background: #95a5a6; color: #fff; }
 .role-badge.admin { background: #e74c3c; color: #fff; }
 .save-status { font-size: 11px; color: #999; margin-left: 12px; }
-.current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; }
+.current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; display: flex; align-items: center; gap: 12px; }
+.mode-indicator { font-size: 12px; padding: 3px 10px; border-radius: 4px; font-weight: 600; }
+.mode-indicator.viewing { background: #d5e8d4; color: #1e8449; }
+.mode-indicator.editing { background: #fadbd8; color: #c0392b; }
 .save-status.saving { color: #f39c12; }
 .save-status.saved { color: #2ecc71; }
 .save-status.error { color: #e74c3c; }
@@ -140,6 +143,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <button class="btn" onclick="doRecalc()" style="background:#e67e22;color:#fff" id="btnRecalc">再計算</button>
     <button class="btn btn-secondary" onclick="clearAll()" id="btnClear">クリア</button>
     <button class="btn" onclick="openHistoryModal()" style="background:#8e44ad;color:#fff">履歴</button>
+    <button class="btn" onclick="toggleEditMode()" id="btnEditMode" style="background:#c0392b;color:#fff;font-weight:700;padding:6px 18px">編集モード</button>
   </div>
 </div>
 
@@ -183,7 +187,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <span><span class="swatch" style="background:#eaf2f8"></span> 集計行</span>
 </div>
 
-<div class="current-dept-label" id="currentDeptLabel"></div>
+<div class="current-dept-label"><span id="currentDeptLabel"></span><span class="mode-indicator" id="modeIndicator"></span></div>
 
 <div id="tab-budget" class="tab-content active"><div class="table-wrap"><table id="budgetTable"></table></div></div>
 <div id="tab-actual" class="tab-content"><div class="table-wrap"><table id="actualTable"></table></div></div>
@@ -273,6 +277,7 @@ const DEPTS = [
 ];
 
 let selectedDepts = ['kashiwa']; // チェックされた部門
+let editMode = false; // false=閲覧モード, true=編集モード
 
 // ===== 科目定義 =====
 const ITEMS = [
@@ -473,7 +478,7 @@ function scheduleVersionSave() {
   versionTimer = setTimeout(() => { lastVersionSave = Date.now(); saveVersion(); }, 3000);
 }
 
-function scheduleSave() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(saveToFirestore, 1000); }
+function scheduleSave() { if (!editMode) return; if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(saveToFirestore, 1000); }
 
 async function loadAllFromFirestore() {
   // 全部門のデータをリセット
@@ -541,6 +546,7 @@ auth.onAuthStateChanged(async (user) => {
     document.getElementById('userPhoto').src = user.photoURL || '';
     await checkUserRole(user);
     applyPermissions();
+    updateModeUI();
     await loadAllFromFirestore();
     renderDeptBar();
     renderCurrentTab();
@@ -566,10 +572,9 @@ async function checkUserRole(user) {
 
 function applyPermissions() {
   const canEdit = userRole === 'admin' || userRole === 'editor';
-  document.getElementById('btnImport').style.display = canEdit ? '' : 'none';
-  document.getElementById('btnRecalc').style.display = canEdit ? '' : 'none';
-  document.getElementById('btnClear').style.display = canEdit ? '' : 'none';
+  document.getElementById('btnEditMode').style.display = canEdit ? '' : 'none';
   document.getElementById('btnAdmin').style.display = userRole === 'admin' ? '' : 'none';
+  // 編集系ボタンは updateModeUI で制御
 }
 
 // ===== 権限管理 =====
@@ -640,7 +645,8 @@ function renderDeptBar() {
 function toggleDept(deptId, checked) {
   if (checked) { if (!selectedDepts.includes(deptId)) selectedDepts.push(deptId); }
   else { selectedDepts = selectedDepts.filter(id => id !== deptId); }
-  if (selectedDepts.length === 0) selectedDepts = [deptId]; // 最低1つ
+  if (selectedDepts.length === 0) selectedDepts = [deptId];
+  if (editMode && !isSingleDept()) { editMode = false; updateModeUI(); }
   renderDeptBar();
   renderCurrentTab();
 }
@@ -728,7 +734,7 @@ function isItemVisible(it) {
 function renderBudgetTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
-  const canEdit = isSingleDept() && (userRole === 'admin' || userRole === 'editor');
+  const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   const dis = canEdit ? '' : 'disabled';
   let html = '<thead><tr><th>科目</th>' + (isSingleDept() ? '<th>配分</th>' : '') + '<th>年間合計</th>';
@@ -777,7 +783,7 @@ function renderBudgetTable() {
 function renderActualTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
-  const canEdit = isSingleDept() && (userRole === 'admin' || userRole === 'editor');
+  const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   let html = '<thead><tr><th>科目</th><th>年間合計</th>';
   months.forEach(m => html += `<th>${m}</th>`);
@@ -998,6 +1004,43 @@ async function restoreVersion(deptId, dId, versionId) {
   } catch(e) { alert('復元エラー: ' + e.message); }
 }
 
+// ===== 編集モード =====
+function toggleEditMode() {
+  if (!editMode) {
+    // 編集モードに入る
+    if (userRole === 'viewer') { alert('閲覧権限では編集できません'); return; }
+    if (!isSingleDept()) { alert('編集するには1つの部門を選択してください'); return; }
+    editMode = true;
+  } else {
+    // ���覧モードに戻る
+    editMode = false;
+  }
+  updateModeUI();
+  renderCurrentTab();
+}
+
+function updateModeUI() {
+  const btn = document.getElementById('btnEditMode');
+  const indicator = document.getElementById('modeIndicator');
+  if (editMode) {
+    btn.textContent = '閲覧モードに戻る';
+    btn.style.background = '#27ae60';
+    indicator.textContent = '編集中';
+    indicator.className = 'mode-indicator editing';
+  } else {
+    btn.textContent = '編集モード';
+    btn.style.background = '#c0392b';
+    indicator.textContent = '閲覧中';
+    indicator.className = 'mode-indicator viewing';
+  }
+  // 編集系ボタンの表示制御
+  const showEdit = editMode && (userRole === 'admin' || userRole === 'editor');
+  document.getElementById('btnImport').style.display = showEdit ? '' : 'none';
+  document.getElementById('btnRecalc').style.display = showEdit ? '' : 'none';
+  document.getElementById('btnClear').style.display = showEdit ? '' : 'none';
+  document.getElementById('btnUndo').parentElement.style.display = showEdit ? '' : 'none';
+}
+
 // ===== イベントハンドラ =====
 function onAnnualChange(id,v) { takeSnapshot(); D().annualInputs[id]=parseInt(v)||0; distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onDistChange(id,v) { takeSnapshot(); D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
@@ -1007,12 +1050,18 @@ let currentFiscalYear = '2026';
 async function updateHeaders() {
   const newFY = getFiscalYear();
   if (newFY !== currentFiscalYear) {
+    if (editMode) {
+      if (!confirm('編集中ですが、年度を切り替えますか？未保存の変更は失われます。')) {
+        document.getElementById('fiscalYear').value = currentFiscalYear;
+        return;
+      }
+      editMode = false;
+      updateModeUI();
+    }
     currentFiscalYear = newFY;
     showSaveStatus('saving', '年度データ読込中...');
     await loadAllFromFirestore();
     showSaveStatus('saved', '読込完了');
-  } else {
-    scheduleSave();
   }
   renderCurrentTab();
 }

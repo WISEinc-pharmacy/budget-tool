@@ -638,10 +638,22 @@ function getVisibleDepts() {
 function renderDeptBar() {
   let html = '';
   const visibleDepts = getVisibleDepts();
-  visibleDepts.forEach(d => {
-    const chk = selectedDepts.includes(d.id);
-    html += `<label class="${chk ? 'checked' : ''}"><input type="checkbox" ${chk ? 'checked' : ''} onchange="toggleDept('${d.id}', this.checked)"> ${d.name}</label>`;
-  });
+
+  if (editMode) {
+    // 編集モード: ラジオボタン（1部門のみ）
+    const curId = currentDeptId();
+    visibleDepts.forEach(d => {
+      const sel = d.id === curId;
+      html += `<label class="${sel ? 'checked' : ''}"><input type="radio" name="deptRadio" ${sel ? 'checked' : ''} onchange="selectSingleDept('${d.id}')"> ${d.name}</label>`;
+    });
+  } else {
+    // 閲覧モード: チェックボックス（複数選択可）
+    visibleDepts.forEach(d => {
+      const chk = selectedDepts.includes(d.id);
+      html += `<label class="${chk ? 'checked' : ''}"><input type="checkbox" ${chk ? 'checked' : ''} onchange="toggleDept('${d.id}', this.checked)"> ${d.name}</label>`;
+    });
+  }
+
   const count = selectedDepts.length;
   const selectedNames = selectedDepts.map(id => DEPTS.find(d => d.id === id)?.name).filter(Boolean);
   let deptLabel;
@@ -651,21 +663,30 @@ function renderDeptBar() {
     deptLabel = '部門：' + selectedNames.join(' + ') + `（${count}部門合計）`;
   }
   document.getElementById('currentDeptLabel').textContent = deptLabel;
-  html += `<div class="dept-actions">`;
-  html += `<button onclick="selectAllDepts()">全選択</button>`;
-  html += `<button onclick="clearDepts()">全解除</button>`;
-  html += `<button onclick="selectStoresOnly()">全店舗</button>`;
-  html += `<button onclick="selectTokatsu()">東葛</button>`;
-  html += `<button onclick="selectJohoku()">城北</button>`;
-  html += `</div>`;
+
+  if (!editMode) {
+    html += `<div class="dept-actions">`;
+    html += `<button onclick="selectAllDepts()">全選択</button>`;
+    html += `<button onclick="clearDepts()">全解除</button>`;
+    html += `<button onclick="selectStoresOnly()">全店舗</button>`;
+    html += `<button onclick="selectTokatsu()">東葛</button>`;
+    html += `<button onclick="selectJohoku()">城北</button>`;
+    html += `</div>`;
+  }
+
   document.getElementById('deptBar').innerHTML = html;
+}
+
+function selectSingleDept(deptId) {
+  selectedDepts = [deptId];
+  renderDeptBar();
+  renderCurrentTab();
 }
 
 function toggleDept(deptId, checked) {
   if (checked) { if (!selectedDepts.includes(deptId)) selectedDepts.push(deptId); }
   else { selectedDepts = selectedDepts.filter(id => id !== deptId); }
   if (selectedDepts.length === 0) selectedDepts = [deptId];
-  if (editMode && !isSingleDept()) { editMode = false; updateModeUI(); }
   renderDeptBar();
   renderCurrentTab();
 }

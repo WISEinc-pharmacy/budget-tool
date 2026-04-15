@@ -593,6 +593,7 @@ function renderDeptBar() {
   document.getElementById('currentDeptLabel').textContent = deptLabel;
   html += `<div class="dept-actions">`;
   html += `<button onclick="selectAllDepts()">全選択</button>`;
+  html += `<button onclick="clearDepts()">全解除</button>`;
   html += `<button onclick="selectStoresOnly()">全店舗</button>`;
   html += `<button onclick="selectTokatsu()">東葛</button>`;
   html += `<button onclick="selectJohoku()">城北</button>`;
@@ -604,6 +605,12 @@ function toggleDept(deptId, checked) {
   if (checked) { if (!selectedDepts.includes(deptId)) selectedDepts.push(deptId); }
   else { selectedDepts = selectedDepts.filter(id => id !== deptId); }
   if (selectedDepts.length === 0) selectedDepts = [deptId]; // 最低1つ
+  renderDeptBar();
+  renderCurrentTab();
+}
+
+function clearDepts() {
+  selectedDepts = [getVisibleDepts()[0].id];
   renderDeptBar();
   renderCurrentTab();
 }

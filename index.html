@@ -105,6 +105,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .role-badge.viewer { background: #95a5a6; color: #fff; }
 .role-badge.admin { background: #e74c3c; color: #fff; }
 .save-status { font-size: 11px; color: #999; margin-left: 12px; }
+.current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; }
 .save-status.saving { color: #f39c12; }
 .save-status.saved { color: #2ecc71; }
 .save-status.error { color: #e74c3c; }
@@ -181,6 +182,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <span><span class="swatch" style="background:#fffff0"></span> 編集可</span>
   <span><span class="swatch" style="background:#eaf2f8"></span> 集計行</span>
 </div>
+
+<div class="current-dept-label" id="currentDeptLabel"></div>
 
 <div id="tab-budget" class="tab-content active"><div class="table-wrap"><table id="budgetTable"></table></div></div>
 <div id="tab-actual" class="tab-content"><div class="table-wrap"><table id="actualTable"></table></div></div>
@@ -552,8 +555,14 @@ function renderDeptBar() {
     html += `<label class="${chk ? 'checked' : ''}"><input type="checkbox" ${chk ? 'checked' : ''} onchange="toggleDept('${d.id}', this.checked)"> ${d.name}</label>`;
   });
   const count = selectedDepts.length;
-  const label = count === 1 ? DEPTS.find(d => d.id === selectedDepts[0])?.name : `${count}部門合計`;
-  html += `<span class="dept-count">${label}</span>`;
+  const selectedNames = selectedDepts.map(id => DEPTS.find(d => d.id === id)?.name).filter(Boolean);
+  let deptLabel;
+  if (count === 1) {
+    deptLabel = selectedNames[0];
+  } else {
+    deptLabel = selectedNames.join(' + ') + `（${count}部門合計）`;
+  }
+  document.getElementById('currentDeptLabel').textContent = deptLabel;
   html += `<div class="dept-actions">`;
   html += `<button onclick="selectAllDepts()">全選択</button>`;
   html += `<button onclick="selectStoresOnly()">全店舗</button>`;

@@ -1317,13 +1317,14 @@ function toggleEditMode() {
   if (!editMode) {
     // 編集モードに入る
     if (userRole === 'viewer') { alert('閲覧権限では編集できません'); return; }
-    if (!isSingleDept()) { alert('編集するには1つの部門を選択してください'); return; }
+    // 複数選択中なら柏をデフォルトに
+    if (!isSingleDept()) { selectedDepts = ['kashiwa']; }
     editMode = true;
   } else {
-    // ���覧モードに戻る
     editMode = false;
   }
   updateModeUI();
+  renderDeptBar();
   renderCurrentTab();
 }
 

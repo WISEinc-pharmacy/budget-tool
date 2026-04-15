@@ -178,6 +178,12 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </select>
   <label>年度:</label>
   <input type="number" id="fiscalYear" value="2026" style="width:70px" onchange="updateHeaders()">
+  <span style="margin-left:8px;border-left:1px solid #ccc;padding-left:12px"></span>
+  <label>表示期間:</label>
+  <select id="filterFrom" onchange="renderCurrentTab()"></select>
+  <span>〜</span>
+  <select id="filterTo" onchange="renderCurrentTab()"></select>
+  <button class="btn btn-secondary" onclick="resetFilter()" style="padding:3px 10px;font-size:11px">全期間</button>
 </div>
 
 <div class="legend">
@@ -548,6 +554,7 @@ auth.onAuthStateChanged(async (user) => {
     applyPermissions();
     updateModeUI();
     await loadAllFromFirestore();
+    updateFilterSelects();
     renderDeptBar();
     renderCurrentTab();
   } else {
@@ -709,6 +716,35 @@ function getMonthHeaders() {
   return Array.from({length:12}, (_, i) => { const m = ((start-1+i)%12)+1; const y = (start+i>12)?year+1:year; return `${y}/${m}月`; });
 }
 
+// フィルターされた月インデックス
+function getVisibleMonths() {
+  const from = parseInt(document.getElementById('filterFrom').value);
+  const to = parseInt(document.getElementById('filterTo').value);
+  const result = [];
+  for (let i = from; i <= to; i++) result.push(i);
+  return result;
+}
+
+function updateFilterSelects() {
+  const headers = getMonthHeaders();
+  const fromEl = document.getElementById('filterFrom');
+  const toEl = document.getElementById('filterTo');
+  const curFrom = fromEl.value || '0';
+  const curTo = toEl.value || '11';
+  fromEl.innerHTML = '';
+  toEl.innerHTML = '';
+  headers.forEach((h, i) => {
+    fromEl.innerHTML += `<option value="${i}" ${i == curFrom ? 'selected' : ''}>${h}</option>`;
+    toEl.innerHTML += `<option value="${i}" ${i == curTo ? 'selected' : ''}>${h}</option>`;
+  });
+}
+
+function resetFilter() {
+  document.getElementById('filterFrom').value = '0';
+  document.getElementById('filterTo').value = '11';
+  renderCurrentTab();
+}
+
 // ===== テーブル描画 =====
 function getBudgetActual() {
   if (isSingleDept()) {
@@ -734,11 +770,12 @@ function isItemVisible(it) {
 function renderBudgetTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
+  const vm = getVisibleMonths();
   const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   const dis = canEdit ? '' : 'disabled';
-  let html = '<thead><tr><th>科目</th>' + (isSingleDept() ? '<th>配分</th>' : '') + '<th>年間合計</th>';
-  months.forEach(m => html += `<th>${m}</th>`);
+  let html = '<thead><tr><th>科目</th>' + (isSingleDept() ? '<th>配分</th>' : '') + '<th>期間合計</th>';
+  vm.forEach(m => html += `<th>${months[m]}</th>`);
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
@@ -746,7 +783,7 @@ function renderBudgetTable() {
     html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
     if (it.type === 'header') {
       html += (isSingleDept() ? '<td></td>' : '') + '<td></td>';
-      for (let m = 0; m < 12; m++) html += '<td></td>';
+      vm.forEach(() => html += '<td></td>');
     } else if (it.type === 'input') {
       if (isSingleDept()) {
         const dm = D().distMethod[it.id] || 'even';
@@ -754,26 +791,27 @@ function renderBudgetTable() {
           <option value="even" ${dm==='even'?'selected':''}>均等割り</option>
           <option value="growth" ${dm==='growth'?'selected':''}>均等増減</option>
           <option value="flat" ${dm==='flat'?'selected':''}>全月同額</option></select></td>`;
-        const av = D().annualInputs[it.id] || '';
-        html += `<td><input class="cell-input annual" type="number" value="${av||''}" onchange="onAnnualChange('${it.id}',this.value)" placeholder="年間" ${ro}></td>`;
-        for (let m = 0; m < 12; m++) {
+        const periodTotal = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
+        html += `<td class="calc-value">${fmt(periodTotal, true)}</td>`;
+        vm.forEach(m => {
           const cls = (m===0 && dm!=='flat') ? 'cell-input month1' : 'cell-input';
           html += `<td><input class="${cls}" type="number" value="${data.budget[it.id][m]||''}" onchange="onBudgetCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
-        }
+        });
       } else {
-        const annual = data.budget[it.id].reduce((s,v)=>s+v,0);
-        html += `<td class="calc-value">${fmt(annual, true)}</td>`;
-        for (let m = 0; m < 12; m++) html += `<td class="calc-value">${fmt(data.budget[it.id][m], true)}</td>`;
+        const periodTotal = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
+        html += `<td class="calc-value">${fmt(periodTotal, true)}</td>`;
+        vm.forEach(m => html += `<td class="calc-value">${fmt(data.budget[it.id][m], true)}</td>`);
       }
     } else if (it.type === 'calc') {
-      const annual = data.budget[it.id].reduce((s,v)=>s+v,0);
+      const periodTotal = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
       html += (isSingleDept() ? '<td></td>' : '');
-      html += `<td class="calc-value ${annual<0?'negative':''}">${fmt(annual,true)}</td>`;
-      for (let m = 0; m < 12; m++) { const v = data.budget[it.id][m]; html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; }
+      html += `<td class="calc-value ${periodTotal<0?'negative':''}">${fmt(periodTotal,true)}</td>`;
+      vm.forEach(m => { const v = data.budget[it.id][m]; html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
     } else if (it.type === 'ratio') {
       html += (isSingleDept() ? '<td></td>' : '');
-      html += `<td class="calc-value">${calcRatioAnnual(it, data.budget)}</td>`;
-      for (let m = 0; m < 12; m++) { const mv = getMonthVals(data.budget, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; }
+      let numSum=0,denSum=0; vm.forEach(m => { const mv=getMonthVals(data.budget,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
+      html += `<td class="calc-value">${fmtPct(numSum,denSum)}</td>`;
+      vm.forEach(m => { const mv = getMonthVals(data.budget, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; });
     }
     html += '</tr>';
   });
@@ -783,28 +821,30 @@ function renderBudgetTable() {
 function renderActualTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
+  const vm = getVisibleMonths();
   const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
-  let html = '<thead><tr><th>科目</th><th>年間合計</th>';
-  months.forEach(m => html += `<th>${m}</th>`);
+  let html = '<thead><tr><th>科目</th><th>期間合計</th>';
+  vm.forEach(m => html += `<th>${months[m]}</th>`);
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
     if (!isItemVisible(it)) return;
     html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
-    if (it.type === 'header') { html += '<td></td>'; for (let m=0;m<12;m++) html+='<td></td>'; }
+    if (it.type === 'header') { html += '<td></td>'; vm.forEach(() => html+='<td></td>'); }
     else if (it.type === 'input') {
-      const annual = data.actual[it.id].reduce((s,v)=>s+v,0);
-      html += `<td class="calc-value">${fmt(annual)}</td>`;
-      if (!isSingleDept()) { for (let m=0;m<12;m++) html += `<td class="calc-value">${fmt(data.actual[it.id][m],true)}</td>`; }
-      else { for (let m=0;m<12;m++) html += `<td><input class="cell-input" type="number" value="${data.actual[it.id][m]||''}" onchange="onActualCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`; }
+      const periodTotal = vm.reduce((s,m) => s + (data.actual[it.id][m]||0), 0);
+      html += `<td class="calc-value">${fmt(periodTotal)}</td>`;
+      if (!isSingleDept()) { vm.forEach(m => html += `<td class="calc-value">${fmt(data.actual[it.id][m],true)}</td>`); }
+      else { vm.forEach(m => html += `<td><input class="cell-input" type="number" value="${data.actual[it.id][m]||''}" onchange="onActualCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`); }
     } else if (it.type === 'calc') {
-      const annual = data.actual[it.id].reduce((s,v)=>s+v,0);
-      html += `<td class="calc-value ${annual<0?'negative':''}">${fmt(annual,true)}</td>`;
-      for (let m=0;m<12;m++) { const v=data.actual[it.id][m]; html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; }
+      const periodTotal = vm.reduce((s,m) => s + (data.actual[it.id][m]||0), 0);
+      html += `<td class="calc-value ${periodTotal<0?'negative':''}">${fmt(periodTotal,true)}</td>`;
+      vm.forEach(m => { const v=data.actual[it.id][m]; html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
     } else if (it.type === 'ratio') {
-      html += `<td class="calc-value">${calcRatioAnnual(it, data.actual)}</td>`;
-      for (let m=0;m<12;m++) { const mv = getMonthVals(data.actual, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; }
+      let numSum=0,denSum=0; vm.forEach(m => { const mv=getMonthVals(data.actual,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
+      html += `<td class="calc-value">${fmtPct(numSum,denSum)}</td>`;
+      vm.forEach(m => { const mv = getMonthVals(data.actual, m); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; });
     }
     html += '</tr>';
   });
@@ -814,38 +854,41 @@ function renderActualTable() {
 function renderCompareTable() {
   const data = getBudgetActual();
   const months = getMonthHeaders();
-  let html = '<thead><tr><th>科目</th><th>区分</th><th>年間合計</th>';
-  months.forEach(m => html += `<th>${m}</th>`);
+  const vm = getVisibleMonths();
+  let html = '<thead><tr><th>科目</th><th>区分</th><th>期間合計</th>';
+  vm.forEach(m => html += `<th>${months[m]}</th>`);
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
     if (!isItemVisible(it)) return;
     if (it.type === 'header') {
       html += `<tr class="${getRowClass(it)}"><td>${it.name}</td><td></td><td></td>`;
-      for (let m=0;m<12;m++) html+='<td></td>';
+      vm.forEach(() => html+='<td></td>');
       html += '</tr>'; return;
     }
     if (it.type === 'ratio') {
-      html += `<tr class="${getRowClass(it)}"><td rowspan="2">${it.name}</td><td>予算</td><td>${calcRatioAnnual(it, data.budget)}</td>`;
-      for (let m=0;m<12;m++) { const mv=getMonthVals(data.budget,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; }
+      let bNum=0,bDen=0,aNum=0,aDen=0;
+      vm.forEach(m => { const bm=getMonthVals(data.budget,m); bNum+=it.numerator(bm); bDen+=it.denominator(bm); const am=getMonthVals(data.actual,m); aNum+=it.numerator(am); aDen+=it.denominator(am); });
+      html += `<tr class="${getRowClass(it)}"><td rowspan="2">${it.name}</td><td>予算</td><td>${fmtPct(bNum,bDen)}</td>`;
+      vm.forEach(m => { const mv=getMonthVals(data.budget,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
-      html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${calcRatioAnnual(it, data.actual)}</td>`;
-      for (let m=0;m<12;m++) { const mv=getMonthVals(data.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; }
+      html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmtPct(aNum,aDen)}</td>`;
+      vm.forEach(m => { const mv=getMonthVals(data.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
       return;
     }
     const isCalc = it.type === 'calc';
-    const bA = data.budget[it.id].reduce((s,v)=>s+v,0);
+    const bA = vm.reduce((s,m) => s + (data.budget[it.id][m]||0), 0);
     html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>予算</td><td>${fmt(bA,isCalc)}</td>`;
-    for (let m=0;m<12;m++) html+=`<td>${fmt(data.budget[it.id][m],isCalc)}</td>`;
+    vm.forEach(m => html+=`<td>${fmt(data.budget[it.id][m],isCalc)}</td>`);
     html += '</tr>';
-    const aA = data.actual[it.id].reduce((s,v)=>s+v,0);
+    const aA = vm.reduce((s,m) => s + (data.actual[it.id][m]||0), 0);
     html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmt(aA,isCalc)}</td>`;
-    for (let m=0;m<12;m++) html+=`<td>${fmt(data.actual[it.id][m],isCalc)}</td>`;
+    vm.forEach(m => html+=`<td>${fmt(data.actual[it.id][m],isCalc)}</td>`);
     html += '</tr>';
     const dA = aA - bA;
     html += `<tr style="background:#ffeaea"><td>差異</td><td class="${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
-    for (let m=0;m<12;m++) { const d=data.actual[it.id][m]-data.budget[it.id][m]; html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`; }
+    vm.forEach(m => { const d=data.actual[it.id][m]-data.budget[it.id][m]; html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`; });
     html += '</tr>';
   });
   document.getElementById('compareTable').innerHTML = html + '</tbody>';

@@ -170,7 +170,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 
 <div class="toolbar">
   <label>期首月:</label>
-  <select id="startMonth" onchange="updateHeaders()">
+  <select id="startMonth" onchange="onStartMonthChange()" disabled>
     <option value="1">1月</option><option value="2" selected>2月</option><option value="3">3月</option>
     <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
     <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
@@ -1039,6 +1039,21 @@ function updateModeUI() {
   document.getElementById('btnRecalc').style.display = showEdit ? '' : 'none';
   document.getElementById('btnClear').style.display = showEdit ? '' : 'none';
   document.getElementById('btnUndo').parentElement.style.display = showEdit ? '' : 'none';
+  // 期首月は編集モード時のみ変更可
+  document.getElementById('startMonth').disabled = !editMode;
+}
+
+let prevStartMonth = '2';
+function onStartMonthChange() {
+  const newVal = document.getElementById('startMonth').value;
+  if (!confirm('期首月を変更すると、列の月表示が変わります。データの位置は変わりません。変更しますか？')) {
+    document.getElementById('startMonth').value = prevStartMonth;
+    return;
+  }
+  prevStartMonth = newVal;
+  // 全部門の期首月を保存
+  scheduleSave();
+  renderCurrentTab();
 }
 
 // ===== イベントハンドラ =====

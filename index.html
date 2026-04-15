@@ -492,10 +492,28 @@ async function loadAllFromFirestore() {
     const fy = getFiscalYear();
     const prefix = `FY${fy}_`;
     const snap = await db.collection('budgetData').get();
+    const deptIds = DEPTS.map(d => d.id);
+    let migratedCount = 0;
+
     snap.forEach(doc => {
-      if (!doc.id.startsWith(prefix)) return;
-      const deptId = doc.id.substring(prefix.length);
-      const data = doc.data();
+      let deptId = null;
+      let data = doc.data();
+
+      if (doc.id.startsWith(prefix)) {
+        // 新形式: FY2026_kashiwa
+        deptId = doc.id.substring(prefix.length);
+      } else if (deptIds.includes(doc.id)) {
+        // 旧形式: kashiwa（FYなし）→ 自動移行
+        deptId = doc.id;
+        migratedCount++;
+        // 新形式で保存（移行）
+        if (userRole === 'admin' || userRole === 'editor') {
+          db.collection('budgetData').doc(prefix + doc.id).set(data);
+        }
+      } else {
+        return; // 関係ないドキュメント
+      }
+
       if (!allData[deptId]) return;
       ITEMS.forEach(it => {
         if (data.budget && data.budget[it.id]) allData[deptId].budget[it.id] = data.budget[it.id];
@@ -505,6 +523,8 @@ async function loadAllFromFirestore() {
       });
       if (data.startMonth) document.getElementById('startMonth').value = data.startMonth;
     });
+
+    if (migratedCount > 0) console.log(`${migratedCount}件の旧データを${fy}年度に移行しました`);
   } catch(e) { console.error('Load error:', e); }
 }
 

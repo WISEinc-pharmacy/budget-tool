@@ -55,6 +55,8 @@ tr.profit-row td { font-weight: 700; }
 tr.ratio-row { background: #e8daef; }
 tr.ratio-row td { font-weight: 600; color: #6c3483; }
 tr.level-1 { background: #eaf2f8; }
+tr.level-1.subtotal-row { background: #d5e8d4; }
+tr.level-1.profit-row { background: #fff2cc; }
 tr.level-1 td:first-child { padding-left: 16px; }
 tr.level-2 { background: #fff; }
 tr.level-2 td:first-child { padding-left: 32px; }
@@ -303,7 +305,7 @@ const ITEMS = [
   { id: 'yakuzai', name: '薬剤料', type: 'input', level: 1 },
   { id: 'chiryo', name: '治療器材料', type: 'input', level: 1 },
   { id: 'uriage_other', name: 'その他売上', type: 'input', level: 1 },
-  { id: 'uriage_sub', name: '小計', type: 'calc', level: 1, style: 'calc',
+  { id: 'uriage_sub', name: '小計', type: 'calc', level: 1, style: 'subtotal',
     calc: (m) => sum(m, ['gijutsu','yakuzai','chiryo','uriage_other']) },
   { id: 'blank_uriage', name: '', type: 'input', level: 0 },
   { id: 'uriage_total', name: '売上合計', type: 'calc', level: 0, style: 'subtotal',

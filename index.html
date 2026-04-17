@@ -502,6 +502,7 @@ async function saveToFirestore() {
 async function saveDeptToFirestore(deptId) {
   const d = allData[deptId];
   if (!d) return;
+  const did = docId(deptId);
   const data = { budget: {}, actual: {}, annualInputs: {}, distMethod: {},
     startMonth: document.getElementById('startMonth').value,
     fiscalYear: document.getElementById('fiscalYear').value,
@@ -514,7 +515,16 @@ async function saveDeptToFirestore(deptId) {
     data.annualInputs[it.id] = d.annualInputs[it.id];
     data.distMethod[it.id] = d.distMethod[it.id];
   });
-  await db.collection('budgetData').doc(docId(deptId)).set(data);
+  console.log(`[SAVE] docId=${did}, actual.gijutsu=`, data.actual.gijutsu);
+  await db.collection('budgetData').doc(did).set(data);
+  // 検証: 書き込み直後に読み戻し
+  const verify = await db.collection('budgetData').doc(did).get();
+  if (verify.exists) {
+    const vd = verify.data();
+    console.log(`[VERIFY] docId=${did}, actual.gijutsu=`, vd.actual?.gijutsu, 'budget.gijutsu=', vd.budget?.gijutsu);
+  } else {
+    console.error(`[VERIFY] docId=${did} が存在しません！`);
+  }
 }
 
 let versionTimer = null;

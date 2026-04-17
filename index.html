@@ -372,7 +372,7 @@ const ITEMS = [
   { id: 'lease_car', name: '・車両', type: 'input', level: 2 },
   { id: 'sga_other', name: 'その他(販管費)', type: 'input', level: 1 },
   { id: 'genka_shokyaku', name: '減価償却費', type: 'input', level: 1 },
-  { id: 'yakuin_hoshu', name: '役員報酬', type: 'input', level: 1 },
+  { id: 'yakuin_hoshu', name: '役員報酬', type: 'input', level: 1, adminOnly: true },
   { id: 'sozei', name: '租税公課', type: 'input', level: 1 },
   { id: 'hoken', name: '保険料', type: 'input', level: 1 },
   { id: 'tesuryo', name: '支払手数料/支払報酬', type: 'input', level: 1 },
@@ -1638,19 +1638,36 @@ async function parseFreeeFiles() {
     return;
   }
 
-  // プレビュー表示
-  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;margin:8px 0">';
-  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc">部門</th><th style="padding:4px;border:1px solid #ccc">売上高</th><th style="padding:4px;border:1px solid #ccc">売上原価</th><th style="padding:4px;border:1px solid #ccc">販管費</th><th style="padding:4px;border:1px solid #ccc">マッチ項目</th></tr>';
-  for (const d of freeeParsedData) {
+  // CSVから年度を自動検出
+  const detectedFY = freeeParsedData[0]?.fiscalYear || getFiscalYear();
+  const currentFY = getFiscalYear();
+  if (detectedFY !== currentFY) {
+    document.getElementById('fiscalYear').value = detectedFY;
+  }
+
+  // プレビュー表示（部門選択ドロップダウン付き）
+  const deptOptions = DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('') + '<option value="">-- スキップ --</option>';
+  let html = '';
+  if (detectedFY !== currentFY) {
+    html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 CSVの年度: <strong>${detectedFY}年度</strong>（自動切替済み）</div>`;
+  }
+  html += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin:8px 0">';
+  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc">売上高</th><th style="padding:4px;border:1px solid #ccc">売上原価</th><th style="padding:4px;border:1px solid #ccc">販管費</th><th style="padding:4px;border:1px solid #ccc">マッチ項目</th></tr>';
+  for (let i = 0; i < freeeParsedData.length; i++) {
+    const d = freeeParsedData[i];
     const feb = d.monthValues;
     const sales = (feb['gijutsu']||[]).reduce((s,v)=>s+v,0) + (feb['yakuzai']||[]).reduce((s,v)=>s+v,0) + (feb['chiryo']||[]).reduce((s,v)=>s+v,0) + (feb['uriage_other']||[]).reduce((s,v)=>s+v,0);
     const genka = (feb['genka_total']||[]).reduce((s,v)=>s+v,0);
     const matched = Object.keys(feb).length;
     const sgaTotal = Object.entries(feb).filter(([k])=>!['gijutsu','yakuzai','chiryo','uriage_other','genka_total'].includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
-    html += `<tr><td style="padding:4px;border:1px solid #ccc;font-weight:bold">${d.deptName}${d.deptId?'':'<span style=color:red> (未対応)</span>'}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sgaTotal.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:center">${matched}項目</td></tr>`;
+    const selId = `freee_dept_${i}`;
+    html += `<tr><td style="padding:4px;border:1px solid #ccc"><select id="${selId}" style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
+    html += deptOptions.replace(`value="${d.deptId}"`, `value="${d.deptId}" selected`);
+    html += `</select><div style="color:#999;font-size:10px">推定: ${d.deptName}</div></td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;text-align:right">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sgaTotal.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:center">${matched}項目</td></tr>`;
   }
   html += '</table>';
-  html += `<p style="color:#666;font-size:11px">${freeeParsedData.length}部門検出。取込実行で実績データに反映されます。</p>`;
+  html += `<p style="color:#666;font-size:11px">${freeeParsedData.length}件検出。部門が正しいか確認してから取込実行してください。</p>`;
   preview.innerHTML = html;
   document.getElementById('btnFreeeExec').disabled = false;
 }
@@ -1676,6 +1693,10 @@ function readFileAsText(file) {
 function parseFreeeCSV(text) {
   const lines = text.split(/\r?\n/);
   if (!lines[0] || !lines[0].includes('月次推移')) return null;
+
+  // CSVタイトルから年度を自動検出（「期間：2025年02月～」→ 2025）
+  const fyMatch = lines[0].match(/期間[：:](\d{4})年/);
+  const detectedFY = fyMatch ? fyMatch[1] : null;
 
   // ヘッダー行から月のインデックスを取得（2026-02 → index 0, 2026-03 → index 1, ...）
   const headerCols = parseCSVLine(lines[1]);
@@ -1815,7 +1836,7 @@ function parseFreeeCSV(text) {
     deptName = '管理部・本部'; deptId = 'kanribu';
   }
 
-  return { deptId, deptName, monthValues };
+  return { deptId, deptName, monthValues, fiscalYear: detectedFY };
 }
 
 async function doFreeeImport() {

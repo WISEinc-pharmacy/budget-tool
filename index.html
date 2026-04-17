@@ -1839,19 +1839,17 @@ async function doFreeeImport() {
   const savePromises = targetDepts.map(async (d) => {
     try {
       const dd = allData[d.deptId];
-      const data = { budget: {}, actual: {}, annualInputs: {}, distMethod: {},
-        startMonth: document.getElementById('startMonth').value,
-        fiscalYear: document.getElementById('fiscalYear').value,
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        updatedBy: currentUser.email };
+      // 実績データのみ更新（既存の予算データを壊さないようにmerge）
+      const actualData = {};
       ITEMS.forEach(it => {
         if (it.type === 'header') return;
-        data.budget[it.id] = dd.budget[it.id];
-        data.actual[it.id] = dd.actual[it.id];
-        data.annualInputs[it.id] = dd.annualInputs[it.id];
-        data.distMethod[it.id] = dd.distMethod[it.id];
+        actualData[`actual.${it.id}`] = dd.actual[it.id];
       });
-      await db.collection('budgetData').doc(docId(d.deptId)).set(data);
+      actualData['updatedAt'] = firebase.firestore.FieldValue.serverTimestamp();
+      actualData['updatedBy'] = currentUser.email;
+      actualData['fiscalYear'] = document.getElementById('fiscalYear').value;
+      actualData['startMonth'] = document.getElementById('startMonth').value;
+      await db.collection('budgetData').doc(docId(d.deptId)).set(actualData, { merge: true });
       importedDepts.push(d.deptName);
     } catch (e) {
       saveErrors.push(`${d.deptName}: ${e.message}`);

@@ -1680,160 +1680,119 @@ function parseFreeeCSV(text) {
   const monthValues = {}; // { itemId: [12 values] }
   let deptName = '不明';
   let deptId = '';
-  let currentSection = ''; // 現在のセクション（売上高/販管費等）
-  let inSGA = false; // 販管費セクション内か
-  let sgaOtherAccum = new Array(12).fill(0); // その他販管費の蓄積
 
-  // 車両費/地代家賃/リース料の合計と内訳
-  let vehicleTotal = new Array(12).fill(0);
-  let vehicleCarShare = new Array(12).fill(0);
-  let vehicleGas = new Array(12).fill(0);
-  let vehicleParking = new Array(12).fill(0);
-  let chidaiTotal = new Array(12).fill(0);
-  let leaseTotal = new Array(12).fill(0);
-  let inVehicle = false, inChidai = false, inLease = false;
-  let honbuTotal = new Array(12).fill(0);
-  let inHonbu = false;
-  let genkaTotal = new Array(12).fill(0);
-  let deprecTotal = new Array(12).fill(0);
-  let inDeprec = false, inDeprecEigyoken = false;
-  let tesuryoTotal = new Array(12).fill(0);
-  let shiharaiHoumTotal = new Array(12).fill(0);
-  let kenshuTotal = new Array(12).fill(0);
-  let saiyoTotal = new Array(12).fill(0);
-  let inSaiyo = false;
-  let uriageTotal = new Array(12).fill(0);
-  let gijutsuVals = new Array(12).fill(0);
-  let yakuzaiVals = new Array(12).fill(0);
-  let chiryoVals = new Array(12).fill(0);
+  // 蓄積用変数
+  const z = () => new Array(12).fill(0);
+  let sgaOtherAccum = z();
+  let vehicleTotal = z(), vehicleCarShare = z(), vehicleGas = z(), vehicleParking = z();
+  let chidaiTotal = z(), leaseTotal = z(), honbuTotal = z();
+  let genkaTotal = z(), deprecTotal = z();
+  let tesuryoTotal = z(), shiharaiHoumTotal = z();
+  let kenshuTotal = z(), saiyoTotal = z();
+  let uriageTotal = z(), gijutsuVals = z(), yakuzaiVals = z(), chiryoVals = z();
+
+  // 現在の親科目（L2の内訳を振り分けるため）
+  let currentParentL2 = '';
+  let inSGA = false;
 
   for (const line of lines) {
     const cols = parseCSVLine(line);
     const getMonthVals = () => {
-      const vals = new Array(12).fill(0);
+      const vals = z();
       for (const { col, monthIdx } of monthIndices) {
         vals[monthIdx] = parseInt(cols[col]) || 0;
       }
       return vals;
     };
 
-    // 第1レベル科目（cols[0]に値、または cols[0]空+cols[1]に値）
     const L0 = (cols[0] || '').trim();
     const L1 = (cols[1] || '').trim();
     const L2 = (cols[2] || '').trim();
+    const L3 = (cols[3] || '').trim();
+    const hasVal = cols[7] !== undefined && cols[7] !== '';
 
-    // セクション判定
-    if (L0 === '売上高' && !L1) { currentSection = 'sales'; continue; }
-    if (L0 === '売上高 計') { currentSection = ''; continue; }
-    if (L0 === '売上総損益金額') { currentSection = ''; continue; }
-    if (L0.includes('販売管理費') && !L0.includes('計')) { currentSection = 'sga'; inSGA = true; continue; }
-    if (L0 === '販売管理費 計') { inSGA = false; currentSection = ''; continue; }
-
-    // 売上セクション
-    if (currentSection === 'sales' && L1 === '売上高' && cols[7]) {
-      uriageTotal = getMonthVals();
+    // === 売上高セクション ===
+    // L0='売上高' → セクション開始（値なし）
+    // L1='売上高' → 売上合計の値
+    if (!L0 && L1 === '売上高' && hasVal) uriageTotal = getMonthVals();
+    // L2=技術料/薬剤料/治療器材料 → 売上内訳
+    if (!L0 && !L1 && L2 && hasVal) {
+      if (L2 === '技術料') gijutsuVals = getMonthVals();
+      else if (L2 === '薬剤料') yakuzaiVals = getMonthVals();
+      else if (L2 === '治療器材料') chiryoVals = getMonthVals();
     }
-    if (currentSection === 'sales' && !L0 && !L1 && L2 && cols[7]) {
+
+    // === 売上原価 ===
+    if (!L0 && !L1 && L2 === '商品売上原価' && hasVal) genkaTotal = getMonthVals();
+
+    // === 販管費セクション ===
+    // L1='販売管理費'(値なし) → セクション開始
+    if (!L0 && L1 === '販売管理費' && !hasVal) { inSGA = true; continue; }
+    // L1='販売管理費 計' → セクション終了
+    if (!L0 && L1 === '販売管理費 計') { inSGA = false; continue; }
+
+    // 販管費内の勘定科目（L2レベル）
+    if (inSGA && !L0 && !L1 && L2 && hasVal) {
       const vals = getMonthVals();
-      if (L2 === '技術料') gijutsuVals = vals;
-      else if (L2 === '薬剤料') yakuzaiVals = vals;
-      else if (L2 === '治療器材料') chiryoVals = vals;
+      const mapped = FREEE_ACCOUNT_MAP[L2];
+      currentParentL2 = L2;
+
+      if (L2 === '車両費') vehicleTotal = vals;
+      else if (L2 === '地代家賃') chidaiTotal = vals;
+      else if (L2 === 'リース料') leaseTotal = vals;
+      else if (L2 === '本部経費') honbuTotal = vals;
+      else if (L2 === '減価償却費') deprecTotal = vals;
+      else if (L2 === '減価償却費（営業権）') { for (let i=0;i<12;i++) deprecTotal[i] += vals[i]; }
+      else if (L2 === '支払手数料') tesuryoTotal = vals;
+      else if (L2 === '支払報酬料') shiharaiHoumTotal = vals;
+      else if (L2 === '研修費') kenshuTotal = vals;
+      else if (L2 === '採用教育費') { /* 合計は拾わない、内訳で振り分け */ }
+      else if (mapped === 'sga_other') { for (let i=0;i<12;i++) sgaOtherAccum[i] += vals[i]; }
+      else if (mapped) monthValues[mapped] = vals;
     }
 
-    // 売上原価
-    if (L0 === '' && L1 === '' && L2 === '商品売上原価' && cols[7]) {
-      genkaTotal = getMonthVals();
-    }
-
-    // 販管費セクション
-    if (inSGA && !L0 && L1 && cols[7]) {
+    // 販管費内の内訳（L3レベル = 車両費/地代家賃等の補助科目）
+    if (inSGA && !L0 && !L1 && !L2 && L3 && hasVal) {
       const vals = getMonthVals();
-      const mapped = FREEE_ACCOUNT_MAP[L1];
-
-      // 特殊セクション開始/終了
-      inVehicle = L1 === '車両費'; inChidai = L1 === '地代家賃';
-      inLease = L1 === 'リース料'; inHonbu = L1 === '本部経費';
-      inDeprec = L1 === '減価償却費'; inDeprecEigyoken = L1 === '減価償却費（営業権）';
-      inSaiyo = L1 === '採用教育費';
-
-      if (L1 === '車両費') vehicleTotal = vals;
-      else if (L1 === '地代家賃') chidaiTotal = vals;
-      else if (L1 === 'リース料') leaseTotal = vals;
-      else if (L1 === '本部経費') honbuTotal = vals;
-      else if (L1 === '減価償却費') deprecTotal = vals;
-      else if (L1 === '減価償却費（営業権）') {
-        for (let i = 0; i < 12; i++) deprecTotal[i] += vals[i];
-      }
-      else if (L1 === '支払手数料') tesuryoTotal = vals;
-      else if (L1 === '支払報酬料') shiharaiHoumTotal = vals;
-      else if (L1 === '研修費') kenshuTotal = vals;
-      else if (mapped === 'sga_other') {
-        for (let i = 0; i < 12; i++) sgaOtherAccum[i] += vals[i];
-      }
-      else if (mapped && mapped !== 'sga_other') {
-        monthValues[mapped] = vals;
+      if (currentParentL2 === '車両費') {
+        if (L3 === 'タイムズカーシェア') vehicleCarShare = vals;
+        else if (L3 === 'ガソリン代' || L3 === 'ガソリン') { for (let i=0;i<12;i++) vehicleGas[i] += vals[i]; }
+        else if (L3 === '駐車場代') vehicleParking = vals;
       }
     }
-
-    // 第2階層（車両費の内訳等）
-    if (inSGA && !L0 && !L1 && L2 && cols[7]) {
-      const vals = getMonthVals();
-      if (inVehicle) {
-        if (L2 === 'タイムズカーシェア') vehicleCarShare = vals;
-        else if (L2 === 'ガソリン代' || L2 === 'ガソリン') { for (let i=0;i<12;i++) vehicleGas[i] += vals[i]; }
-        else if (L2 === '駐車場代') vehicleParking = vals;
-      }
-      if (inSaiyo) {
-        // 採用教育費の内訳 → kenshu or saiyo に振り分け
-        // 研修費系以外はsaiyoに
-      }
-    }
-  }
-
-  // 部門特定（売上高の値で照合）
-  const salesStr = String(uriageTotal.find(v => v > 0) || 0);
-  // 全社CSVから部門売上をチェックして照合...は複雑なので
-  // 勘定科目の有無で判定（技術料があれば薬局店舗、なければ本部系）
-  if (gijutsuVals.some(v => v > 0)) {
-    // 薬局店舗 — 売上高の値で部門を特定
-    const totalSales = uriageTotal.reduce((s,v) => s+v, 0);
-    // 部門名推定用のヒントがないので、totalSalesで最も近い部門を選択
-    // → ファイル名からは取れないので、ユーザーに選ばせるか自動照合
   }
 
   // 結果をまとめる
   monthValues['gijutsu'] = gijutsuVals;
   monthValues['yakuzai'] = yakuzaiVals;
   monthValues['chiryo'] = chiryoVals;
-  // その他売上 = 売上合計 - 技術料 - 薬剤料 - 治療器材料
   monthValues['uriage_other'] = uriageTotal.map((v,i) => v - gijutsuVals[i] - yakuzaiVals[i] - chiryoVals[i]);
   monthValues['genka_total'] = genkaTotal;
   monthValues['car_share'] = vehicleCarShare;
   monthValues['gasoline'] = vehicleGas;
   monthValues['parking'] = vehicleParking;
   monthValues['car_other'] = vehicleTotal.map((v,i) => v - vehicleCarShare[i] - vehicleGas[i] - vehicleParking[i]);
-  monthValues['tenpo'] = chidaiTotal; // 地代家賃 → 一旦全額を店舗に
-  monthValues['shatak'] = new Array(12).fill(0);
-  monthValues['lease_office'] = leaseTotal; // リース → 一旦全額を事務機器に
-  monthValues['lease_car'] = new Array(12).fill(0);
+  monthValues['tenpo'] = chidaiTotal;
+  monthValues['shatak'] = z();
+  monthValues['lease_office'] = leaseTotal;
+  monthValues['lease_car'] = z();
   monthValues['genka_shokyaku'] = deprecTotal;
   monthValues['tesuryo'] = tesuryoTotal.map((v,i) => v + shiharaiHoumTotal[i]);
   monthValues['kenshu'] = kenshuTotal;
   monthValues['saiyo'] = saiyoTotal;
   monthValues['sga_other'] = sgaOtherAccum;
-  monthValues['honbu_somu'] = honbuTotal; // 本部経費 → 一旦全額を総務経費に
+  monthValues['honbu_somu'] = honbuTotal;
 
-  // 部門名を売上高で推定（全社CSV照合表）
+  // 部門名を2月の売上高で推定
   const SALES_DEPT_HINT = {
     28525810: '足立', 22134166: '柏', 4721780: 'ながれやま',
     3697920: 'アイ調剤薬局', 2629473: 'さくら台', 2232870: '我孫子',
     6830654: '役員', 73292: '学術研修', 0: '総務',
   };
-  const febSales = uriageTotal[0]; // 2月（index 0）
+  const febSales = uriageTotal[0];
   deptName = SALES_DEPT_HINT[febSales] || '不明(' + febSales + ')';
   deptId = FREEE_DEPT_MAP[deptName] || '';
 
-  // 総務は管理部扱い
   if (deptName === '総務' || (febSales === 0 && !gijutsuVals.some(v=>v>0) && !uriageTotal.some(v=>v>0))) {
     deptName = '管理部・本部'; deptId = 'kanribu';
   }

@@ -1809,9 +1809,10 @@ function parseFreeeCSV(text) {
   return { deptId, deptName, monthValues };
 }
 
-function doFreeeImport() {
+async function doFreeeImport() {
   if (freeeParsedData.length === 0) return;
   let importedDepts = [];
+  let saveErrors = [];
   for (const d of freeeParsedData) {
     if (!d.deptId) continue;
     initDeptData(d.deptId);
@@ -1822,11 +1823,31 @@ function doFreeeImport() {
         if (vals[m] !== 0) store[itemId][m] = vals[m];
       }
     }
-    importedDepts.push(d.deptName);
+    // 各部門を直接Firestoreに保存（editModeやscheduleSaveに依存しない）
+    try {
+      const dd = allData[d.deptId];
+      const data = { budget: {}, actual: {}, annualInputs: {}, distMethod: {},
+        startMonth: document.getElementById('startMonth').value,
+        fiscalYear: document.getElementById('fiscalYear').value,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedBy: currentUser.email };
+      ITEMS.forEach(it => {
+        if (it.type === 'header') return;
+        data.budget[it.id] = dd.budget[it.id];
+        data.actual[it.id] = dd.actual[it.id];
+        data.annualInputs[it.id] = dd.annualInputs[it.id];
+        data.distMethod[it.id] = dd.distMethod[it.id];
+      });
+      await db.collection('budgetData').doc(docId(d.deptId)).set(data);
+      importedDepts.push(d.deptName);
+    } catch (e) {
+      saveErrors.push(`${d.deptName}: ${e.message}`);
+    }
   }
-  scheduleSave(); renderCurrentTab();
-  document.getElementById('freeeResult').innerHTML =
-    `<div class="import-result success">${importedDepts.length}部門の実績データを取込みました: ${importedDepts.join('、')}</div>`;
+  renderCurrentTab();
+  let msg = `<div class="import-result success">${importedDepts.length}部門の実績データを取込・保存しました: ${importedDepts.join('、')}</div>`;
+  if (saveErrors.length) msg += `<div class="import-result error">${saveErrors.join('<br>')}</div>`;
+  document.getElementById('freeeResult').innerHTML = msg;
 }
 
 // ===== タブ =====

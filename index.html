@@ -1837,12 +1837,15 @@ async function doFreeeImport() {
     if (!d.deptId) continue;
     initDeptData(d.deptId);
     const store = allData[d.deptId].actual;
+    let writeCount = 0;
     for (const [itemId, vals] of Object.entries(d.monthValues)) {
-      if (!store[itemId]) continue;
+      if (!store[itemId]) { console.log(`[FREEE] スキップ(store無し): ${d.deptId}.${itemId}`); continue; }
       for (let m = 0; m < 12; m++) {
-        if (vals[m] !== 0) store[itemId][m] = vals[m];
+        if (vals[m] !== 0) { store[itemId][m] = vals[m]; writeCount++; }
       }
     }
+    console.log(`[FREEE] ${d.deptId}: ${writeCount}セル書込, gijutsu=`, store.gijutsu, 'yakuzai=', store.yakuzai);
+    console.log(`[FREEE] ${d.deptId}: allData確認=`, allData[d.deptId].actual.gijutsu);
     targetDepts.push(d);
   }
   renderCurrentTab();

@@ -493,24 +493,28 @@ async function saveToFirestore() {
   if (userRole === 'viewer') return;
   showSaveStatus('saving', '保存中...');
   try {
-    const d = D();
-    const data = { budget: {}, actual: {}, annualInputs: {}, distMethod: {},
-      startMonth: document.getElementById('startMonth').value,
-      fiscalYear: document.getElementById('fiscalYear').value,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      updatedBy: currentUser.email };
-    ITEMS.forEach(it => {
-      if (it.type === 'header') return;
-      data.budget[it.id] = d.budget[it.id];
-      data.actual[it.id] = d.actual[it.id];
-      data.annualInputs[it.id] = d.annualInputs[it.id];
-      data.distMethod[it.id] = d.distMethod[it.id];
-    });
-    await db.collection('budgetData').doc(docId(currentDeptId())).set(data);
-    // バージョン保存（5分間隔）
+    await saveDeptToFirestore(currentDeptId());
     scheduleVersionSave();
     showSaveStatus('saved', '保存しました');
   } catch(e) { showSaveStatus('error', '保存エラー: ' + e.message); }
+}
+
+async function saveDeptToFirestore(deptId) {
+  const d = allData[deptId];
+  if (!d) return;
+  const data = { budget: {}, actual: {}, annualInputs: {}, distMethod: {},
+    startMonth: document.getElementById('startMonth').value,
+    fiscalYear: document.getElementById('fiscalYear').value,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: currentUser.email };
+  ITEMS.forEach(it => {
+    if (it.type === 'header') return;
+    data.budget[it.id] = d.budget[it.id];
+    data.actual[it.id] = d.actual[it.id];
+    data.annualInputs[it.id] = d.annualInputs[it.id];
+    data.distMethod[it.id] = d.distMethod[it.id];
+  });
+  await db.collection('budgetData').doc(docId(deptId)).set(data);
 }
 
 let versionTimer = null;
@@ -1838,20 +1842,7 @@ async function doFreeeImport() {
   let saveErrors = [];
   const savePromises = targetDepts.map(async (d) => {
     try {
-      const dd = allData[d.deptId];
-      // 実績データをネストしたオブジェクトでmerge保存（既存データを壊さない）
-      const actual = {};
-      ITEMS.forEach(it => {
-        if (it.type === 'header') return;
-        actual[it.id] = dd.actual[it.id];
-      });
-      await db.collection('budgetData').doc(docId(d.deptId)).set({
-        actual,
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        updatedBy: currentUser.email,
-        fiscalYear: document.getElementById('fiscalYear').value,
-        startMonth: document.getElementById('startMonth').value,
-      }, { merge: true });
+      await saveDeptToFirestore(d.deptId);
       importedDepts.push(d.deptName);
     } catch (e) {
       saveErrors.push(`${d.deptName}: ${e.message}`);

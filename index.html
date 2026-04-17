@@ -1393,6 +1393,7 @@ function updateModeUI() {
   // 編集系ボタンの表示制御
   const showEdit = editMode && (userRole === 'admin' || userRole === 'editor');
   document.getElementById('btnImport').style.display = showEdit ? '' : 'none';
+  document.getElementById('btnFreee').style.display = showEdit ? '' : 'none';
   document.getElementById('btnRecalc').style.display = showEdit ? '' : 'none';
   document.getElementById('btnClear').style.display = showEdit ? '' : 'none';
   document.getElementById('btnUndo').parentElement.style.display = showEdit ? '' : 'none';

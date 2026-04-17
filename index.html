@@ -1839,17 +1839,19 @@ async function doFreeeImport() {
   const savePromises = targetDepts.map(async (d) => {
     try {
       const dd = allData[d.deptId];
-      // 実績データのみ更新（既存の予算データを壊さないようにmerge）
-      const actualData = {};
+      // 実績データをネストしたオブジェクトでmerge保存（既存データを壊さない）
+      const actual = {};
       ITEMS.forEach(it => {
         if (it.type === 'header') return;
-        actualData[`actual.${it.id}`] = dd.actual[it.id];
+        actual[it.id] = dd.actual[it.id];
       });
-      actualData['updatedAt'] = firebase.firestore.FieldValue.serverTimestamp();
-      actualData['updatedBy'] = currentUser.email;
-      actualData['fiscalYear'] = document.getElementById('fiscalYear').value;
-      actualData['startMonth'] = document.getElementById('startMonth').value;
-      await db.collection('budgetData').doc(docId(d.deptId)).set(actualData, { merge: true });
+      await db.collection('budgetData').doc(docId(d.deptId)).set({
+        actual,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedBy: currentUser.email,
+        fiscalYear: document.getElementById('fiscalYear').value,
+        startMonth: document.getElementById('startMonth').value,
+      }, { merge: true });
       importedDepts.push(d.deptName);
     } catch (e) {
       saveErrors.push(`${d.deptName}: ${e.message}`);

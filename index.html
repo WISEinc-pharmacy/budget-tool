@@ -1811,8 +1811,14 @@ function parseFreeeCSV(text) {
 
 async function doFreeeImport() {
   if (freeeParsedData.length === 0) return;
-  let importedDepts = [];
-  let saveErrors = [];
+  const resultDiv = document.getElementById('freeeResult');
+  const btn = document.getElementById('btnFreeeExec');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  resultDiv.innerHTML = '<div class="import-result" style="color:#3498db">取込中... Firestoreに保存しています</div>';
+
+  // まずメモリに全部門を書き込み（即座に完了）
+  const targetDepts = [];
   for (const d of freeeParsedData) {
     if (!d.deptId) continue;
     initDeptData(d.deptId);
@@ -1823,7 +1829,14 @@ async function doFreeeImport() {
         if (vals[m] !== 0) store[itemId][m] = vals[m];
       }
     }
-    // 各部門を直接Firestoreに保存（editModeやscheduleSaveに依存しない）
+    targetDepts.push(d);
+  }
+  renderCurrentTab();
+
+  // Firestoreに並列保存
+  let importedDepts = [];
+  let saveErrors = [];
+  const savePromises = targetDepts.map(async (d) => {
     try {
       const dd = allData[d.deptId];
       const data = { budget: {}, actual: {}, annualInputs: {}, distMethod: {},
@@ -1843,11 +1856,14 @@ async function doFreeeImport() {
     } catch (e) {
       saveErrors.push(`${d.deptName}: ${e.message}`);
     }
-  }
-  renderCurrentTab();
+  });
+  await Promise.all(savePromises);
+
+  btn.textContent = '取込実行';
+  btn.disabled = false;
   let msg = `<div class="import-result success">${importedDepts.length}部門の実績データを取込・保存しました: ${importedDepts.join('、')}</div>`;
   if (saveErrors.length) msg += `<div class="import-result error">${saveErrors.join('<br>')}</div>`;
-  document.getElementById('freeeResult').innerHTML = msg;
+  resultDiv.innerHTML = msg;
 }
 
 // ===== タブ =====

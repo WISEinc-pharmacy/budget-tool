@@ -515,16 +515,7 @@ async function saveDeptToFirestore(deptId) {
     data.annualInputs[it.id] = d.annualInputs[it.id];
     data.distMethod[it.id] = d.distMethod[it.id];
   });
-  console.log(`[SAVE] docId=${did}, actual.gijutsu=`, data.actual.gijutsu);
   await db.collection('budgetData').doc(did).set(data);
-  // 検証: 書き込み直後に読み戻し
-  const verify = await db.collection('budgetData').doc(did).get();
-  if (verify.exists) {
-    const vd = verify.data();
-    console.log(`[VERIFY] docId=${did}, actual.gijutsu=`, vd.actual?.gijutsu, 'budget.gijutsu=', vd.budget?.gijutsu);
-  } else {
-    console.error(`[VERIFY] docId=${did} が存在しません！`);
-  }
 }
 
 let versionTimer = null;
@@ -558,6 +549,7 @@ async function loadAllFromFirestore() {
     const deptIds = DEPTS.map(d => d.id);
     let migratedCount = 0;
 
+    const loadedFromNew = new Set(); // 新形式で読み込み済みの部門
     snap.forEach(doc => {
       let deptId = null;
       let data = doc.data();
@@ -565,9 +557,12 @@ async function loadAllFromFirestore() {
       if (doc.id.startsWith(prefix)) {
         // 新形式: FY2026_kashiwa
         deptId = doc.id.substring(prefix.length);
+        loadedFromNew.add(deptId);
       } else if (deptIds.includes(doc.id)) {
-        // 旧形式: kashiwa（FYなし）→ 自動移行
+        // 旧形式: kashiwa（FYなし）
         deptId = doc.id;
+        // 新形式で既に読み込み済みならスキップ（旧データで上書きしない）
+        if (loadedFromNew.has(deptId)) return;
         migratedCount++;
         // 新形式で保存（移行）
         if (userRole === 'admin' || userRole === 'editor') {
@@ -1837,15 +1832,12 @@ async function doFreeeImport() {
     if (!d.deptId) continue;
     initDeptData(d.deptId);
     const store = allData[d.deptId].actual;
-    let writeCount = 0;
     for (const [itemId, vals] of Object.entries(d.monthValues)) {
-      if (!store[itemId]) { console.log(`[FREEE] スキップ(store無し): ${d.deptId}.${itemId}`); continue; }
+      if (!store[itemId]) continue;
       for (let m = 0; m < 12; m++) {
-        if (vals[m] !== 0) { store[itemId][m] = vals[m]; writeCount++; }
+        if (vals[m] !== 0) store[itemId][m] = vals[m];
       }
     }
-    console.log(`[FREEE] ${d.deptId}: ${writeCount}セル書込, gijutsu=`, store.gijutsu, 'yakuzai=', store.yakuzai);
-    console.log(`[FREEE] ${d.deptId}: allData確認=`, allData[d.deptId].actual.gijutsu);
     targetDepts.push(d);
   }
   renderCurrentTab();

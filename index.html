@@ -61,6 +61,14 @@ tr.level-1 td:first-child { padding-left: 16px; }
 tr.level-2 { background: #fff; }
 tr.level-2 td:first-child { padding-left: 32px; }
 
+/* 期間合計列の強調 */
+th.col-total, td.col-total { background: #2c3e50 !important; color: #fff !important; font-weight: 700; font-size: 13px; border-right: 3px solid #1a5276 !important; }
+td.col-total.negative { color: #e74c3c !important; }
+td.col-total input { background: #34495e; color: #fff; border-color: #5d6d7e; font-weight: 700; }
+tr.header-row td.col-total { background: #1a5276 !important; }
+tr.subtotal-row td.col-total { background: #1e8449 !important; color: #fff !important; }
+tr.profit-row td.col-total { background: #b7950b !important; color: #fff !important; }
+
 input.cell-input { width: 80px; text-align: right; border: 1px solid #ccc; border-radius: 3px; padding: 2px 4px; font-size: 12px; background: #fffff0; }
 input.cell-input:focus { outline: none; border-color: #3498db; background: #fff; }
 input.cell-input.annual { background: #e8f8f5; border-color: #1abc9c; width: 90px; }
@@ -929,7 +937,7 @@ async function renderBudgetTable() {
   const ro = canEdit ? '' : 'readonly';
   const dis = canEdit ? '' : 'disabled';
   const showDist = canEdit;
-  let html = '<thead><tr><th>科目</th>' + (showDist ? '<th>配分</th>' : '') + '<th>期間合計</th>';
+  let html = '<thead><tr><th>科目</th>' + (showDist ? '<th>配分</th>' : '') + '<th class="col-total">期間合計</th>';
   vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
   html += '</tr></thead><tbody>';
 
@@ -947,7 +955,7 @@ async function renderBudgetTable() {
           <option value="growth" ${dm==='growth'?'selected':''}>均等増減</option>
           <option value="flat" ${dm==='flat'?'selected':''}>全月同額</option></select></td>`;
         const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
-        html += `<td class="calc-value">${fmt(periodTotal, true)}</td>`;
+        html += `<td class="calc-value col-total">${fmt(periodTotal, true)}</td>`;
         vm.forEach(m => {
           if (m < 0) { html += `<td class="calc-value">${fmt(extBudget(data,prevData,it.id,m),true)}</td>`; return; }
           const cls = (m===0 && dm!=='flat') ? 'cell-input month1' : 'cell-input';
@@ -955,13 +963,13 @@ async function renderBudgetTable() {
         });
       } else {
         const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
-        html += `<td class="calc-value">${fmt(periodTotal, true)}</td>`;
+        html += `<td class="calc-value col-total">${fmt(periodTotal, true)}</td>`;
         vm.forEach(m => html += `<td class="calc-value">${fmt(extBudget(data,prevData,it.id,m), true)}</td>`);
       }
     } else if (it.type === 'calc') {
       const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
       html += (showDist ? '<td></td>' : '');
-      html += `<td class="calc-value ${periodTotal<0?'negative':''}">${fmt(periodTotal,true)}</td>`;
+      html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
       vm.forEach(m => { const v = extBudget(data,prevData,it.id,m); html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
     } else if (it.type === 'ratio') {
       html += (showDist ? '<td></td>' : '');
@@ -981,7 +989,7 @@ async function renderActualTable() {
   const prevData = needsPrev ? getPrevBudgetActual(await ensurePrevYearData()) : null;
   const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
-  let html = '<thead><tr><th>科目</th><th>期間合計</th>';
+  let html = '<thead><tr><th>科目</th><th class="col-total">期間合計</th>';
   vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
   html += '</tr></thead><tbody>';
 
@@ -991,7 +999,7 @@ async function renderActualTable() {
     if (it.type === 'header') { html += '<td></td>'; vm.forEach(() => html+='<td></td>'); }
     else if (it.type === 'input') {
       const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
-      html += `<td class="calc-value">${fmt(periodTotal)}</td>`;
+      html += `<td class="calc-value col-total">${fmt(periodTotal)}</td>`;
       if (!isSingleDept()) { vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`); }
       else { vm.forEach(m => {
         if (m < 0) { html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`; return; }
@@ -999,7 +1007,7 @@ async function renderActualTable() {
       }); }
     } else if (it.type === 'calc') {
       const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
-      html += `<td class="calc-value ${periodTotal<0?'negative':''}">${fmt(periodTotal,true)}</td>`;
+      html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
       vm.forEach(m => { const v=extActual(data,prevData,it.id,m); html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
     } else if (it.type === 'ratio') {
       let numSum=0,denSum=0; vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
@@ -1016,7 +1024,7 @@ async function renderCompareTable() {
   const vm = getVisibleMonths();
   const needsPrev = vm.some(i => i < 0);
   const prevData = needsPrev ? getPrevBudgetActual(await ensurePrevYearData()) : null;
-  let html = '<thead><tr><th>科目</th><th>区分</th><th>期間合計</th>';
+  let html = '<thead><tr><th>科目</th><th>区分</th><th class="col-total">期間合計</th>';
   vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
   html += '</tr></thead><tbody>';
 
@@ -1138,7 +1146,7 @@ async function renderYoyTable() {
   const yoyAllData = await loadYoyData(cmpFY);
   const cmpData = getYoyBudgetActual(yoyAllData);
 
-  let html = '<thead><tr><th>科目</th><th>区分</th><th>期間合計</th>';
+  let html = '<thead><tr><th>科目</th><th>区分</th><th class="col-total">期間合計</th>';
   vm.forEach(m => html += `<th>${months[m]}</th>`);
   html += '</tr></thead><tbody>';
 

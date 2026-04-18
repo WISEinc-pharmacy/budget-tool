@@ -1823,18 +1823,42 @@ function parseFreeeCSV(text) {
   monthValues['sga_other'] = sgaOtherAccum;
   monthValues['honbu_somu'] = honbuTotal;
 
-  // 部門名を2月の売上高で推定
-  const SALES_DEPT_HINT = {
-    28525810: '足立', 22134166: '柏', 4721780: 'ながれやま',
-    3697920: 'アイ調剤薬局', 2629473: 'さくら台', 2232870: '我孫子',
-    6830654: '役員', 73292: '学術研修', 0: '総務',
-  };
-  const febSales = uriageTotal[0];
-  deptName = SALES_DEPT_HINT[febSales] || '不明(' + febSales + ')';
-  deptId = FREEE_DEPT_MAP[deptName] || '';
+  // 部門推定: CSV内のヒント（地代家賃の物件名、勘定科目の特徴等）から判定
+  const csvFullText = lines.join(' ');
+  const DEPT_HINTS = [
+    { name: '足立', id: 'adachi', patterns: ['中村ビル', 'モリタ（足立', '足立NS'] },
+    { name: '柏', id: 'kashiwa', patterns: ['サンライズイシド', 'セリザワ ヒデオ', '柏CLC', '宇田川駐車場'] },
+    { name: 'ながれやま', id: 'nagareyama', patterns: ['ながれやま', '流山'] },
+    { name: 'さくら台', id: 'sakuradai', patterns: ['さくら台', 'sakura'] },
+    { name: '我孫子', id: 'abiko', patterns: ['我孫子', 'あびこ'] },
+    { name: 'アイ調剤薬局', id: 'ai_chozai', patterns: ['アイ調剤'] },
+  ];
+  for (const hint of DEPT_HINTS) {
+    if (hint.patterns.some(p => csvFullText.includes(p))) {
+      deptName = hint.name; deptId = hint.id; break;
+    }
+  }
 
-  if (deptName === '総務' || (febSales === 0 && !gijutsuVals.some(v=>v>0) && !uriageTotal.some(v=>v>0))) {
-    deptName = '管理部・本部'; deptId = 'kanribu';
+  // ヒントで判定できなかった場合のフォールバック
+  if (!deptId) {
+    const totalSales = uriageTotal.reduce((s,v) => s+v, 0);
+    const hasTech = gijutsuVals.some(v => v > 0);
+    if (totalSales === 0 && !hasTech) {
+      // 売上0 + 技術料なし → 管理部 or 役員
+      if (csvFullText.includes('役員報酬') && !csvFullText.includes('給料手当')) {
+        deptName = '役員'; deptId = 'yakuin';
+      } else if (csvFullText.includes('研修費') || csvFullText.includes('広告宣伝費')) {
+        deptName = '管理部・本部'; deptId = 'kanribu';
+      } else {
+        deptName = '管理部・本部'; deptId = 'kanribu';
+      }
+    } else if (!hasTech && totalSales > 0) {
+      // 技術料なし + 売上あり → 役員 or 学術研修
+      if (totalSales < 1000000) { deptName = '学術研修'; deptId = 'gakujutsu'; }
+      else { deptName = '役員'; deptId = 'yakuin'; }
+    } else {
+      deptName = '不明(' + uriageTotal[0] + ')'; deptId = '';
+    }
   }
 
   return { deptId, deptName, monthValues, fiscalYear: detectedFY };

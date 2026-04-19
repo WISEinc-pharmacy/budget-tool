@@ -1740,7 +1740,7 @@ function parseFreeeCSV(text) {
   let honbuRaw = z(), honbuYakuin = z(), honbuSomu = z();
   let genkaTotal = z(), deprecTotal = z();
   let tesuryoTotal = z(), shiharaiHoumTotal = z();
-  let kenshuTotal = z(), saiyoTotal = z();
+  let kenshuTotal = z(), saiyoTotal = z(), saiyokyoikuTotal = z();
   let uriageTotal = z(), gijutsuVals = z(), yakuzaiVals = z(), chiryoVals = z();
   const unmappedL2 = new Set(); // 未知の勘定科目収集
 
@@ -1799,7 +1799,7 @@ function parseFreeeCSV(text) {
       else if (L2 === '支払手数料') tesuryoTotal = vals;
       else if (L2 === '支払報酬料') shiharaiHoumTotal = vals;
       else if (L2 === '研修費') kenshuTotal = vals;
-      else if (L2 === '採用教育費') { /* 合計は拾わない、内訳で振り分け */ }
+      else if (L2 === '採用教育費') { saiyokyoikuTotal = vals; } // L3なし時フォールバック用に記憶
       else if (mapped === 'sga_other') { for (let i=0;i<12;i++) sgaOtherAccum[i] += vals[i]; }
       else if (mapped) monthValues[mapped] = vals;
       else { unmappedL2.add(L2); } // マッピング未定義の勘定科目を記録
@@ -1869,7 +1869,9 @@ function parseFreeeCSV(text) {
   }
   monthValues['genka_shokyaku'] = deprecTotal;
   monthValues['tesuryo'] = tesuryoTotal.map((v,i) => v + shiharaiHoumTotal[i]);
-  monthValues['kenshu'] = kenshuTotal;
+  // 採用教育費: L3内訳があれば kenshu/saiyo に振り分け済み。なければ合計をkenshuに
+  const saiyokyoikuHasDetail = kenshuTotal.some(v => v > 0) || saiyoTotal.some(v => v > 0);
+  monthValues['kenshu'] = saiyokyoikuHasDetail ? kenshuTotal : saiyokyoikuTotal;
   monthValues['saiyo'] = saiyoTotal;
   monthValues['sga_other'] = sgaOtherAccum;
   // 本部経費: L3で役員経費/総務経費を判定

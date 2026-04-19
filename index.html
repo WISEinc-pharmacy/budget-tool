@@ -1668,6 +1668,11 @@ async function parseFreeeFiles() {
     html += `<td style="padding:4px;border:1px solid #ccc;text-align:right">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sgaTotal.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:center">${matched}項目</td></tr>`;
   }
   html += '</table>';
+  // 重複部門の警告
+  const deptCounts = {};
+  freeeParsedData.forEach(d => { if (d.deptId) deptCounts[d.deptId] = (deptCounts[d.deptId]||0)+1; });
+  const dupDepts = Object.entries(deptCounts).filter(([,c])=>c>1).map(([id])=>freeeParsedData.find(d=>d.deptId===id)?.deptName||id);
+  if (dupDepts.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一部門が複数検出されています: ${dupDepts.join('、')}。重複ファイルをスキップしてください。</div>`;
   html += `<p style="color:#666;font-size:11px">${freeeParsedData.length}件検出。部門が正しいか確認してから取込実行してください。</p>`;
   preview.innerHTML = html;
   document.getElementById('btnFreeeExec').disabled = false;
@@ -1725,7 +1730,9 @@ function parseFreeeCSV(text) {
   const z = () => new Array(12).fill(0);
   let sgaOtherAccum = z();
   let vehicleTotal = z(), vehicleCarShare = z(), vehicleGas = z(), vehicleParking = z();
-  let chidaiTotal = z(), leaseTotal = z(), honbuTotal = z();
+  let chidaiTenpo = z(), chidaiShataku = z(), chidaiTotal = z();
+  let leaseOffice = z(), leaseCar = z(), leaseTotal = z();
+  let honbuRaw = z(), honbuYakuin = z(), honbuSomu = z();
   let genkaTotal = z(), deprecTotal = z();
   let tesuryoTotal = z(), shiharaiHoumTotal = z();
   let kenshuTotal = z(), saiyoTotal = z();
@@ -1778,9 +1785,9 @@ function parseFreeeCSV(text) {
       currentParentL2 = L2;
 
       if (L2 === '車両費') vehicleTotal = vals;
-      else if (L2 === '地代家賃') chidaiTotal = vals;
-      else if (L2 === 'リース料') leaseTotal = vals;
-      else if (L2 === '本部経費') honbuTotal = vals;
+      else if (L2 === '地代家賃') { chidaiTotal = vals; chidaiTenpo = z(); chidaiShataku = z(); }
+      else if (L2 === 'リース料') { leaseTotal = vals; leaseOffice = z(); leaseCar = z(); }
+      else if (L2 === '本部経費') { honbuRaw = vals; honbuYakuin = z(); honbuSomu = z(); }
       else if (L2 === '減価償却費') deprecTotal = vals;
       else if (L2 === '減価償却費（営業権）') { for (let i=0;i<12;i++) deprecTotal[i] += vals[i]; }
       else if (L2 === '支払手数料') tesuryoTotal = vals;
@@ -1798,6 +1805,27 @@ function parseFreeeCSV(text) {
         if (L3 === 'タイムズカーシェア') vehicleCarShare = vals;
         else if (L3 === 'ガソリン代' || L3 === 'ガソリン') { for (let i=0;i<12;i++) vehicleGas[i] += vals[i]; }
         else if (L3 === '駐車場代') vehicleParking = vals;
+      } else if (currentParentL2 === '地代家賃') {
+        if (L3.includes('社宅') || L3.includes('役員社宅') || L3.includes('社員社宅')) {
+          for (let i=0;i<12;i++) chidaiShataku[i] += vals[i];
+        } else {
+          for (let i=0;i<12;i++) chidaiTenpo[i] += vals[i];
+        }
+      } else if (currentParentL2 === 'リース料') {
+        if (L3.includes('車') || L3.includes('自動車')) {
+          for (let i=0;i<12;i++) leaseCar[i] += vals[i];
+        } else {
+          for (let i=0;i<12;i++) leaseOffice[i] += vals[i];
+        }
+      } else if (currentParentL2 === '本部経費') {
+        if (L3.includes('役員')) { for (let i=0;i<12;i++) honbuYakuin[i] += vals[i]; }
+        else { for (let i=0;i<12;i++) honbuSomu[i] += vals[i]; }
+      } else if (currentParentL2 === '採用教育費') {
+        if (L3.includes('採用') || L3.includes('求人') || L3.includes('リクルート')) {
+          for (let i=0;i<12;i++) saiyoTotal[i] += vals[i];
+        } else {
+          for (let i=0;i<12;i++) kenshuTotal[i] += vals[i];
+        }
       }
     }
   }
@@ -1812,26 +1840,52 @@ function parseFreeeCSV(text) {
   monthValues['gasoline'] = vehicleGas;
   monthValues['parking'] = vehicleParking;
   monthValues['car_other'] = vehicleTotal.map((v,i) => v - vehicleCarShare[i] - vehicleGas[i] - vehicleParking[i]);
-  monthValues['tenpo'] = chidaiTotal;
-  monthValues['shatak'] = z();
-  monthValues['lease_office'] = leaseTotal;
-  monthValues['lease_car'] = z();
+  // 地代家賃: L3で社宅/店舗を判定。L3合計がchidaiTotalに合わない場合は差分をtenpoへ
+  const chidaiL3sum = chidaiTenpo.map((v,i) => v + chidaiShataku[i]);
+  const chidaiHasDetail = chidaiL3sum.some(v => v > 0);
+  if (chidaiHasDetail) {
+    monthValues['tenpo'] = chidaiTenpo;
+    monthValues['shatak'] = chidaiShataku;
+  } else {
+    monthValues['tenpo'] = chidaiTotal;
+    monthValues['shatak'] = z();
+  }
+  // リース料: L3で車両/事務機器を判定
+  const leaseL3sum = leaseOffice.map((v,i) => v + leaseCar[i]);
+  const leaseHasDetail = leaseL3sum.some(v => v > 0);
+  if (leaseHasDetail) {
+    monthValues['lease_office'] = leaseOffice;
+    monthValues['lease_car'] = leaseCar;
+  } else {
+    monthValues['lease_office'] = leaseTotal;
+    monthValues['lease_car'] = z();
+  }
   monthValues['genka_shokyaku'] = deprecTotal;
   monthValues['tesuryo'] = tesuryoTotal.map((v,i) => v + shiharaiHoumTotal[i]);
   monthValues['kenshu'] = kenshuTotal;
   monthValues['saiyo'] = saiyoTotal;
   monthValues['sga_other'] = sgaOtherAccum;
-  monthValues['honbu_somu'] = honbuTotal;
+  // 本部経費: L3で役員経費/総務経費を判定
+  const honbuL3sum = honbuYakuin.map((v,i) => v + honbuSomu[i]);
+  const honbuHasDetail = honbuL3sum.some(v => v > 0);
+  if (honbuHasDetail) {
+    monthValues['honbu_yakuin'] = honbuYakuin;
+    monthValues['honbu_somu'] = honbuSomu;
+  } else {
+    // L3内訳なし → 全額をhonbu_somu（総務経費）に入れる（手動修正が必要な場合はUIで対応）
+    monthValues['honbu_yakuin'] = z();
+    monthValues['honbu_somu'] = honbuRaw;
+  }
 
   // 部門推定: CSV内のヒント（地代家賃の物件名、勘定科目の特徴等）から判定
   const csvFullText = lines.join(' ');
   const DEPT_HINTS = [
-    { name: '足立', id: 'adachi', patterns: ['中村ビル', 'モリタ（足立', '足立NS'] },
+    { name: '足立', id: 'adachi', patterns: ['中村ビル', 'モリタ（足立', '足立NS', '伊藤駐車場'] },
     { name: '柏', id: 'kashiwa', patterns: ['サンライズイシド', 'セリザワ ヒデオ', '柏CLC', '宇田川駐車場'] },
-    { name: 'ながれやま', id: 'nagareyama', patterns: ['ながれやま', '流山'] },
-    { name: 'さくら台', id: 'sakuradai', patterns: ['さくら台', 'sakura', '千修ビル', '鹿山駐車場'] },
-    { name: '我孫子', id: 'abiko', patterns: ['我孫子', 'あびこ', 'オカモトフミコ'] },
-    { name: 'アイ調剤薬局', id: 'ai_chozai', patterns: ['アイ調剤'] },
+    { name: 'ながれやま', id: 'nagareyama', patterns: ['ながれやま', '流山', 'ヒルフォレスト', '南流山'] },
+    { name: 'さくら台', id: 'sakuradai', patterns: ['さくら台', 'sakura', '千修ビル', '鹿山駐車場', '鹿山'] },
+    { name: '我孫子', id: 'abiko', patterns: ['我孫子', 'あびこ', 'オカモトフミコ', 'オカモト フミコ'] },
+    { name: 'アイ調剤薬局', id: 'ai_chozai', patterns: ['アイ調剤', '幸楽土地', '㈱幸楽'] },
   ];
   for (const hint of DEPT_HINTS) {
     if (hint.patterns.some(p => csvFullText.includes(p))) {
@@ -1843,21 +1897,28 @@ function parseFreeeCSV(text) {
   if (!deptId) {
     const totalSales = uriageTotal.reduce((s,v) => s+v, 0);
     const hasTech = gijutsuVals.some(v => v > 0);
+    const hasYaku = yakuzaiVals.some(v => v > 0);
+    const hasKyuryo = monthValues['kyuryo'] && monthValues['kyuryo'].some(v => v > 0);
+    const hasYakuinHoshu = monthValues['yakuin_hoshu'] && monthValues['yakuin_hoshu'].some(v => v > 0);
     if (totalSales === 0 && !hasTech) {
       // 売上0 + 技術料なし → 管理部 or 役員
-      if (csvFullText.includes('役員報酬') && !csvFullText.includes('給料手当')) {
+      if (hasYakuinHoshu && !hasKyuryo) {
         deptName = '役員'; deptId = 'yakuin';
-      } else if (csvFullText.includes('研修費') || csvFullText.includes('広告宣伝費')) {
-        deptName = '管理部・本部'; deptId = 'kanribu';
       } else {
         deptName = '管理部・本部'; deptId = 'kanribu';
       }
     } else if (!hasTech && totalSales > 0) {
       // 技術料なし + 売上あり → 役員 or 学術研修
-      if (totalSales < 1000000) { deptName = '学術研修'; deptId = 'gakujutsu'; }
-      else { deptName = '役員'; deptId = 'yakuin'; }
+      if (hasYakuinHoshu || totalSales > 2000000) {
+        deptName = '役員'; deptId = 'yakuin';
+      } else {
+        deptName = '学術研修'; deptId = 'gakujutsu';
+      }
+    } else if (hasTech && hasYaku) {
+      // 技術料+薬剤料あり → 調剤薬局系だが物件名ヒントなし
+      deptName = '不明（調剤薬局系）' ; deptId = '';
     } else {
-      deptName = '不明(' + uriageTotal[0] + ')'; deptId = '';
+      deptName = '不明(' + totalSales.toLocaleString() + ')'; deptId = '';
     }
   }
 

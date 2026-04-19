@@ -1629,8 +1629,16 @@ async function parseFreeeFiles() {
   preview.innerHTML = '解析中...';
 
   const files = [...fileInput.files];
+  const seenSignatures = new Set();
+  const skippedFiles = [];
   for (const file of files) {
     const text = await readFileAsText(file);
+    const sig = file.size + ':' + text.slice(0, 80);
+    if (seenSignatures.has(sig)) {
+      skippedFiles.push(file.name);
+      continue;
+    }
+    seenSignatures.add(sig);
     const parsed = parseFreeeCSV(text);
     if (parsed) freeeParsedData.push(parsed);
   }
@@ -1676,9 +1684,14 @@ async function parseFreeeFiles() {
   freeeParsedData.forEach(d => { if (d.deptId) deptCounts[d.deptId] = (deptCounts[d.deptId]||0)+1; });
   const dupDepts = Object.entries(deptCounts).filter(([,c])=>c>1).map(([id])=>freeeParsedData.find(d=>d.deptId===id)?.deptName||id);
   if (dupDepts.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一部門が複数検出されています: ${dupDepts.join('、')}。重複ファイルをスキップしてください。</div>`;
+  // 重複ファイル自動スキップ通知
+  if (skippedFiles.length) html += `<div style="background:#e8f4e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">✓ 重複ファイルを自動スキップしました: ${skippedFiles.map(f=>f.split('/').pop()).join('、')}</div>`;
   // 未マッピング勘定科目の一覧表示
   const allUnmapped = [...new Set(freeeParsedData.flatMap(d => d.unmappedL2||[]))];
-  if (allUnmapped.length) html += `<div style="background:#fde8e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ マッピング未定義の勘定科目（その他販管費に未計上）: ${allUnmapped.join('、')}</div>`;
+  if (allUnmapped.length) html += `<div style="background:#fde8e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 確認が必要な科目: ${allUnmapped.join(' / ')}</div>`;
+  // 管理部・本部の本部経費マイナス値検出
+  const kanribuNeg = freeeParsedData.filter(d => d.deptId === 'kanribu' && d.monthValues['honbu_somu'] && d.monthValues['honbu_somu'].some(v => v < 0));
+  if (kanribuNeg.length) html += `<div style="background:#e8f0fe;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">ℹ 管理部・本部の本部経費がマイナス値です（各店舗への配賦相殺）。取込しても問題ありませんが、管理部のP/Lには内部振替が反映されます。</div>`;
   html += `<p style="color:#666;font-size:11px">${freeeParsedData.length}件検出。部門が正しいか確認してから取込実行してください。</p>`;
   preview.innerHTML = html;
   document.getElementById('btnFreeeExec').disabled = false;
@@ -1833,6 +1846,7 @@ function parseFreeeCSV(text) {
           for (let i=0;i<12;i++) saiyoTotal[i] += vals[i];
         } else {
           for (let i=0;i<12;i++) kenshuTotal[i] += vals[i];
+          if (L3 === '未選択') unmappedL2.add('採用教育費/未選択→kenshu計上（採用費の場合はUI修正を）');
         }
       }
     }

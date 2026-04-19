@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ファマキャン YouTube 誓約書確認リスト</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Hiragino Sans', 'Meiryo', sans-serif; background: #f5f5f5; padding: 20px; }
+  .header { background: #c0392b; color: white; padding: 16px 24px; border-radius: 8px; margin-bottom: 20px; }
+  .header h1 { font-size: 20px; }
+  .header p { font-size: 13px; margin-top: 4px; opacity: 0.85; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; }
+  .btn-primary { background: #c0392b; color: white; }
+  .btn-primary:hover { background: #a93226; }
+  .btn-secondary { background: #7f8c8d; color: white; }
+  .btn-secondary:hover { background: #6c7a7d; }
+  .btn-export { background: #27ae60; color: white; }
+  .btn-export:hover { background: #229954; }
+  .btn-print { background: #2980b9; color: white; }
+  .btn-print:hover { background: #2471a3; }
+  table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  th { background: #2c3e50; color: white; padding: 12px 10px; text-align: left; font-size: 13px; }
+  td { padding: 10px; border-bottom: 1px solid #ecf0f1; font-size: 14px; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fdf9f8; }
+  .status-ok { color: #27ae60; font-weight: bold; }
+  .status-ng { color: #e74c3c; font-weight: bold; }
+  .status-pending { color: #f39c12; font-weight: bold; }
+  input[type="text"], input[type="date"], select { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+  select { cursor: pointer; }
+  .del-btn { background: none; border: none; color: #e74c3c; cursor: pointer; font-size: 18px; padding: 0 6px; }
+  .del-btn:hover { color: #c0392b; }
+  .summary { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .summary-card { background: white; border-radius: 8px; padding: 12px 20px; text-align: center; box-shadow: 0 2px 6px rgba(0,0,0,0.1); min-width: 100px; }
+  .summary-card .num { font-size: 28px; font-weight: bold; }
+  .summary-card .label { font-size: 12px; color: #7f8c8d; margin-top: 2px; }
+  .ok-card .num { color: #27ae60; }
+  .ng-card .num { color: #e74c3c; }
+  .pending-card .num { color: #f39c12; }
+  .updated-at { font-size: 12px; color: #95a5a6; margin-top: 12px; text-align: right; }
+  @media print {
+    .toolbar { display: none; }
+    body { background: white; padding: 0; }
+    .summary-card { box-shadow: none; border: 1px solid #ccc; }
+    table { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📋 ファマキャン YouTube 誓約書確認リスト</h1>
+  <p>ファーマシストキャンパス（@phama_cam）チャンネル関係者の誓約書取得状況を管理します</p>
+</div>
+
+<div class="summary" id="summary"></div>
+
+<div class="toolbar">
+  <button class="btn btn-primary" onclick="addRow()">+ スタッフ追加</button>
+  <button class="btn btn-export" onclick="exportCSV()">CSV出力</button>
+  <button class="btn btn-print" onclick="window.print()">印刷</button>
+  <button class="btn btn-secondary" onclick="clearData()" style="margin-left:auto">データリセット</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:160px">氏名</th>
+      <th style="width:120px">役割</th>
+      <th style="width:120px">ステータス</th>
+      <th style="width:130px">誓約書取得日</th>
+      <th style="width:110px">確認者</th>
+      <th>備考</th>
+      <th style="width:40px"></th>
+    </tr>
+  </thead>
+  <tbody id="listBody"></tbody>
+</table>
+
+<div class="updated-at" id="updatedAt"></div>
+
+<script>
+const STORAGE_KEY = 'youtube_pledge_list_v1';
+
+const DEFAULT_DATA = [
+  { name: '鈴木邦彦', role: 'コンテンツ制作', status: 'pending', date: '', confirmer: '', note: '' },
+  { name: '', role: 'コンテンツ制作', status: 'pending', date: '', confirmer: '', note: '（@abeshi_wise）' },
+];
+
+const ROLES = ['コンテンツ制作', '出演者', '運営・管理', 'その他'];
+const STATUSES = [
+  { value: 'ok', label: '取得済み' },
+  { value: 'pending', label: '未取得' },
+  { value: 'ng', label: '取得不要' },
+];
+
+let data = [];
+
+function load() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    data = saved ? JSON.parse(saved) : [...DEFAULT_DATA];
+  } catch(e) {
+    data = [...DEFAULT_DATA];
+  }
+  render();
+}
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  document.getElementById('updatedAt').textContent = '最終更新: ' + new Date().toLocaleString('ja-JP');
+}
+
+function render() {
+  const tbody = document.getElementById('listBody');
+  tbody.innerHTML = '';
+  data.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" value="${esc(row.name)}" onchange="update(${i},'name',this.value)" placeholder="氏名"></td>
+      <td>
+        <select onchange="update(${i},'role',this.value)">
+          ${ROLES.map(r => `<option value="${r}" ${row.role===r?'selected':''}>${r}</option>`).join('')}
+        </select>
+      </td>
+      <td>
+        <select onchange="update(${i},'status',this.value)">
+          ${STATUSES.map(s => `<option value="${s.value}" ${row.status===s.value?'selected':''}>${s.label}</option>`).join('')}
+        </select>
+      </td>
+      <td><input type="date" value="${esc(row.date)}" onchange="update(${i},'date',this.value)"></td>
+      <td><input type="text" value="${esc(row.confirmer)}" onchange="update(${i},'confirmer',this.value)" placeholder="確認者名"></td>
+      <td><input type="text" value="${esc(row.note)}" onchange="update(${i},'note',this.value)" placeholder="備考"></td>
+      <td><button class="del-btn" onclick="deleteRow(${i})" title="削除">×</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  renderSummary();
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    const ts = localStorage.getItem(STORAGE_KEY + '_ts');
+    document.getElementById('updatedAt').textContent = ts ? '最終更新: ' + ts : '';
+  }
+}
+
+function renderSummary() {
+  const ok = data.filter(r => r.status === 'ok').length;
+  const pending = data.filter(r => r.status === 'pending').length;
+  const ng = data.filter(r => r.status === 'ng').length;
+  document.getElementById('summary').innerHTML = `
+    <div class="summary-card ok-card"><div class="num">${ok}</div><div class="label">取得済み</div></div>
+    <div class="summary-card ng-card"><div class="num">${pending}</div><div class="label">未取得</div></div>
+    <div class="summary-card"><div class="num">${data.length}</div><div class="label">合計</div></div>
+  `;
+}
+
+function update(i, key, value) {
+  data[i][key] = value;
+  const ts = new Date().toLocaleString('ja-JP');
+  localStorage.setItem(STORAGE_KEY + '_ts', ts);
+  save();
+  renderSummary();
+  document.getElementById('updatedAt').textContent = '最終更新: ' + ts;
+}
+
+function addRow() {
+  data.push({ name: '', role: 'コンテンツ制作', status: 'pending', date: '', confirmer: '', note: '' });
+  save();
+  render();
+  // 最後の行の氏名欄にフォーカス
+  const inputs = document.querySelectorAll('#listBody tr:last-child input[type="text"]');
+  if (inputs[0]) inputs[0].focus();
+}
+
+function deleteRow(i) {
+  if (!confirm(`「${data[i].name || '（名前未入力）'}」を削除しますか？`)) return;
+  data.splice(i, 1);
+  save();
+  render();
+}
+
+function clearData() {
+  if (!confirm('全データをリセットしますか？（初期状態に戻ります）')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(STORAGE_KEY + '_ts');
+  data = [...DEFAULT_DATA];
+  render();
+}
+
+function exportCSV() {
+  const header = ['氏名', '役割', 'ステータス', '誓約書取得日', '確認者', '備考'];
+  const statusLabel = { ok: '取得済み', pending: '未取得', ng: '取得不要' };
+  const rows = data.map(r => [r.name, r.role, statusLabel[r.status]||r.status, r.date, r.confirmer, r.note]);
+  const csv = [header, ...rows].map(r => r.map(v => `"${(v||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `YouTube誓約書確認リスト_${new Date().toLocaleDateString('ja-JP').replace(/\//g,'-')}.csv`;
+  a.click();
+}
+
+function esc(str) {
+  return (str||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+load();
+</script>
+</body>
+</html>

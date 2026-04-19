@@ -1664,7 +1664,9 @@ async function parseFreeeFiles() {
     const selId = `freee_dept_${i}`;
     html += `<tr><td style="padding:4px;border:1px solid #ccc"><select id="${selId}" style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
     html += deptOptions.replace(`value="${d.deptId}"`, `value="${d.deptId}" selected`);
-    html += `</select><div style="color:#999;font-size:10px">推定: ${d.deptName}</div></td>`;
+    const confLabel = {high:'✓確実', medium:'△推定', none:'?不明'}[d.confidence]||'?不明';
+    const confColor = {high:'#27ae60', medium:'#e67e22', none:'#e74c3c'}[d.confidence]||'#e74c3c';
+    html += `</select><div style="color:${confColor};font-size:10px">${confLabel}: ${d.deptName}</div></td>`;
     html += `<td style="padding:4px;border:1px solid #ccc;text-align:right">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sgaTotal.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:center">${matched}項目</td></tr>`;
   }
   html += '</table>';
@@ -1673,6 +1675,9 @@ async function parseFreeeFiles() {
   freeeParsedData.forEach(d => { if (d.deptId) deptCounts[d.deptId] = (deptCounts[d.deptId]||0)+1; });
   const dupDepts = Object.entries(deptCounts).filter(([,c])=>c>1).map(([id])=>freeeParsedData.find(d=>d.deptId===id)?.deptName||id);
   if (dupDepts.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一部門が複数検出されています: ${dupDepts.join('、')}。重複ファイルをスキップしてください。</div>`;
+  // 未マッピング勘定科目の一覧表示
+  const allUnmapped = [...new Set(freeeParsedData.flatMap(d => d.unmappedL2||[]))];
+  if (allUnmapped.length) html += `<div style="background:#fde8e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ マッピング未定義の勘定科目（その他販管費に未計上）: ${allUnmapped.join('、')}</div>`;
   html += `<p style="color:#666;font-size:11px">${freeeParsedData.length}件検出。部門が正しいか確認してから取込実行してください。</p>`;
   preview.innerHTML = html;
   document.getElementById('btnFreeeExec').disabled = false;
@@ -1737,6 +1742,7 @@ function parseFreeeCSV(text) {
   let tesuryoTotal = z(), shiharaiHoumTotal = z();
   let kenshuTotal = z(), saiyoTotal = z();
   let uriageTotal = z(), gijutsuVals = z(), yakuzaiVals = z(), chiryoVals = z();
+  const unmappedL2 = new Set(); // 未知の勘定科目収集
 
   // 現在の親科目（L2の内訳を振り分けるため）
   let currentParentL2 = '';
@@ -1796,6 +1802,7 @@ function parseFreeeCSV(text) {
       else if (L2 === '採用教育費') { /* 合計は拾わない、内訳で振り分け */ }
       else if (mapped === 'sga_other') { for (let i=0;i<12;i++) sgaOtherAccum[i] += vals[i]; }
       else if (mapped) monthValues[mapped] = vals;
+      else { unmappedL2.add(L2); } // マッピング未定義の勘定科目を記録
     }
 
     // 販管費内の内訳（L3レベル = 車両費/地代家賃等の補助科目）
@@ -1877,23 +1884,35 @@ function parseFreeeCSV(text) {
     monthValues['honbu_somu'] = honbuRaw;
   }
 
-  // 部門推定: CSV内のヒント（地代家賃の物件名、勘定科目の特徴等）から判定
+  // 部門推定: まずL3の物件名で高精度判定し、次に全文テキストで低精度判定
+  const l3Values = lines.map(line => { const c = parseCSVLine(line); return (c[3]||'').trim(); }).filter(v => v && v !== '未選択');
   const csvFullText = lines.join(' ');
+  // l3: 物件名等のL3固有テキスト（高確度）/ text: 店舗名等の全文検索（低確度）
   const DEPT_HINTS = [
-    { name: '足立', id: 'adachi', patterns: ['中村ビル', 'モリタ（足立', '足立NS', '伊藤駐車場'] },
-    { name: '柏', id: 'kashiwa', patterns: ['サンライズイシド', 'セリザワ ヒデオ', '柏CLC', '宇田川駐車場'] },
-    { name: 'ながれやま', id: 'nagareyama', patterns: ['ながれやま', '流山', 'ヒルフォレスト', '南流山'] },
-    { name: 'さくら台', id: 'sakuradai', patterns: ['さくら台', 'sakura', '千修ビル', '鹿山駐車場', '鹿山'] },
-    { name: '我孫子', id: 'abiko', patterns: ['我孫子', 'あびこ', 'オカモトフミコ', 'オカモト フミコ'] },
-    { name: 'アイ調剤薬局', id: 'ai_chozai', patterns: ['アイ調剤', '幸楽土地', '㈱幸楽'] },
+    { name: '足立',         id: 'adachi',      l3: ['中村ビル', '伊藤駐車場', '足立NSヒタチ', 'モリタ（足立'], text: ['足立NS'] },
+    { name: '柏',           id: 'kashiwa',     l3: ['サンライズイシド', 'セリザワ ヒデオ', '柏CLC', '宇田川駐車場'], text: [] },
+    { name: 'ながれやま',   id: 'nagareyama',  l3: ['ヒルフォレスト', '南流山'],                    text: ['ながれやま'] },
+    { name: 'さくら台',     id: 'sakuradai',   l3: ['千修ビル', '鹿山駐車場', '鹿山'],              text: ['さくら台'] },
+    { name: '我孫子',       id: 'abiko',       l3: ['オカモトフミコ', 'オカモト フミコ'],            text: ['我孫子', 'あびこ'] },
+    { name: 'アイ調剤薬局', id: 'ai_chozai',   l3: ['幸楽土地', '㈱幸楽'],                         text: ['アイ調剤'] },
   ];
+  let deptConfidence = 'none';
+  // L3物件名で判定（高精度）
   for (const hint of DEPT_HINTS) {
-    if (hint.patterns.some(p => csvFullText.includes(p))) {
-      deptName = hint.name; deptId = hint.id; break;
+    if (hint.l3.some(p => l3Values.some(v => v.includes(p)))) {
+      deptName = hint.name; deptId = hint.id; deptConfidence = 'high'; break;
+    }
+  }
+  // 全文テキストで判定（低精度フォールバック）
+  if (!deptId) {
+    for (const hint of DEPT_HINTS) {
+      if (hint.text.some(p => csvFullText.includes(p))) {
+        deptName = hint.name; deptId = hint.id; deptConfidence = 'medium'; break;
+      }
     }
   }
 
-  // ヒントで判定できなかった場合のフォールバック
+  // ヒントで判定できなかった場合のフォールバック（勘定科目構造で推定）
   if (!deptId) {
     const totalSales = uriageTotal.reduce((s,v) => s+v, 0);
     const hasTech = gijutsuVals.some(v => v > 0);
@@ -1903,26 +1922,26 @@ function parseFreeeCSV(text) {
     if (totalSales === 0 && !hasTech) {
       // 売上0 + 技術料なし → 管理部 or 役員
       if (hasYakuinHoshu && !hasKyuryo) {
-        deptName = '役員'; deptId = 'yakuin';
+        deptName = '役員'; deptId = 'yakuin'; deptConfidence = 'medium';
       } else {
-        deptName = '管理部・本部'; deptId = 'kanribu';
+        deptName = '管理部・本部'; deptId = 'kanribu'; deptConfidence = 'medium';
       }
     } else if (!hasTech && totalSales > 0) {
       // 技術料なし + 売上あり → 役員 or 学術研修
       if (hasYakuinHoshu || totalSales > 2000000) {
-        deptName = '役員'; deptId = 'yakuin';
+        deptName = '役員'; deptId = 'yakuin'; deptConfidence = 'medium';
       } else {
-        deptName = '学術研修'; deptId = 'gakujutsu';
+        deptName = '学術研修'; deptId = 'gakujutsu'; deptConfidence = 'medium';
       }
     } else if (hasTech && hasYaku) {
       // 技術料+薬剤料あり → 調剤薬局系だが物件名ヒントなし
-      deptName = '不明（調剤薬局系）' ; deptId = '';
+      deptName = '不明（調剤薬局系）'; deptId = '';
     } else {
       deptName = '不明(' + totalSales.toLocaleString() + ')'; deptId = '';
     }
   }
 
-  return { deptId, deptName, monthValues, fiscalYear: detectedFY };
+  return { deptId, deptName, confidence: deptConfidence, monthValues, unmappedL2: [...unmappedL2], fiscalYear: detectedFY };
 }
 
 async function doFreeeImport() {

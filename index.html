@@ -1645,8 +1645,15 @@ async function parseFreeeFiles() {
     if (parsed) freeeParsedData.push(parsed);
   }
 
+  // 全社CSV（取込不可）を分離して除外
+  const allDeptCsvItems = freeeParsedData.filter(d => d.confidence === 'all_dept');
+  freeeParsedData = freeeParsedData.filter(d => d.confidence !== 'all_dept');
+
   if (freeeParsedData.length === 0) {
-    preview.innerHTML = '<div class="import-result error">Freee形式のCSVが見つかりませんでした</div>';
+    const errMsg = allDeptCsvItems.length
+      ? `<div class="import-result error">⛔ 全社CSV（部門フィルタなし）のみ検出されました。部門別CSVを使用してください。<br>検出: ${allDeptCsvItems.map(d=>d.deptName).join('、')}</div>`
+      : '<div class="import-result error">Freee形式のCSVが見つかりませんでした</div>';
+    preview.innerHTML = errMsg;
     return;
   }
 
@@ -1686,6 +1693,8 @@ async function parseFreeeFiles() {
   freeeParsedData.forEach(d => { if (d.deptId) deptCounts[d.deptId] = (deptCounts[d.deptId]||0)+1; });
   const dupDepts = Object.entries(deptCounts).filter(([,c])=>c>1).map(([id])=>freeeParsedData.find(d=>d.deptId===id)?.deptName||id);
   if (dupDepts.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一部門が複数検出されています: ${dupDepts.join('、')}。重複ファイルをスキップしてください。</div>`;
+  // 全社CSV自動除外の通知
+  if (allDeptCsvItems.length) html += `<div style="background:#fde8e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⛔ 全社CSV（部門フィルタなし）を自動除外しました: ${allDeptCsvItems.map(d=>d.deptName).join('、')}</div>`;
   // 重複ファイル自動スキップ通知
   if (skippedFiles.length) html += `<div style="background:#e8f4e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">✓ 重複ファイルを自動スキップしました: ${skippedFiles.map(f=>f.split('/').pop()).join('、')}</div>`;
   // 未マッピング勘定科目の一覧表示
@@ -1906,6 +1915,12 @@ function parseFreeeCSV(text) {
   // 部門推定: まずL3の物件名で高精度判定し、次に全文テキストで低精度判定
   const l3Values = lines.map(line => { const c = parseCSVLine(line); return (c[3]||'').trim(); }).filter(v => v && v !== '未選択');
   const csvFullText = lines.join(' ');
+  // 全社CSV検出: 複数の部門名がL3に出現する場合は取込不可フラグを返す（改善案A）
+  const GLOBAL_DEPT_CHECK = ['柏', '足立', 'さくら台', 'ながれやま', '我孫子', 'アイ調剤', '学術研修', '総務'];
+  const matchedDeptInL3 = GLOBAL_DEPT_CHECK.filter(name => l3Values.some(v => v.includes(name)));
+  if (matchedDeptInL3.length >= 2) {
+    return { deptId: null, deptName: `全社CSV（${matchedDeptInL3.slice(0,3).join('/')}等が混在）`, confidence: 'all_dept', monthValues: {}, unmappedL2: [], fiscalYear: detectedFY };
+  }
   // l3: 物件名等のL3固有テキスト（高確度）/ text: 店舗名等の全文検索（低確度）
   const DEPT_HINTS = [
     { name: '足立',         id: 'adachi',      l3: ['中村ビル', '伊藤駐車場', '足立NSヒタチ', 'モリタ（足立'], text: ['足立NS'] },

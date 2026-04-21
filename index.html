@@ -619,8 +619,16 @@ async function checkUserRole(user) {
   if (doc.exists) { userRole = doc.data().role || 'viewer'; }
   else {
     const snap = await db.collection('users').get();
-    userRole = snap.empty ? 'admin' : 'viewer';
-    await db.collection('users').doc(user.email).set({ email: user.email, name: user.displayName || '', role: userRole, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    if (snap.empty) {
+      // 最初のユーザーは管理者として自動登録
+      userRole = 'admin';
+      await db.collection('users').doc(user.email).set({ email: user.email, name: user.displayName || '', role: userRole, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    } else {
+      // 未登録ユーザーはアクセス拒否
+      await firebase.auth().signOut();
+      alert('アクセス権がありません。\n利用を希望される方は director@wise-jmco.com へご連絡ください。');
+      return;
+    }
   }
   const badge = document.getElementById('roleBadge');
   badge.textContent = userRole === 'admin' ? '管理者' : userRole === 'editor' ? '編集者' : '閲覧者';
@@ -1048,25 +1056,25 @@ async function renderCompareTable() {
     if (it.type === 'ratio') {
       let bNum=0,bDen=0,aNum=0,aDen=0;
       vm.forEach(m => { const pB=prevData?prevData.budget:null; const pA=prevData?prevData.actual:null; const bm=getExtMonthVals(data.budget,pB,m); bNum+=it.numerator(bm); bDen+=it.denominator(bm); const am=getExtMonthVals(data.actual,pA,m); aNum+=it.numerator(am); aDen+=it.denominator(am); });
-      html += `<tr class="${getRowClass(it)}"><td rowspan="2">${it.name}</td><td>予算</td><td>${fmtPct(bNum,bDen)}</td>`;
+      html += `<tr class="${getRowClass(it)}"><td rowspan="2">${it.name}</td><td>予算</td><td class="col-total">${fmtPct(bNum,bDen)}</td>`;
       vm.forEach(m => { const pB=prevData?prevData.budget:null; const mv=getExtMonthVals(data.budget,pB,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
-      html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmtPct(aNum,aDen)}</td>`;
+      html += `<tr class="${getRowClass(it)}"><td>実績</td><td class="col-total">${fmtPct(aNum,aDen)}</td>`;
       vm.forEach(m => { const pA=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pA,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
       return;
     }
     const isCalc = it.type === 'calc';
     const bA = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
-    html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>予算</td><td>${fmt(bA,isCalc)}</td>`;
+    html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>予算</td><td class="col-total">${fmt(bA,isCalc)}</td>`;
     vm.forEach(m => html+=`<td>${fmt(extBudget(data,prevData,it.id,m),isCalc)}</td>`);
     html += '</tr>';
     const aA = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
-    html += `<tr class="${getRowClass(it)}"><td>実績</td><td>${fmt(aA,isCalc)}</td>`;
+    html += `<tr class="${getRowClass(it)}"><td>実績</td><td class="col-total">${fmt(aA,isCalc)}</td>`;
     vm.forEach(m => html+=`<td>${fmt(extActual(data,prevData,it.id,m),isCalc)}</td>`);
     html += '</tr>';
     const dA = aA - bA;
-    html += `<tr style="background:#ffeaea"><td>差異</td><td class="${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
+    html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total ${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
     vm.forEach(m => { const d=extActual(data,prevData,it.id,m)-extBudget(data,prevData,it.id,m); html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`; });
     html += '</tr>';
   });
@@ -1170,19 +1178,19 @@ async function renderYoyTable() {
     if (it.type === 'ratio') {
       // 今年度実績
       let cNum=0,cDen=0; vm.forEach(m => { const mv=getMonthVals(curData.actual,m); cNum+=it.numerator(mv); cDen+=it.denominator(mv); });
-      html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>${curFY}年度</td><td>${fmtPct(cNum,cDen)}</td>`;
+      html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>${curFY}年度</td><td class="col-total">${fmtPct(cNum,cDen)}</td>`;
       vm.forEach(m => { const mv=getMonthVals(curData.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
       // 比較年度実績
       let pNum=0,pDen=0; vm.forEach(m => { const mv=getMonthVals(cmpData.actual,m); pNum+=it.numerator(mv); pDen+=it.denominator(mv); });
-      html += `<tr class="${getRowClass(it)}"><td>${cmpFY}年度</td><td>${fmtPct(pNum,pDen)}</td>`;
+      html += `<tr class="${getRowClass(it)}"><td>${cmpFY}年度</td><td class="col-total">${fmtPct(pNum,pDen)}</td>`;
       vm.forEach(m => { const mv=getMonthVals(cmpData.actual,m); html+=`<td>${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
       html += '</tr>';
       // 差異
       const cPct = cDen ? cNum/cDen*100 : 0;
       const pPct = pDen ? pNum/pDen*100 : 0;
       const diff = cPct - pPct;
-      html += `<tr style="background:#ffeaea"><td>差異</td><td class="${diff<0?'negative':''}">${diff===0?'-':(diff>0?'+':'')+diff.toFixed(1)+'pt'}</td>`;
+      html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total ${diff<0?'negative':''}">${diff===0?'-':(diff>0?'+':'')+diff.toFixed(1)+'pt'}</td>`;
       vm.forEach(m => {
         const cmv=getMonthVals(curData.actual,m), pmv=getMonthVals(cmpData.actual,m);
         const cd=cmv.gijutsu?it.numerator(cmv)/it.denominator(cmv)*100:0;
@@ -1196,17 +1204,17 @@ async function renderYoyTable() {
     const isCalc = it.type === 'calc';
     // 今年度実績
     const cA = vm.reduce((s,m) => s + (curData.actual[it.id][m]||0), 0);
-    html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>${curFY}年度</td><td>${fmt(cA,isCalc)}</td>`;
+    html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>${curFY}年度</td><td class="col-total">${fmt(cA,isCalc)}</td>`;
     vm.forEach(m => html += `<td>${fmt(curData.actual[it.id][m],isCalc)}</td>`);
     html += '</tr>';
     // 比較年度実績
     const pA = vm.reduce((s,m) => s + (cmpData.actual[it.id][m]||0), 0);
-    html += `<tr class="${getRowClass(it)}"><td>${cmpFY}年度</td><td>${fmt(pA,isCalc)}</td>`;
+    html += `<tr class="${getRowClass(it)}"><td>${cmpFY}年度</td><td class="col-total">${fmt(pA,isCalc)}</td>`;
     vm.forEach(m => html += `<td>${fmt(cmpData.actual[it.id][m],isCalc)}</td>`);
     html += '</tr>';
     // 差異
     const dA = cA - pA;
-    html += `<tr style="background:#ffeaea"><td>差異</td><td class="${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
+    html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total ${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
     vm.forEach(m => {
       const d = (curData.actual[it.id][m]||0) - (cmpData.actual[it.id][m]||0);
       html += `<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`;

@@ -125,6 +125,31 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .save-status.saved { color: #2ecc71; }
 .save-status.error { color: #e74c3c; }
 
+/* 印刷用スタイル */
+@media print {
+  @page { size: landscape; margin: 8mm; }
+  body { font-size: 10px; background: #fff; }
+  #loginScreen, .header, .user-bar, .dept-bar, .tab-bar, .toolbar, .legend, .modal-overlay, .mode-indicator { display: none !important; }
+  #mainApp { display: block !important; }
+  .tab-content { display: none !important; }
+  .tab-content.active { display: block !important; }
+  .table-wrap { overflow: visible !important; max-height: none !important; padding: 0 !important; }
+  table { min-width: unset !important; width: 100% !important; box-shadow: none !important; font-size: 9px; }
+  th, td { padding: 2px 4px !important; }
+  th { position: static !important; }
+  th:first-child, td:first-child { position: static !important; }
+  input.cell-input { border: none !important; background: transparent !important; font-size: 9px; width: auto !important; padding: 0 !important; text-align: right; }
+  select.dist-select { display: none; }
+  .current-dept-label { padding: 4px 0 !important; font-size: 14px !important; }
+  #printHeader { display: block !important; padding: 0 0 8px; border-bottom: 2px solid #1a5276; margin-bottom: 8px; }
+  #printHeader h2 { margin: 0; font-size: 16px; color: #1a5276; }
+  #printHeader .print-meta { font-size: 11px; color: #555; margin-top: 4px; }
+  tr.header-row { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tr.subtotal-row, tr.profit-row, tr.ratio-row, tr.level-1, th, .col-total { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  td.col-total, th.col-total { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+#printHeader { display: none; }
+
 /* ヘルプモーダル */
 .help-section { margin-bottom: 18px; }
 .help-section h3 { font-size: 14px; color: #1a5276; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 2px solid #3498db; display: flex; align-items: center; gap: 6px; }
@@ -168,6 +193,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <button class="btn" onclick="doRecalc()" style="background:#e67e22;color:#fff" id="btnRecalc">再計算</button>
     <button class="btn btn-secondary" onclick="clearAll()" id="btnClear">クリア</button>
     <button class="btn" onclick="openHistoryModal()" style="background:#8e44ad;color:#fff">履歴</button>
+    <button class="btn" onclick="doPrint()" style="background:#34495e;color:#fff">印刷</button>
     <button class="btn" onclick="toggleEditMode()" id="btnEditMode" style="background:#c0392b;color:#fff;font-weight:700;padding:6px 18px">編集モード</button>
   </div>
 </div>
@@ -222,6 +248,10 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <span><span class="swatch" style="background:#eaf2f8"></span> 集計行</span>
 </div>
 
+<div id="printHeader">
+  <h2>予実管理ダッシュボード</h2>
+  <div class="print-meta" id="printMeta"></div>
+</div>
 <div class="current-dept-label"><span id="currentDeptLabel"></span><span class="mode-indicator" id="modeIndicator"></span></div>
 
 <div id="tab-budget" class="tab-content active"><div class="table-wrap"><table id="budgetTable"></table></div></div>
@@ -672,6 +702,26 @@ function applyPermissions() {
   document.getElementById('btnEditMode').style.display = canEdit ? '' : 'none';
   document.getElementById('btnAdmin').style.display = userRole === 'admin' ? '' : 'none';
   // 編集系ボタンは updateModeUI で制御
+}
+
+// ===== 印刷 =====
+function doPrint() {
+  const tabNames = { budget: '予算', actual: '実績', compare: '予実比較', yoy: '年度比較' };
+  const activeTab = document.querySelector('.tab.active');
+  const tabId = activeTab ? activeTab.getAttribute('onclick').match(/'(\w+)'/)[1] : 'budget';
+  const deptLabel = document.getElementById('currentDeptLabel').textContent;
+  const from = document.getElementById('filterFrom');
+  const to = document.getElementById('filterTo');
+  const period = from.options[from.selectedIndex].text + ' 〜 ' + to.options[to.selectedIndex].text;
+  const fy = document.getElementById('fiscalYear').value;
+  let meta = `タブ：${tabNames[tabId] || tabId}　｜　${deptLabel}　｜　${fy}年度　｜　期間：${period}`;
+  if (tabId === 'yoy') {
+    const cmpFY = document.getElementById('yoyYear').value;
+    meta += `　｜　比較年度：${cmpFY}年度`;
+  }
+  meta += `　｜　印刷日：${new Date().toLocaleDateString('ja-JP')}`;
+  document.getElementById('printMeta').textContent = meta;
+  window.print();
 }
 
 // ===== ヘルプ =====

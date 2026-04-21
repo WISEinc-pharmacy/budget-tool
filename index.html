@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>予実管理ダッシュボード</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🅦</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; background: #f5f7fa; color: #333; font-size: 13px; }
@@ -127,26 +128,28 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 
 /* 印刷用スタイル */
 @media print {
-  @page { size: landscape; margin: 8mm; }
-  body { font-size: 10px; background: #fff; }
+  @page { size: landscape; margin: 6mm; }
+  body { font-size: 10px; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   #loginScreen, .header, .user-bar, .dept-bar, .tab-bar, .toolbar, .legend, .modal-overlay, .mode-indicator { display: none !important; }
   #mainApp { display: block !important; }
   .tab-content { display: none !important; }
   .tab-content.active { display: block !important; }
-  .table-wrap { overflow: visible !important; max-height: none !important; padding: 0 !important; }
-  table { min-width: unset !important; width: 100% !important; box-shadow: none !important; font-size: 9px; }
-  th, td { padding: 2px 4px !important; }
+  .table-wrap { overflow: visible !important; max-height: none !important; padding: 0 !important; width: 100% !important; }
+  table { min-width: unset !important; width: 100% !important; box-shadow: none !important; font-size: 8px; table-layout: fixed; }
+  th, td { padding: 1px 3px !important; white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }
   th { position: static !important; }
-  th:first-child, td:first-child { position: static !important; }
-  input.cell-input { border: none !important; background: transparent !important; font-size: 9px; width: auto !important; padding: 0 !important; text-align: right; }
+  th:first-child { min-width: 100px !important; width: 120px !important; }
+  td:first-child { position: static !important; min-width: 100px !important; width: 120px !important; }
+  input.cell-input { border: none !important; background: transparent !important; font-size: 8px; width: 100% !important; padding: 0 !important; text-align: right; }
   select.dist-select { display: none; }
-  .current-dept-label { padding: 4px 0 !important; font-size: 14px !important; }
-  #printHeader { display: block !important; padding: 0 0 8px; border-bottom: 2px solid #1a5276; margin-bottom: 8px; }
-  #printHeader h2 { margin: 0; font-size: 16px; color: #1a5276; }
-  #printHeader .print-meta { font-size: 11px; color: #555; margin-top: 4px; }
-  tr.header-row { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  tr.subtotal-row, tr.profit-row, tr.ratio-row, tr.level-1, th, .col-total { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  td.col-total, th.col-total { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .current-dept-label { display: none !important; }
+  #printHeader { display: block !important; padding: 0 0 6px; border-bottom: 2px solid #1a5276; margin-bottom: 6px; }
+  #printHeader h2 { margin: 0; font-size: 15px; color: #1a5276; }
+  #printHeader .print-meta { font-size: 10px; color: #555; margin-top: 2px; }
+  tr.header-row, tr.subtotal-row, tr.profit-row, tr.ratio-row, tr.level-1, th, .col-total, td.col-total, th.col-total { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* 予実比較・年度比較は行数が多いので更に縮小 */
+  #tab-compare table, #tab-yoy table { font-size: 7px; }
+  #tab-compare th:nth-child(2), #tab-yoy th:nth-child(2) { width: 35px !important; }
 }
 #printHeader { display: none; }
 

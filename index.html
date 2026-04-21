@@ -122,6 +122,18 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .save-status.saving { color: #f39c12; }
 .save-status.saved { color: #2ecc71; }
 .save-status.error { color: #e74c3c; }
+
+/* ヘルプモーダル */
+.help-section { margin-bottom: 18px; }
+.help-section h3 { font-size: 14px; color: #1a5276; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 2px solid #3498db; display: flex; align-items: center; gap: 6px; }
+.help-section p, .help-section li { font-size: 12.5px; color: #444; line-height: 1.7; }
+.help-section ul { padding-left: 18px; margin: 4px 0 8px; }
+.help-section li { margin-bottom: 3px; }
+.help-tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 600; margin-left: 6px; }
+.help-tag.editor-only { background: #d5f5e3; color: #1e8449; }
+.help-tag.admin-only { background: #fadbd8; color: #c0392b; }
+.help-tip { background: #eaf2f8; border-left: 3px solid #3498db; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0; font-size: 12px; color: #2c3e50; }
+.help-shortcut { display: inline-block; background: #ecf0f1; border: 1px solid #bdc3c7; border-radius: 3px; padding: 1px 6px; font-size: 11px; font-family: monospace; }
 </style>
 </head>
 <body>
@@ -166,6 +178,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
   <div>
     <button class="btn btn-secondary" onclick="openAdminModal()" id="btnAdmin" style="display:none;font-size:11px;padding:4px 10px;">権限管理</button>
+    <button class="btn btn-secondary" onclick="openHelpModal()" style="font-size:11px;padding:4px 10px;background:#3498db;color:#fff;">ヘルプ</button>
     <button class="btn btn-secondary" onclick="doLogout()" style="font-size:11px;padding:4px 10px;">ログアウト</button>
   </div>
 </div>
@@ -257,6 +270,15 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <button class="btn btn-secondary" onclick="closeFreeeModal()">閉じる</button>
       <button class="btn btn-import" onclick="doFreeeImport()" id="btnFreeeExec" disabled>取込実行</button>
     </div>
+  </div>
+</div>
+
+<!-- ヘルプモーダル -->
+<div class="modal-overlay" id="helpModal">
+  <div class="modal" style="max-width:720px;max-height:85vh;overflow-y:auto">
+    <h2 style="display:flex;align-items:center;gap:8px">ヘルプ・使い方ガイド <span class="role-badge" id="helpRoleBadge" style="font-size:11px"></span></h2>
+    <div id="helpContent"></div>
+    <div class="btn-group"><button class="btn btn-secondary" onclick="closeHelpModal()">閉じる</button></div>
   </div>
 </div>
 
@@ -641,6 +663,117 @@ function applyPermissions() {
   document.getElementById('btnAdmin').style.display = userRole === 'admin' ? '' : 'none';
   // 編集系ボタンは updateModeUI で制御
 }
+
+// ===== ヘルプ =====
+function openHelpModal() {
+  const badge = document.getElementById('helpRoleBadge');
+  badge.textContent = userRole === 'admin' ? '管理者向け' : userRole === 'editor' ? '編集者向け' : '閲覧者向け';
+  badge.className = 'role-badge help-tag ' + (userRole === 'admin' ? 'admin-only' : userRole === 'editor' ? 'editor-only' : 'viewer');
+  const canEdit = userRole === 'admin' || userRole === 'editor';
+  const isAdmin = userRole === 'admin';
+  let h = '';
+
+  // 1. ログイン
+  h += `<div class="help-section"><h3>ログイン</h3>
+    <ul>
+      <li>「<strong>Googleでログイン</strong>」ボタンをクリックし、管理者に登録済みのGoogleアカウントでログインします。</li>
+      <li>未登録のアカウントではログインできません。利用を希望する場合は <strong>director@wise-jmco.com</strong> へご連絡ください。</li>
+    </ul></div>`;
+
+  // 2. 画面の見方
+  h += `<div class="help-section"><h3>画面の見方</h3>
+    <ul>
+      <li><strong>部門バー</strong>（画面上部の濃い帯）… 表示する部門を選択します。</li>
+      <li><strong>タブ</strong>（予算 / 実績 / 予実比較 / 年度比較）… 見たいデータに切り替えます。</li>
+      <li><strong>表示期間</strong>（ツールバー）… 表示する月を絞り込めます。</li>
+      <li><strong>期間合計列</strong>（濃い背景の列）… 表示中の月の合計値です。</li>
+    </ul>
+    <div class="help-tip">行の色の意味：<br>
+      <span style="display:inline-block;width:12px;height:12px;background:#eaf2f8;border:1px solid #ccc;vertical-align:middle"></span> 集計行&emsp;
+      <span style="display:inline-block;width:12px;height:12px;background:#d5e8d4;border:1px solid #ccc;vertical-align:middle"></span> 小計行&emsp;
+      <span style="display:inline-block;width:12px;height:12px;background:#fff2cc;border:1px solid #ccc;vertical-align:middle"></span> 利益行&emsp;
+      <span style="display:inline-block;width:12px;height:12px;background:#e8daef;border:1px solid #ccc;vertical-align:middle"></span> KPI（指標）
+    </div></div>`;
+
+  // 3. 部門選択
+  h += `<div class="help-section"><h3>部門の選択</h3>
+    <ul>
+      <li><strong>閲覧モード</strong>：チェックボックスで<strong>複数の部門を同時に選択</strong>でき、合計値が表示されます。</li>
+      ${canEdit ? '<li><strong>編集モード</strong>：ラジオボタンで<strong>1部門ずつ</strong>選択して編集します。</li>' : ''}
+      <li>右側の「<strong>全選択 / 全解除 / 全店舗 / 東葛 / 城北</strong>」ボタンでまとめて切り替えできます。</li>
+    </ul>
+    <div class="help-tip">東葛＝柏・さくら台・我孫子・ながれやま ／ 城北＝足立・アイ調剤</div></div>`;
+
+  // 4. 各タブの説明
+  h += `<div class="help-section"><h3>各タブの説明</h3>
+    <ul>
+      <li><strong>予算タブ</strong>：年間予算を月別に表示します。${canEdit ? '編集モードで数値を入力できます。' : ''}</li>
+      <li><strong>実績タブ</strong>：月別の実績を表示します。${canEdit ? '編集モードで入力できます。' : ''}</li>
+      <li><strong>予実比較タブ</strong>：予算と実績を並べて表示し、<span style="color:#e74c3c">差異</span>（実績−予算）を確認できます。</li>
+      <li><strong>年度比較タブ</strong>：当年度と過去年度の実績を比較します。上部のプルダウンで比較年度を選択してください。</li>
+    </ul></div>`;
+
+  // 5. 編集モード（editor/admin のみ）
+  if (canEdit) {
+    h += `<div class="help-section"><h3>編集モードの使い方 <span class="help-tag editor-only">編集者以上</span></h3>
+      <ul>
+        <li>画面右上の「<strong>編集モード</strong>」ボタンで切り替えます。</li>
+        <li>編集モードでは部門は<strong>1つずつ</strong>選択します（ラジオボタン）。</li>
+        <li>数値のセルをクリックして直接入力します。変更は<strong>自動保存</strong>されます。</li>
+        <li>入力を間違えた場合は <span class="help-shortcut">Ctrl+Z</span> で元に戻せます（最大50操作）。やり直しは <span class="help-shortcut">Ctrl+Y</span> です。</li>
+      </ul>
+      <p style="margin-top:6px"><strong>配分パターン（予算タブ）：</strong></p>
+      <ul>
+        <li><strong>均等割り</strong>：年間合計を入力すると12か月に均等配分されます。</li>
+        <li><strong>均等増減</strong>：初月の値を基準に毎月均等に増減します。</li>
+        <li><strong>全月同額</strong>：初月と同じ金額を全月にコピーします。</li>
+      </ul>
+      <div class="help-tip">配分パターンは科目ごとに選べます。まず<strong>年間合計</strong>（緑枠）または<strong>初月</strong>（黄枠）を入力してください。</div></div>`;
+  }
+
+  // 6. CSV（editor/admin のみ）
+  if (canEdit) {
+    h += `<div class="help-section"><h3>CSV インポート・エクスポート <span class="help-tag editor-only">編集者以上</span></h3>
+      <ul>
+        <li><strong>エクスポート</strong>：画面右上の「予算」「実績」「全体」ボタンで、現在表示中のデータをCSVでダウンロードできます。</li>
+        <li><strong>CSVインポート</strong>：「CSVインポート」ボタンから、予算または実績のCSVファイルを読み込めます。科目名が一致する行のデータが上書きされます。</li>
+        <li><strong>Freee取込</strong>：Freee会計の「月次推移：損益計算書」CSVを部門ごとにまとめて実績データに取り込めます。複数ファイル同時選択OK。</li>
+      </ul></div>`;
+  }
+
+  // 7. 履歴
+  if (canEdit) {
+    h += `<div class="help-section"><h3>操作履歴 <span class="help-tag editor-only">編集者以上</span></h3>
+      <ul>
+        <li>「<strong>履歴</strong>」ボタンで過去の保存状態を一覧表示できます。</li>
+        <li>任意の時点に<strong>復元</strong>できます（部門単位）。</li>
+      </ul></div>`;
+  }
+
+  // 8. 権限管理（admin のみ）
+  if (isAdmin) {
+    h += `<div class="help-section"><h3>権限管理 <span class="help-tag admin-only">管理者のみ</span></h3>
+      <ul>
+        <li>「<strong>権限管理</strong>」ボタンでユーザーの追加・権限変更・削除ができます。</li>
+        <li>ユーザーを追加するには、<strong>Googleアカウントのメールアドレス</strong>を入力し、権限を選択して「追加」をクリックします。</li>
+        <li>事前に追加されていないアカウントではログインできません。</li>
+      </ul>
+      <p style="margin-top:6px"><strong>権限の違い：</strong></p>
+      <ul>
+        <li><span class="role-badge admin" style="font-size:11px">管理者</span> すべての操作 + 権限管理 + 役員/管理部/学術の閲覧</li>
+        <li><span class="role-badge editor" style="font-size:11px">編集者</span> 予算・実績の編集 + CSV取込 + 役員/管理部/学術の閲覧</li>
+        <li><span class="role-badge viewer" style="font-size:11px;background:#95a5a6">閲覧者</span> 店舗データの閲覧のみ</li>
+      </ul></div>`;
+  }
+
+  // 9. お問い合わせ
+  h += `<div class="help-section"><h3>お問い合わせ</h3>
+    <p>操作でお困りの場合は <strong>director@wise-jmco.com</strong> までご連絡ください。</p></div>`;
+
+  document.getElementById('helpContent').innerHTML = h;
+  document.getElementById('helpModal').classList.add('show');
+}
+function closeHelpModal() { document.getElementById('helpModal').classList.remove('show'); }
 
 // ===== 権限管理 =====
 function openAdminModal() { document.getElementById('adminModal').classList.add('show'); renderUserList(); }

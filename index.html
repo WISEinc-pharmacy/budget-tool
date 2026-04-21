@@ -113,6 +113,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .role-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
 .role-badge.editor { background: #2ecc71; color: #fff; }
 .role-badge.viewer { background: #95a5a6; color: #fff; }
+.role-badge.viewer_kanribu { background: #8e44ad; color: #fff; }
+.role-badge.viewer_gakujutsu { background: #2980b9; color: #fff; }
 .role-badge.admin { background: #e74c3c; color: #fff; }
 .save-status { font-size: 11px; color: #999; margin-left: 12px; }
 .current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; display: flex; align-items: center; gap: 12px; }
@@ -290,7 +292,9 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <input type="email" id="addUserEmail" placeholder="メールアドレス" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:13px;margin-bottom:8px">
       <select id="addUserRole" style="padding:6px;font-size:13px;">
         <option value="editor">編集者</option>
-        <option value="viewer">閲覧者</option>
+        <option value="viewer">閲覧者（店舗）</option>
+        <option value="viewer_kanribu">閲覧者（管理部）</option>
+        <option value="viewer_gakujutsu">閲覧者（学術）</option>
         <option value="admin">管理者</option>
       </select>
       <button class="btn btn-primary" onclick="addUser()" style="margin-left:8px">追加</button>
@@ -653,9 +657,15 @@ async function checkUserRole(user) {
     }
   }
   const badge = document.getElementById('roleBadge');
-  badge.textContent = userRole === 'admin' ? '管理者' : userRole === 'editor' ? '編集者' : '閲覧者';
+  badge.textContent = getRoleLabel(userRole);
   badge.className = 'role-badge ' + userRole;
 }
+
+function getRoleLabel(role) {
+  const labels = { admin: '管理者', editor: '編集者', viewer: '閲覧者（店舗）', viewer_kanribu: '閲覧者（管理部）', viewer_gakujutsu: '閲覧者（学術）' };
+  return labels[role] || role;
+}
+function isViewerRole(role) { return role === 'viewer' || role === 'viewer_kanribu' || role === 'viewer_gakujutsu'; }
 
 function applyPermissions() {
   const canEdit = userRole === 'admin' || userRole === 'editor';
@@ -667,8 +677,8 @@ function applyPermissions() {
 // ===== ヘルプ =====
 function openHelpModal() {
   const badge = document.getElementById('helpRoleBadge');
-  badge.textContent = userRole === 'admin' ? '管理者向け' : userRole === 'editor' ? '編集者向け' : '閲覧者向け';
-  badge.className = 'role-badge help-tag ' + (userRole === 'admin' ? 'admin-only' : userRole === 'editor' ? 'editor-only' : 'viewer');
+  badge.textContent = getRoleLabel(userRole) + '向け';
+  badge.className = 'role-badge help-tag ' + (userRole === 'admin' ? 'admin-only' : userRole === 'editor' ? 'editor-only' : userRole);
   const canEdit = userRole === 'admin' || userRole === 'editor';
   const isAdmin = userRole === 'admin';
   let h = '';
@@ -696,13 +706,21 @@ function openHelpModal() {
     </div></div>`;
 
   // 3. 部門選択
-  h += `<div class="help-section"><h3>部門の選択</h3>
-    <ul>
-      <li><strong>閲覧モード</strong>：チェックボックスで<strong>複数の部門を同時に選択</strong>でき、合計値が表示されます。</li>
-      ${canEdit ? '<li><strong>編集モード</strong>：ラジオボタンで<strong>1部門ずつ</strong>選択して編集します。</li>' : ''}
-      <li>右側の「<strong>全選択 / 全解除 / 全店舗 / 東葛 / 城北</strong>」ボタンでまとめて切り替えできます。</li>
-    </ul>
-    <div class="help-tip">東葛＝柏・さくら台・我孫子・ながれやま ／ 城北＝足立・アイ調剤</div></div>`;
+  if (userRole === 'viewer_kanribu') {
+    h += `<div class="help-section"><h3>部門の表示</h3>
+      <p>あなたの権限では<strong>管理部・本部</strong>のデータを閲覧できます。</p></div>`;
+  } else if (userRole === 'viewer_gakujutsu') {
+    h += `<div class="help-section"><h3>部門の表示</h3>
+      <p>あなたの権限では<strong>学術研修企画運営室</strong>のデータを閲覧できます。</p></div>`;
+  } else {
+    h += `<div class="help-section"><h3>部門の選択</h3>
+      <ul>
+        <li><strong>閲覧モード</strong>：チェックボックスで<strong>複数の部門を同時に選択</strong>でき、合計値が表示されます。</li>
+        ${canEdit ? '<li><strong>編集モード</strong>：ラジオボタンで<strong>1部門ずつ</strong>選択して編集します。</li>' : ''}
+        <li>右側の「<strong>全選択 / 全解除 / 全店舗 / 東葛 / 城北</strong>」ボタンでまとめて切り替えできます。</li>
+      </ul>
+      <div class="help-tip">東葛＝柏・さくら台・我孫子・ながれやま ／ 城北＝足立・アイ調剤</div></div>`;
+  }
 
   // 4. 各タブの説明
   h += `<div class="help-section"><h3>各タブの説明</h3>
@@ -760,9 +778,11 @@ function openHelpModal() {
       </ul>
       <p style="margin-top:6px"><strong>権限の違い：</strong></p>
       <ul>
-        <li><span class="role-badge admin" style="font-size:11px">管理者</span> すべての操作 + 権限管理 + 役員/管理部/学術の閲覧</li>
-        <li><span class="role-badge editor" style="font-size:11px">編集者</span> 予算・実績の編集 + CSV取込 + 役員/管理部/学術の閲覧</li>
-        <li><span class="role-badge viewer" style="font-size:11px;background:#95a5a6">閲覧者</span> 店舗データの閲覧のみ</li>
+        <li><span class="role-badge admin" style="font-size:11px">管理者</span> すべての操作 + 権限管理 + 全部門閲覧</li>
+        <li><span class="role-badge editor" style="font-size:11px">編集者</span> 予算・実績の編集 + CSV取込 + 全部門閲覧</li>
+        <li><span class="role-badge viewer" style="font-size:11px">閲覧者（店舗）</span> 6店舗データの閲覧のみ</li>
+        <li><span class="role-badge viewer_kanribu" style="font-size:11px">閲覧者（管理部）</span> 管理部・本部データの閲覧のみ</li>
+        <li><span class="role-badge viewer_gakujutsu" style="font-size:11px">閲覧者（学術）</span> 学術研修企画運営室データの閲覧のみ</li>
       </ul></div>`;
   }
 
@@ -802,7 +822,9 @@ async function renderUserList() {
       <td><select onchange="changeRole('${u.email}',this.value)" ${isSelf?'disabled':''} style="font-size:12px">
         <option value="admin" ${u.role==='admin'?'selected':''}>管理者</option>
         <option value="editor" ${u.role==='editor'?'selected':''}>編集者</option>
-        <option value="viewer" ${u.role==='viewer'?'selected':''}>閲覧者</option>
+        <option value="viewer" ${u.role==='viewer'?'selected':''}>閲覧者（店舗）</option>
+        <option value="viewer_kanribu" ${u.role==='viewer_kanribu'?'selected':''}>閲覧者（管理部）</option>
+        <option value="viewer_gakujutsu" ${u.role==='viewer_gakujutsu'?'selected':''}>閲覧者（学術）</option>
       </select></td>
       <td>${isSelf?'-':'<button class="btn btn-warn" style="font-size:11px;padding:2px 8px" onclick="removeUser(\''+u.email+'\')">削除</button>'}</td></tr>`;
   });
@@ -811,7 +833,11 @@ async function renderUserList() {
 
 // ===== 部門チェックボックス =====
 function getVisibleDepts() {
-  return DEPTS.filter(d => !d.adminOnly || userRole === 'admin' || userRole === 'editor');
+  if (userRole === 'admin' || userRole === 'editor') return DEPTS;
+  if (userRole === 'viewer_kanribu') return DEPTS.filter(d => d.id === 'kanribu');
+  if (userRole === 'viewer_gakujutsu') return DEPTS.filter(d => d.id === 'gakujutsu');
+  // viewer（店舗閲覧）: adminOnly以外
+  return DEPTS.filter(d => !d.adminOnly);
 }
 
 function renderDeptBar() {
@@ -1068,8 +1094,8 @@ function getPrevBudgetActual(prevAllData) {
 
 function isItemVisible(it) {
   if (!it.adminOnly) return true;
-  // 閲覧者は常に非表示
-  if (userRole === 'viewer') return false;
+  // 全閲覧者は adminOnly 科��を非表示
+  if (isViewerRole(userRole)) return false;
   // 管理者・編集者でも、店舗のみ選択中は非表示（役員等の部門が含まれていなければ）
   const hasAdminDept = selectedDepts.some(id => {
     const dept = DEPTS.find(d => d.id === id);

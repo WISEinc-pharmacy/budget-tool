@@ -2264,28 +2264,67 @@ async function doFreeeImport() {
   renderCurrentTab();
 
   // Firestoreに並列保存（年度ごとに正しいドキュメントに保存）
-  let importedLabels = [];
+  const importedEntries = [];
+  const skippedEntries = [];
   let saveErrors = [];
   const savePromises = targetEntries.map(async (d) => {
     try {
       await saveDeptToFirestoreWithFY(d.deptId, d.targetFY, d.monthValues);
-      importedLabels.push(`${d.deptName}(${d.targetFY})`);
+      importedEntries.push(d);
     } catch (e) {
       saveErrors.push(`${d.deptName}(${d.targetFY}): ${e.message}`);
     }
   });
+  // スキップされたファイル
+  freeeParsedData.filter(d => !d.deptId).forEach(d => skippedEntries.push(d));
   await Promise.all(savePromises);
 
   btn.textContent = '取込実行';
   btn.disabled = false;
-  // 年度ごとに結果をまとめて表示
+
+  // 操作ログ形式で結果表示
+  const genkaIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko'];
+  const calcSummary = (d) => {
+    const mv = d.monthValues;
+    const sales = (mv['gijutsu']||[]).reduce((s,v)=>s+v,0) + (mv['yakuzai']||[]).reduce((s,v)=>s+v,0) + (mv['chiryo']||[]).reduce((s,v)=>s+v,0) + (mv['uriage_other']||[]).reduce((s,v)=>s+v,0);
+    const genka = (mv['tsukisho_zaiko']||[]).reduce((s,v)=>s+v,0) + (mv['shiire']||[]).reduce((s,v)=>s+v,0) - (mv['tsukimatsu_zaiko']||[]).reduce((s,v)=>s+v,0);
+    const sga = Object.entries(mv).filter(([k])=>!genkaIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
+    return { sales, genka, sga };
+  };
+
+  // 年度ごとにグループ化
   const fyGroups = {};
-  importedLabels.forEach(l => { const m = l.match(/\((\d{4})\)$/); const fy = m?m[1]:'?'; if(!fyGroups[fy])fyGroups[fy]=[]; fyGroups[fy].push(l.replace(/\(\d{4}\)$/,'')); });
-  let msg = '';
-  for (const [fy, names] of Object.entries(fyGroups).sort()) {
-    msg += `<div class="import-result success">${fy}年度: ${names.length}部門取込完了（${names.join('、')}）</div>`;
+  importedEntries.forEach(d => {
+    if (!fyGroups[d.targetFY]) fyGroups[d.targetFY] = [];
+    fyGroups[d.targetFY].push(d);
+  });
+
+  let msg = '<div style="font-size:12px">';
+  msg += `<div style="font-weight:bold;margin-bottom:6px;font-size:13px">✅ 取込完了 — ${importedEntries.length}件保存${skippedEntries.length ? `、${skippedEntries.length}件スキップ` : ''}</div>`;
+
+  for (const [fy, entries] of Object.entries(fyGroups).sort()) {
+    msg += `<div style="background:#f0f7f0;border:1px solid #c3e6c3;border-radius:4px;padding:8px;margin-bottom:6px">`;
+    msg += `<div style="font-weight:bold;margin-bottom:4px">📅 ${fy}年度（${entries.length}部門）</div>`;
+    msg += '<table style="width:100%;border-collapse:collapse;font-size:11px">';
+    msg += '<tr style="background:#e8f5e8"><th style="padding:2px 4px;text-align:left;border-bottom:1px solid #c3e6c3">部門</th><th style="padding:2px 4px;text-align:right;border-bottom:1px solid #c3e6c3">売上高</th><th style="padding:2px 4px;text-align:right;border-bottom:1px solid #c3e6c3">売上原価</th><th style="padding:2px 4px;text-align:right;border-bottom:1px solid #c3e6c3">販管費</th></tr>';
+    let totalSales=0, totalGenka=0, totalSga=0;
+    entries.sort((a,b) => (a.deptName||'').localeCompare(b.deptName||''));
+    entries.forEach(d => {
+      const s = calcSummary(d);
+      totalSales += s.sales; totalGenka += s.genka; totalSga += s.sga;
+      msg += `<tr><td style="padding:2px 4px">${d.deptName}</td><td style="padding:2px 4px;text-align:right">${s.sales.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${s.genka.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${s.sga.toLocaleString()}</td></tr>`;
+    });
+    msg += `<tr style="font-weight:bold;border-top:1px solid #999"><td style="padding:2px 4px">合計</td><td style="padding:2px 4px;text-align:right">${totalSales.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${totalGenka.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${totalSga.toLocaleString()}</td></tr>`;
+    msg += '</table></div>';
   }
-  if (saveErrors.length) msg += `<div class="import-result error">${saveErrors.join('<br>')}</div>`;
+
+  if (skippedEntries.length) {
+    msg += `<div style="color:#999;margin-top:4px">⏭ スキップ: ${skippedEntries.map(d => d.fileName||d.deptName).join('、')}</div>`;
+  }
+  if (saveErrors.length) {
+    msg += `<div style="color:#e74c3c;margin-top:4px">❌ エラー: ${saveErrors.join('、')}</div>`;
+  }
+  msg += '</div>';
   resultDiv.innerHTML = msg;
 }
 

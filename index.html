@@ -1221,8 +1221,6 @@ async function renderActualTable() {
   const vm = getVisibleMonths();
   const needsPrev = vm.some(i => i < 0);
   const prevData = needsPrev ? getPrevBudgetActual(await ensurePrevYearData()) : null;
-  const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
-  const ro = canEdit ? '' : 'readonly';
   let html = '<thead><tr><th>科目</th><th class="col-total">期間合計</th>';
   vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
   html += '</tr></thead><tbody>';
@@ -1234,14 +1232,7 @@ async function renderActualTable() {
     else if (it.type === 'input') {
       const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
       html += `<td class="calc-value col-total">${fmt(periodTotal)}</td>`;
-      if (it.actualOnly) {
-        // 実績専用項目: CSV取込のみ。常にread-only表示
-        vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`);
-      } else if (!isSingleDept()) { vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`); }
-      else { vm.forEach(m => {
-        if (m < 0) { html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`; return; }
-        html += `<td><input class="cell-input" type="number" value="${data.actual[it.id][m]||''}" onchange="onActualCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
-      }); }
+      vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`);
     } else if (it.type === 'calc') {
       const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
       html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;

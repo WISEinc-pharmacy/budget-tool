@@ -294,7 +294,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 
 <!-- Freee取込モーダル -->
 <div class="modal-overlay" id="freeeModal">
-  <div class="modal" style="max-width:700px;max-height:85vh;overflow-y:auto">
+  <div class="modal" style="max-width:900px;max-height:85vh;overflow-y:auto">
     <h2>Freee P/L CSV 一括取込</h2>
     <p>Freee会計の「月次推移：損益計算書」CSVを部門ごとに読み込み、実績データに反映します。</p>
     <p style="margin:8px 0"><strong>CSVファイル（複数選択可）:</strong></p>
@@ -1902,8 +1902,9 @@ async function parseFreeeFiles() {
   }
   // 年度でソート（年度昇順→部門名順）
   freeeParsedData.sort((a,b) => (a.fiscalYear||'').localeCompare(b.fiscalYear||'') || (a.deptName||'').localeCompare(b.deptName||''));
-  html += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin:8px 0">';
-  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc">ファイル名</th><th style="padding:4px;border:1px solid #ccc">年度</th><th style="padding:4px;border:1px solid #ccc">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc">売上高</th><th style="padding:4px;border:1px solid #ccc">売上原価</th><th style="padding:4px;border:1px solid #ccc">販管費</th></tr>';
+  html += '<div style="overflow-x:auto;margin:8px 0">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:700px">';
+  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">ファイル名</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">年度</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上高</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上原価</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">販管費</th></tr>';
   let prevFY = null;
   for (let i = 0; i < freeeParsedData.length; i++) {
     const d = freeeParsedData[i];
@@ -1929,9 +1930,9 @@ async function parseFreeeFiles() {
     const confLabel = {high:'✓確実', medium:'△推定', none:'?不明'}[d.confidence]||'?不明';
     const confColor = {high:'#27ae60', medium:'#e67e22', none:'#e74c3c'}[d.confidence]||'#e74c3c';
     html += `</select><div style="color:${confColor};font-size:10px">${confLabel}: ${d.deptName}</div></td>`;
-    html += `<td style="padding:4px;border:1px solid #ccc;text-align:right">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sgaTotal.toLocaleString()}</td></tr>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${sgaTotal.toLocaleString()}</td></tr>`;
   }
-  html += '</table>';
+  html += '</table></div>';
   // 重複部門の警告（同一年度+同一部門の場合のみ）
   const deptFyCounts = {};
   freeeParsedData.forEach(d => { if (d.deptId) { const key = `${d.fiscalYear}_${d.deptId}`; deptFyCounts[key] = (deptFyCounts[key]||0)+1; } });

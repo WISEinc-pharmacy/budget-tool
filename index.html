@@ -2256,7 +2256,7 @@ async function doFreeeImport() {
       for (const [itemId, vals] of Object.entries(d.monthValues)) {
         if (!store[itemId]) continue;
         for (let m = 0; m < 12; m++) {
-          if (vals[m] !== 0) store[itemId][m] = vals[m];
+          store[itemId][m] = vals[m];
         }
       }
     }
@@ -2355,11 +2355,11 @@ async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
     if (!data.annualInputs[it.id]) data.annualInputs[it.id] = 0;
     if (!data.distMethod[it.id]) data.distMethod[it.id] = 'even';
   });
-  // CSVの実績データを反映
+  // CSVの実績データを反映（0も含めて全月上書き。古い誤データを残さない）
   for (const [itemId, vals] of Object.entries(monthValues)) {
     if (!data.actual[itemId]) continue;
     for (let m = 0; m < 12; m++) {
-      if (vals[m] !== 0) data.actual[itemId][m] = vals[m];
+      data.actual[itemId][m] = vals[m];
     }
   }
   await db.collection('budgetData').doc(did).set(data);

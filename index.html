@@ -1871,7 +1871,10 @@ async function parseFreeeFiles() {
     }
     seenSignatures.add(sig);
     const parsed = parseFreeeCSV(text);
-    if (parsed) freeeParsedData.push(parsed);
+    if (parsed) {
+      parsed.fileName = file.name;
+      freeeParsedData.push(parsed);
+    }
   }
 
   // 全社CSV（取込不可）を分離して除外
@@ -1886,43 +1889,54 @@ async function parseFreeeFiles() {
     return;
   }
 
-  // CSVから年度を自動検出
-  const detectedFY = freeeParsedData[0]?.fiscalYear || getFiscalYear();
-  const currentFY = getFiscalYear();
-  if (detectedFY !== currentFY) {
-    document.getElementById('fiscalYear').value = detectedFY;
-  }
+  // 年度をファイルごとに個別管理（全体切替はしない）
+  const fySet = new Set(freeeParsedData.map(d => d.fiscalYear).filter(Boolean));
 
-  // プレビュー表示（部門選択ドロップダウン付き）
+  // プレビュー表示（ファイル名・年度・部門選択）
   const deptOptions = DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('') + '<option value="">-- スキップ --</option>';
   let html = '';
-  if (detectedFY !== currentFY) {
-    html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 CSVの年度: <strong>${detectedFY}年度</strong>（自動切替済み）</div>`;
+  if (fySet.size > 1) {
+    html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 複数年度のCSVが混在しています: <strong>${[...fySet].sort().join('・')}年度</strong>。それぞれの年度に取り込まれます。</div>`;
+  } else if (fySet.size === 1) {
+    html += `<div style="background:#e8f4e8;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 CSVの年度: <strong>${[...fySet][0]}年度</strong></div>`;
   }
+  // 年度でソート（年度昇順→部門名順）
+  freeeParsedData.sort((a,b) => (a.fiscalYear||'').localeCompare(b.fiscalYear||'') || (a.deptName||'').localeCompare(b.deptName||''));
   html += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin:8px 0">';
-  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc">売上高</th><th style="padding:4px;border:1px solid #ccc">売上原価</th><th style="padding:4px;border:1px solid #ccc">販管費</th><th style="padding:4px;border:1px solid #ccc">マッチ項目</th></tr>';
+  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc">ファイル名</th><th style="padding:4px;border:1px solid #ccc">年度</th><th style="padding:4px;border:1px solid #ccc">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc">売上高</th><th style="padding:4px;border:1px solid #ccc">売上原価</th><th style="padding:4px;border:1px solid #ccc">販管費</th></tr>';
+  let prevFY = null;
   for (let i = 0; i < freeeParsedData.length; i++) {
     const d = freeeParsedData[i];
+    const fy = d.fiscalYear || '不明';
     const feb = d.monthValues;
     const sales = (feb['gijutsu']||[]).reduce((s,v)=>s+v,0) + (feb['yakuzai']||[]).reduce((s,v)=>s+v,0) + (feb['chiryo']||[]).reduce((s,v)=>s+v,0) + (feb['uriage_other']||[]).reduce((s,v)=>s+v,0);
     const genka = (feb['tsukisho_zaiko']||[]).reduce((s,v)=>s+v,0) + (feb['shiire']||[]).reduce((s,v)=>s+v,0) - (feb['tsukimatsu_zaiko']||[]).reduce((s,v)=>s+v,0);
-    const matched = Object.keys(feb).length;
     const genkaIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko'];
     const sgaTotal = Object.entries(feb).filter(([k])=>!genkaIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
+    // 年度区切り線
+    if (fySet.size > 1 && prevFY !== null && prevFY !== fy) {
+      html += `<tr><td colspan="6" style="border-top:2px solid #2c3e50;padding:0"></td></tr>`;
+    }
+    prevFY = fy;
+    // ファイル名（長い場合は末尾のみ）
+    const shortName = (d.fileName||'').replace(/^.*[\/\\]/, '').replace(/月次推移[：:]損益計算書_ワイズ株式会社/, '').replace(/[（(]表示単位[：:]円[）)]/, '').replace(/[（(]期間[：:]/, '').replace(/[）)]/, '').trim() || d.fileName || '?';
     const selId = `freee_dept_${i}`;
-    html += `<tr><td style="padding:4px;border:1px solid #ccc"><select id="${selId}" style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
+    html += `<tr>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;font-size:10px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.fileName||''}">${shortName}</td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;text-align:center;font-weight:bold">${fy}</td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc"><select id="${selId}" style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
     html += deptOptions.replace(`value="${d.deptId}"`, `value="${d.deptId}" selected`);
     const confLabel = {high:'✓確実', medium:'△推定', none:'?不明'}[d.confidence]||'?不明';
     const confColor = {high:'#27ae60', medium:'#e67e22', none:'#e74c3c'}[d.confidence]||'#e74c3c';
     html += `</select><div style="color:${confColor};font-size:10px">${confLabel}: ${d.deptName}</div></td>`;
-    html += `<td style="padding:4px;border:1px solid #ccc;text-align:right">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sgaTotal.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:center">${matched}項目</td></tr>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;text-align:right">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right">${sgaTotal.toLocaleString()}</td></tr>`;
   }
   html += '</table>';
-  // 重複部門の警告
-  const deptCounts = {};
-  freeeParsedData.forEach(d => { if (d.deptId) deptCounts[d.deptId] = (deptCounts[d.deptId]||0)+1; });
-  const dupDepts = Object.entries(deptCounts).filter(([,c])=>c>1).map(([id])=>freeeParsedData.find(d=>d.deptId===id)?.deptName||id);
-  if (dupDepts.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一部門が複数検出されています: ${dupDepts.join('、')}。重複ファイルをスキップしてください。</div>`;
+  // 重複部門の警告（同一年度+同一部門の場合のみ）
+  const deptFyCounts = {};
+  freeeParsedData.forEach(d => { if (d.deptId) { const key = `${d.fiscalYear}_${d.deptId}`; deptFyCounts[key] = (deptFyCounts[key]||0)+1; } });
+  const dupKeys = Object.entries(deptFyCounts).filter(([,c])=>c>1).map(([key])=>{ const [fy,id]=key.split('_'); const name=freeeParsedData.find(d=>d.deptId===id&&d.fiscalYear===fy)?.deptName||id; return `${name}(${fy})`; });
+  if (dupKeys.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一年度・同一部門が重複しています: ${dupKeys.join('、')}。スキップに変更してください。</div>`;
   // 全社CSV自動除外の通知
   if (allDeptCsvItems.length) html += `<div style="background:#fde8e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⛔ 全社CSV（部門フィルタなし）を自動除外しました: ${allDeptCsvItems.map(d=>d.deptName).join('、')}</div>`;
   // 重複ファイル自動スキップ通知
@@ -2224,40 +2238,91 @@ async function doFreeeImport() {
   btn.textContent = '保存中...';
   resultDiv.innerHTML = '<div class="import-result" style="color:#3498db">取込中... Firestoreに保存しています</div>';
 
-  // まずメモリに全部門を書き込み（即座に完了）
-  const targetDepts = [];
+  // 年度ごと・部門ごとにグループ化して保存
+  const targetEntries = [];
   for (const d of freeeParsedData) {
     if (!d.deptId) continue;
-    initDeptData(d.deptId);
-    const store = allData[d.deptId].actual;
-    for (const [itemId, vals] of Object.entries(d.monthValues)) {
-      if (!store[itemId]) continue;
-      for (let m = 0; m < 12; m++) {
-        if (vals[m] !== 0) store[itemId][m] = vals[m];
+    const fy = d.fiscalYear || getFiscalYear();
+    targetEntries.push({ ...d, targetFY: fy });
+  }
+
+  // 現在の年度のデータはメモリにも反映（画面表示用）
+  const currentFY = getFiscalYear();
+  for (const d of targetEntries) {
+    if (d.targetFY === currentFY) {
+      initDeptData(d.deptId);
+      const store = allData[d.deptId].actual;
+      for (const [itemId, vals] of Object.entries(d.monthValues)) {
+        if (!store[itemId]) continue;
+        for (let m = 0; m < 12; m++) {
+          if (vals[m] !== 0) store[itemId][m] = vals[m];
+        }
       }
     }
-    targetDepts.push(d);
   }
   renderCurrentTab();
 
-  // Firestoreに並列保存
-  let importedDepts = [];
+  // Firestoreに並列保存（年度ごとに正しいドキュメントに保存）
+  let importedLabels = [];
   let saveErrors = [];
-  const savePromises = targetDepts.map(async (d) => {
+  const savePromises = targetEntries.map(async (d) => {
     try {
-      await saveDeptToFirestore(d.deptId);
-      importedDepts.push(d.deptName);
+      await saveDeptToFirestoreWithFY(d.deptId, d.targetFY, d.monthValues);
+      importedLabels.push(`${d.deptName}(${d.targetFY})`);
     } catch (e) {
-      saveErrors.push(`${d.deptName}: ${e.message}`);
+      saveErrors.push(`${d.deptName}(${d.targetFY}): ${e.message}`);
     }
   });
   await Promise.all(savePromises);
 
   btn.textContent = '取込実行';
   btn.disabled = false;
-  let msg = `<div class="import-result success">${importedDepts.length}部門の実績データを取込・保存しました: ${importedDepts.join('、')}</div>`;
+  // 年度ごとに結果をまとめて表示
+  const fyGroups = {};
+  importedLabels.forEach(l => { const m = l.match(/\((\d{4})\)$/); const fy = m?m[1]:'?'; if(!fyGroups[fy])fyGroups[fy]=[]; fyGroups[fy].push(l.replace(/\(\d{4}\)$/,'')); });
+  let msg = '';
+  for (const [fy, names] of Object.entries(fyGroups).sort()) {
+    msg += `<div class="import-result success">${fy}年度: ${names.length}部門取込完了（${names.join('、')}）</div>`;
+  }
   if (saveErrors.length) msg += `<div class="import-result error">${saveErrors.join('<br>')}</div>`;
   resultDiv.innerHTML = msg;
+}
+
+async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
+  // 指定年度のドキュメントを読み込み、実績だけ更新して保存
+  const did = `FY${fiscalYear}_${deptId}`;
+  let existing = {};
+  try {
+    const doc = await db.collection('budgetData').doc(did).get();
+    if (doc.exists) existing = doc.data();
+  } catch(e) {}
+  // 既存データをベースに実績を上書き
+  const data = {
+    budget: existing.budget || {},
+    actual: existing.actual || {},
+    annualInputs: existing.annualInputs || {},
+    distMethod: existing.distMethod || {},
+    startMonth: existing.startMonth || document.getElementById('startMonth').value,
+    fiscalYear: fiscalYear,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: currentUser.email
+  };
+  // ITEMS初期化（既存にないキーを補完）
+  ITEMS.forEach(it => {
+    if (it.type === 'header') return;
+    if (!data.budget[it.id]) data.budget[it.id] = new Array(12).fill(0);
+    if (!data.actual[it.id]) data.actual[it.id] = new Array(12).fill(0);
+    if (!data.annualInputs[it.id]) data.annualInputs[it.id] = 0;
+    if (!data.distMethod[it.id]) data.distMethod[it.id] = 'even';
+  });
+  // CSVの実績データを反映
+  for (const [itemId, vals] of Object.entries(monthValues)) {
+    if (!data.actual[itemId]) continue;
+    for (let m = 0; m < 12; m++) {
+      if (vals[m] !== 0) data.actual[itemId][m] = vals[m];
+    }
+  }
+  await db.collection('budgetData').doc(did).set(data);
 }
 
 // ===== タブ =====

@@ -394,7 +394,11 @@ const ITEMS = [
   { id: 'blank_uriage', name: '', type: 'input', level: 0 },
   { id: 'uriage_total', name: '売上合計', type: 'calc', level: 0, style: 'subtotal',
     calc: (m) => val(m, 'uriage_sub') },
-  { id: 'genka_total', name: '売上原価合計', type: 'input', level: 0 },
+  { id: 'tsukisho_zaiko', name: '・月初在庫', type: 'input', level: 1, actualOnly: true },
+  { id: 'shiire', name: '・仕入高', type: 'input', level: 1, actualOnly: true },
+  { id: 'tsukimatsu_zaiko', name: '・月末在庫', type: 'input', level: 1, actualOnly: true },
+  { id: 'genka_total', name: '売上原価合計', type: 'calc', level: 0, style: 'subtotal',
+    calc: (m) => val(m, 'tsukisho_zaiko') + val(m, 'shiire') - val(m, 'tsukimatsu_zaiko') },
   { id: 'gross_profit', name: '売上総利益', type: 'calc', level: 0, style: 'profit',
     calc: (m) => val(m, 'uriage_total') - val(m, 'genka_total') },
   { id: 'sec_sga', name: '販管費', type: 'header' },
@@ -1178,7 +1182,12 @@ async function renderBudgetTable() {
       html += (showDist ? '<td></td>' : '') + '<td></td>';
       vm.forEach(() => html += '<td></td>');
     } else if (it.type === 'input') {
-      if (showDist) {
+      if (it.actualOnly) {
+        // 実績専用項目: 予算タブでは「−」表示
+        html += (showDist ? '<td></td>' : '');
+        html += '<td class="calc-value col-total" style="color:#999">−</td>';
+        vm.forEach(() => html += '<td class="calc-value" style="color:#999">−</td>');
+      } else if (showDist) {
         const dm = D().distMethod[it.id] || 'even';
         html += `<td><select class="dist-select" onchange="onDistChange('${it.id}',this.value)" ${dis}>
           <option value="even" ${dm==='even'?'selected':''}>均等割り</option>
@@ -1277,18 +1286,32 @@ async function renderCompareTable() {
       return;
     }
     const isCalc = it.type === 'calc';
-    const bA = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
-    html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>予算</td><td class="col-total">${fmt(bA,isCalc)}</td>`;
-    vm.forEach(m => html+=`<td>${fmt(extBudget(data,prevData,it.id,m),isCalc)}</td>`);
-    html += '</tr>';
-    const aA = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
-    html += `<tr class="${getRowClass(it)}"><td>実績</td><td class="col-total">${fmt(aA,isCalc)}</td>`;
-    vm.forEach(m => html+=`<td>${fmt(extActual(data,prevData,it.id,m),isCalc)}</td>`);
-    html += '</tr>';
-    const dA = aA - bA;
-    html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total ${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
-    vm.forEach(m => { const d=extActual(data,prevData,it.id,m)-extBudget(data,prevData,it.id,m); html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`; });
-    html += '</tr>';
+    if (it.actualOnly) {
+      // 実績専用: 予算行は「−」、実績行のみ表示、差異は実績値そのまま
+      html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>予算</td><td class="col-total" style="color:#999">−</td>`;
+      vm.forEach(() => html+='<td style="color:#999">−</td>');
+      html += '</tr>';
+      const aA = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
+      html += `<tr class="${getRowClass(it)}"><td>実績</td><td class="col-total">${fmt(aA,isCalc)}</td>`;
+      vm.forEach(m => html+=`<td>${fmt(extActual(data,prevData,it.id,m),isCalc)}</td>`);
+      html += '</tr>';
+      html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total" style="color:#999">−</td>`;
+      vm.forEach(() => html+='<td style="color:#999">−</td>');
+      html += '</tr>';
+    } else {
+      const bA = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
+      html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>予算</td><td class="col-total">${fmt(bA,isCalc)}</td>`;
+      vm.forEach(m => html+=`<td>${fmt(extBudget(data,prevData,it.id,m),isCalc)}</td>`);
+      html += '</tr>';
+      const aA = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
+      html += `<tr class="${getRowClass(it)}"><td>実績</td><td class="col-total">${fmt(aA,isCalc)}</td>`;
+      vm.forEach(m => html+=`<td>${fmt(extActual(data,prevData,it.id,m),isCalc)}</td>`);
+      html += '</tr>';
+      const dA = aA - bA;
+      html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total ${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
+      vm.forEach(m => { const d=extActual(data,prevData,it.id,m)-extBudget(data,prevData,it.id,m); html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`; });
+      html += '</tr>';
+    }
   });
   document.getElementById('compareTable').innerHTML = html + '</tbody>';
 }
@@ -1896,9 +1919,10 @@ async function parseFreeeFiles() {
     const d = freeeParsedData[i];
     const feb = d.monthValues;
     const sales = (feb['gijutsu']||[]).reduce((s,v)=>s+v,0) + (feb['yakuzai']||[]).reduce((s,v)=>s+v,0) + (feb['chiryo']||[]).reduce((s,v)=>s+v,0) + (feb['uriage_other']||[]).reduce((s,v)=>s+v,0);
-    const genka = (feb['genka_total']||[]).reduce((s,v)=>s+v,0);
+    const genka = (feb['tsukisho_zaiko']||[]).reduce((s,v)=>s+v,0) + (feb['shiire']||[]).reduce((s,v)=>s+v,0) - (feb['tsukimatsu_zaiko']||[]).reduce((s,v)=>s+v,0);
     const matched = Object.keys(feb).length;
-    const sgaTotal = Object.entries(feb).filter(([k])=>!['gijutsu','yakuzai','chiryo','uriage_other','genka_total'].includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
+    const genkaIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko'];
+    const sgaTotal = Object.entries(feb).filter(([k])=>!genkaIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
     const selId = `freee_dept_${i}`;
     html += `<tr><td style="padding:4px;border:1px solid #ccc"><select id="${selId}" style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
     html += deptOptions.replace(`value="${d.deptId}"`, `value="${d.deptId}" selected`);
@@ -1983,7 +2007,7 @@ function parseFreeeCSV(text) {
   let chidaiTenpo = z(), chidaiShataku = z(), chidaiTotal = z();
   let leaseOffice = z(), leaseCar = z(), leaseTotal = z();
   let honbuRaw = z(), honbuYakuin = z(), honbuSomu = z();
-  let genkaTotal = z(), deprecTotal = z();
+  let genkaTotal = z(), genkaKisho = z(), genkaShiire = z(), deprecTotal = z();
   let tesuryoTotal = z(), shiharaiHoumTotal = z();
   let kenshuTotal = z(), saiyoTotal = z(), saiyokyoikuTotal = z();
   let uriageTotal = z(), gijutsuVals = z(), yakuzaiVals = z(), chiryoVals = z();
@@ -2022,6 +2046,10 @@ function parseFreeeCSV(text) {
 
     // === 売上原価 ===
     if (!L0 && !L1 && L2 === '商品売上原価' && hasVal) genkaTotal = getMonthVals();
+    // 売上原価内訳: L3=期首商品棚卸、L4=仕入高
+    if (!L0 && !L1 && !L2 && L3.includes('期首商品棚卸') && hasVal) genkaKisho = getMonthVals();
+    const L4 = (cols[4] || '').trim();
+    if (!L0 && !L1 && !L2 && !L3 && L4 === '仕入高' && hasVal) genkaShiire = getMonthVals();
 
     // === 販管費セクション ===
     // L1='販売管理費'(値なし) → セクション開始
@@ -2088,7 +2116,10 @@ function parseFreeeCSV(text) {
   monthValues['yakuzai'] = yakuzaiVals;
   monthValues['chiryo'] = chiryoVals;
   monthValues['uriage_other'] = uriageTotal.map((v,i) => v - gijutsuVals[i] - yakuzaiVals[i] - chiryoVals[i]);
-  monthValues['genka_total'] = genkaTotal;
+  // 売上原価内訳: 月初在庫=期首商品棚卸、仕入高、月末在庫=期首+仕入−原価合計
+  monthValues['tsukisho_zaiko'] = genkaKisho;
+  monthValues['shiire'] = genkaShiire;
+  monthValues['tsukimatsu_zaiko'] = genkaKisho.map((v,i) => v + genkaShiire[i] - genkaTotal[i]);
   monthValues['car_share'] = vehicleCarShare;
   monthValues['gasoline'] = vehicleGas;
   monthValues['parking'] = vehicleParking;

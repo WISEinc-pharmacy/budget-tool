@@ -1234,7 +1234,10 @@ async function renderActualTable() {
     else if (it.type === 'input') {
       const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
       html += `<td class="calc-value col-total">${fmt(periodTotal)}</td>`;
-      if (!isSingleDept()) { vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`); }
+      if (it.actualOnly) {
+        // 実績専用項目: CSV取込のみ。常にread-only表示
+        vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`);
+      } else if (!isSingleDept()) { vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`); }
       else { vm.forEach(m => {
         if (m < 0) { html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`; return; }
         html += `<td><input class="cell-input" type="number" value="${data.actual[it.id][m]||''}" onchange="onActualCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;

@@ -2247,6 +2247,8 @@ async function doFreeeImport() {
     if (d.targetFY === currentFY) {
       initDeptData(d.deptId);
       const store = allData[d.deptId].actual;
+      // 実績を全リセット（CSVにない科目の残存データを消去）
+      ITEMS.forEach(it => { if (store[it.id]) store[it.id] = new Array(12).fill(0); });
       for (const [itemId, vals] of Object.entries(d.monthValues)) {
         if (!store[itemId]) continue;
         for (let m = 0; m < 12; m++) {
@@ -2341,15 +2343,15 @@ async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     updatedBy: currentUser.email
   };
-  // ITEMS初期化（既存にないキーを補完）
+  // ITEMS初期化 + 実績を全リセット（CSVにない科目の残存データを消去）
   ITEMS.forEach(it => {
     if (it.type === 'header') return;
     if (!data.budget[it.id]) data.budget[it.id] = new Array(12).fill(0);
-    if (!data.actual[it.id]) data.actual[it.id] = new Array(12).fill(0);
+    data.actual[it.id] = new Array(12).fill(0); // 常にリセット
     if (!data.annualInputs[it.id]) data.annualInputs[it.id] = 0;
     if (!data.distMethod[it.id]) data.distMethod[it.id] = 'even';
   });
-  // CSVの実績データを反映（0も含めて全月上書き。古い誤データを残さない）
+  // CSVの実績データを反映
   for (const [itemId, vals] of Object.entries(monthValues)) {
     if (!data.actual[itemId]) continue;
     for (let m = 0; m < 12; m++) {

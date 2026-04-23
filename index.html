@@ -1903,8 +1903,8 @@ async function parseFreeeFiles() {
     const feb = d.monthValues;
     const sales = (feb['gijutsu']||[]).reduce((s,v)=>s+v,0) + (feb['yakuzai']||[]).reduce((s,v)=>s+v,0) + (feb['chiryo']||[]).reduce((s,v)=>s+v,0) + (feb['uriage_other']||[]).reduce((s,v)=>s+v,0);
     const genka = (feb['tsukisho_zaiko']||[]).reduce((s,v)=>s+v,0) + (feb['shiire']||[]).reduce((s,v)=>s+v,0) - (feb['tsukimatsu_zaiko']||[]).reduce((s,v)=>s+v,0);
-    const genkaIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko'];
-    const sgaTotal = Object.entries(feb).filter(([k])=>!genkaIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
+    const excludeIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko','genka_total'];
+    const sgaTotal = Object.entries(feb).filter(([k])=>!excludeIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
     // 年度区切り線
     if (fySet.size > 1 && prevFY !== null && prevFY !== fy) {
       html += `<tr><td colspan="6" style="border-top:2px solid #2c3e50;padding:0"></td></tr>`;
@@ -1970,18 +1970,21 @@ function parseFreeeCSV(text) {
   const fyMatch = lines[0].match(/期間[：:](\d{4})年/);
   const detectedFY = fyMatch ? fyMatch[1] : null;
 
-  // ヘッダー行から月のインデックスを取得（2026-02 → index 0, 2026-03 → index 1, ...）
+  // ヘッダー行から月のインデックスを取得（YYYY-MM列を動的検出）
   const headerCols = parseCSVLine(lines[1]);
   const monthIndices = []; // [{col, monthIdx}] col=CSV列, monthIdx=budget-tool月(0=2月,1=3月...)
-  for (let c = 7; c < headerCols.length - 1; c++) {
+  let firstMonthCol = -1;
+  for (let c = 0; c < headerCols.length; c++) {
     const m = headerCols[c].match(/(\d{4})-(\d{2})/);
     if (m) {
+      if (firstMonthCol < 0) firstMonthCol = c;
       const year = parseInt(m[1]), month = parseInt(m[2]);
       // budget-toolは2月始まり: 2月=index0, 3月=index1, ... 1月=index11
       const idx = (month - 2 + 12) % 12;
       monthIndices.push({ col: c, monthIdx: idx });
     }
   }
+  if (firstMonthCol < 0) firstMonthCol = 7; // フォールバック
 
   // 部門特定: 売上高の値で全社CSVの部門別数値と照合
   // → 簡易方法: CSVに部門名タグがないので、勘定科目の特徴で判断
@@ -2023,7 +2026,7 @@ function parseFreeeCSV(text) {
     const L1 = (cols[1] || '').trim();
     const L2 = (cols[2] || '').trim();
     const L3 = (cols[3] || '').trim();
-    const hasVal = cols[7] !== undefined && cols[7] !== '';
+    const hasVal = cols[firstMonthCol] !== undefined && cols[firstMonthCol] !== '';
 
     // === 売上高セクション ===
     // L0='売上高' → セクション開始（値なし）
@@ -2274,7 +2277,7 @@ async function doFreeeImport() {
   btn.disabled = false;
 
   // 操作ログ形式で結果表示
-  const genkaIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko'];
+  const genkaIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko','genka_total'];
   const calcSummary = (d) => {
     const mv = d.monthValues;
     const sales = (mv['gijutsu']||[]).reduce((s,v)=>s+v,0) + (mv['yakuzai']||[]).reduce((s,v)=>s+v,0) + (mv['chiryo']||[]).reduce((s,v)=>s+v,0) + (mv['uriage_other']||[]).reduce((s,v)=>s+v,0);

@@ -2030,8 +2030,10 @@ function parseFreeeCSV(text) {
 
     // === 売上高セクション ===
     // L0='売上高' → セクション開始（値なし）
-    // L1='売上高' → 売上合計の値
+    // L1='売上高' → 売上合計の値（売上戻り高を含まない粗額）
     if (!L0 && L1 === '売上高' && hasVal) uriageTotal = getMonthVals();
+    // L0='売上高 計' → 売上戻り高を差し引いた正味売上（あればこちらを優先）
+    if (L0 === '売上高 計' && hasVal) uriageTotal = getMonthVals();
     // L2=技術料/薬剤料/治療器材料 → 売上内訳
     if (!L0 && !L1 && L2 && hasVal) {
       if (L2 === '技術料') gijutsuVals = getMonthVals();

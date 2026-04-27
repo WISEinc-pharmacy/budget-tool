@@ -378,6 +378,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
 
 <script>
 // ===== Firebase =====
@@ -391,6 +392,7 @@ firebase.initializeApp({
 });
 const auth = firebase.auth();
 const db = firebase.firestore();
+const storage = firebase.storage();
 let currentUser = null;
 let userRole = 'viewer';
 
@@ -2528,14 +2530,12 @@ async function submitSalesData() {
 
   if (!month || !deptId) { alert('月と部門を選択してください'); return; }
 
-  // 入力値を収集（手動修正を優先）
   const values = {};
   SALES_ITEMS.forEach(item => {
     const input = document.getElementById(`sales_${item.id}`);
     if (input && input.value) values[item.id] = parseInt(input.value);
   });
 
-  // 技術料/回を再計算
   if (values.techFee && values.visitCount) {
     values.techPerVisit = Math.round(values.techFee / values.visitCount);
   }
@@ -2544,24 +2544,42 @@ async function submitSalesData() {
 
   if (!confirm(`${deptName} ${month} のデータを提出しますか？`)) return;
 
+  const btn = document.getElementById('salesSubmitBtn');
+  btn.disabled = true; btn.textContent = '送信中...';
+
   try {
     const docId = `${month}_${deptId}`;
+    let pdfUrl = null;
+
+    // PDFをFirebase Storageにアップロード
+    const fileInput = document.getElementById('salesPdfFile');
+    if (fileInput.files[0]) {
+      const file = fileInput.files[0];
+      const storagePath = `sales-pdf/${month}/${deptId}_${file.name}`;
+      const ref = storage.ref(storagePath);
+      await ref.put(file);
+      pdfUrl = await ref.getDownloadURL();
+    }
+
     await db.collection('salesData').doc(docId).set({
       month, deptId, deptName, values,
       submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
       submittedBy: currentUser?.email || 'unknown',
       fileName: document.getElementById('salesFileName').textContent,
+      pdfUrl: pdfUrl || null,
     }, { merge: true });
 
     alert('提出完了！');
     document.getElementById('salesExtracted').style.display = 'none';
-    document.getElementById('salesSubmitBtn').style.display = 'none';
+    btn.style.display = 'none';
     document.getElementById('salesFileName').textContent = 'ファイル未選択';
-    document.getElementById('salesPdfFile').value = '';
+    fileInput.value = '';
     salesExtractedData = {};
     renderSalesHistory();
   } catch (e) {
     alert('保存エラー: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '提出する';
   }
 }
 
@@ -2573,7 +2591,7 @@ async function renderSalesHistory() {
 
     let html = '<thead><tr><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">月</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">部門</th>';
     SALES_ITEMS.forEach(item => { html += `<th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:right;">${item.name}</th>`; });
-    html += '<th style="padding:6px 10px;background:#1a5276;color:#fff;">提出者</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出日</th></tr></thead><tbody>';
+    html += '<th style="padding:6px 10px;background:#1a5276;color:#fff;">PDF</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出者</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出日</th></tr></thead><tbody>';
 
     snap.forEach(doc => {
       const d = doc.data();
@@ -2583,7 +2601,8 @@ async function renderSalesHistory() {
         html += `<td style="padding:4px 10px;text-align:right;">${v != null ? v.toLocaleString() : '—'}</td>`;
       });
       const ts = d.submittedAt?.toDate ? d.submittedAt.toDate().toLocaleDateString('ja-JP') : '—';
-      html += `<td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td></tr>`;
+      const pdfLink = d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;">📄 閲覧</a>` : '—';
+      html += `<td style="padding:4px 10px;text-align:center;">${pdfLink}</td><td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td></tr>`;
     });
 
     html += '</tbody>';

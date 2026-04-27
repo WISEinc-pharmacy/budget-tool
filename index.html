@@ -148,7 +148,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   #printHeader .print-meta { font-size: 10px; color: #555; margin-top: 2px; }
   tr.header-row, tr.subtotal-row, tr.profit-row, tr.ratio-row, tr.level-1, th, .col-total, td.col-total, th.col-total { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   /* 予実比較・年度比較は行数が多いので更に縮小 */
-  #tab-compare table, #tab-yoy table { font-size: 7px; }
+  #tab-compare table, #tab-yoy table, #tab-sales table { font-size: 7px; }
   #tab-compare th:nth-child(2), #tab-yoy th:nth-child(2) { width: 35px !important; }
 }
 #printHeader { display: none; }
@@ -222,6 +222,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div class="tab" onclick="switchTab('actual')">実績</div>
   <div class="tab" onclick="switchTab('compare')">予実比較</div>
   <div class="tab" onclick="switchTab('yoy')">年度比較</div>
+  <div class="tab" onclick="switchTab('sales')">営業分析</div>
 </div>
 
 <div class="toolbar">
@@ -267,6 +268,31 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <span style="color:#999;font-size:12px">← 現在の年度と比較します</span>
   </div>
   <div class="table-wrap"><table id="yoyTable"></table></div>
+</div>
+
+<div id="tab-sales" class="tab-content">
+  <div style="padding:16px 24px;background:#f0f9f4;border-bottom:1px solid #a9dfbf;">
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+      <h3 style="margin:0;color:#1a5276;font-size:15px;">📊 営業分析 — PDF取込</h3>
+      <select id="salesMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
+      <select id="salesDept" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <label class="btn btn-import" style="cursor:pointer;">
+        PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">
+      </label>
+      <span id="salesFileName" style="color:#666;font-size:12px;">ファイル未選択</span>
+      <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
+    </div>
+  </div>
+  <div id="salesExtracted" style="padding:16px 24px;display:none;">
+    <h4 style="color:#1a5276;margin-bottom:8px;">抽出結果 — 内容を確認してください</h4>
+    <div class="table-wrap"><table id="salesTable" style="font-size:13px;"></table></div>
+  </div>
+  <div id="salesHistory" style="padding:16px 24px;">
+    <h4 style="color:#1a5276;margin-bottom:8px;">提出済みデータ</h4>
+    <div class="table-wrap"><table id="salesHistoryTable" style="font-size:13px;"></table></div>
+  </div>
 </div>
 
 </div>
@@ -347,6 +373,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -2369,7 +2397,7 @@ function switchTab(tab){
   currentTab=tab;
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-  const tabIdx = {budget:1, actual:2, compare:3, yoy:4}[tab] || 1;
+  const tabIdx = {budget:1, actual:2, compare:3, yoy:4, sales:5}[tab] || 1;
   document.querySelector(`.tab:nth-child(${tabIdx})`).classList.add('active');
   document.getElementById(`tab-${tab}`).classList.add('active');
   renderCurrentTab();
@@ -2379,6 +2407,195 @@ async function renderCurrentTab(){
   else if(currentTab==='actual') await renderActualTable();
   else if(currentTab==='compare') await renderCompareTable();
   else if(currentTab==='yoy') await renderYoyTable();
+  else if(currentTab==='sales') await renderSalesTab();
+}
+
+// ===== 営業分析タブ =====
+const SALES_ITEMS = [
+  { id: 'rxCount', name: 'レセプト件数', unit: '件' },
+  { id: 'visitCount', name: '受付回数', unit: '回' },
+  { id: 'totalInsurance', name: '保険合計', unit: '円' },
+  { id: 'techFee', name: '技術料合計', unit: '円' },
+  { id: 'drugFee', name: '薬剤料', unit: '円' },
+  { id: 'basicFee', name: '調剤基本料', unit: '点' },
+  { id: 'genericCount', name: '後発薬使用回数', unit: '回' },
+  { id: 'medicalInstitutions', name: '医療機関数', unit: '件' },
+  { id: 'techPerVisit', name: '技術料/回', unit: '円', calc: true },
+];
+
+let salesExtractedData = {};
+
+function initSalesSelectors() {
+  const monthSel = document.getElementById('salesMonth');
+  const deptSel = document.getElementById('salesDept');
+  if (!monthSel || monthSel.options.length > 0) return;
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const label = `${d.getFullYear()}年${d.getMonth()+1}月`;
+    monthSel.add(new Option(label, val));
+  }
+  // 薬局部門のみ（admin系除外）
+  DEPTS.filter(d => !d.adminOnly).forEach(d => {
+    deptSel.add(new Option(d.name, d.id));
+  });
+}
+
+async function handleSalesPdf(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('salesFileName').textContent = file.name;
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      fullText += content.items.map(item => item.str).join(' ') + '\n';
+    }
+    extractSalesValues(fullText);
+  } catch (e) {
+    alert('PDF読み取りエラー: ' + e.message);
+  }
+}
+
+function extractSalesValues(text) {
+  // 数値抽出（カンマ付き数字を検出）
+  const num = (pattern) => {
+    const m = text.match(pattern);
+    if (!m) return null;
+    return parseInt(m[1].replace(/,/g, ''));
+  };
+
+  // ファーミー保険合計PDFのパターン
+  salesExtractedData = {};
+  salesExtractedData.rxCount = num(/(?:レセプト|ﾚｾﾌﾟﾄ).*?件数[^\d]*([0-9,]+)/);
+  salesExtractedData.visitCount = num(/(?:受付|算定).*?(?:回数|件数)[^\d]*([0-9,]+)/);
+  salesExtractedData.totalInsurance = num(/(?:保険|請求).*?合計[^\d]*([0-9,]+)/);
+  salesExtractedData.techFee = num(/技術料[^\d]*([0-9,]+)/);
+  salesExtractedData.drugFee = num(/薬剤料[^\d]*([0-9,]+)/);
+  salesExtractedData.basicFee = num(/(?:調剤基本料|基本料)[^\d]*([0-9,]+)/);
+  salesExtractedData.genericCount = num(/(?:後発|ｼﾞｪﾈﾘｯｸ|GE).*?(?:回数|件数|使用)[^\d]*([0-9,]+)/) || num(/(?:回数|件数|使用).*?(?:後発|ｼﾞｪﾈﾘｯｸ|GE)[^\d]*([0-9,]+)/);
+  salesExtractedData.medicalInstitutions = num(/医療機関[^\d]*([0-9,]+)/);
+
+  // 技術料/回を計算
+  if (salesExtractedData.techFee && salesExtractedData.visitCount) {
+    salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
+  }
+
+  // もしパターンマッチが全く効かない場合、テキスト中の数値を行ごとに表示
+  const hasAny = Object.values(salesExtractedData).some(v => v !== null && v !== undefined);
+
+  renderSalesExtracted(hasAny);
+}
+
+function renderSalesExtracted(hasValues) {
+  const container = document.getElementById('salesExtracted');
+  const table = document.getElementById('salesTable');
+  container.style.display = 'block';
+
+  let html = '<thead><tr><th style="text-align:left;padding:6px 12px;background:#1a5276;color:#fff;">項目</th><th style="text-align:right;padding:6px 12px;background:#1a5276;color:#fff;">抽出値</th><th style="text-align:left;padding:6px 12px;background:#1a5276;color:#fff;">単位</th><th style="padding:6px 12px;background:#1a5276;color:#fff;">手動修正</th></tr></thead><tbody>';
+
+  SALES_ITEMS.forEach(item => {
+    const val = salesExtractedData[item.id];
+    const displayVal = val !== null && val !== undefined ? val.toLocaleString() : '—';
+    const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
+    html += `<tr style="background:${bgColor}">
+      <td style="padding:6px 12px;font-weight:500;">${item.name}</td>
+      <td style="padding:6px 12px;text-align:right;">${displayVal}</td>
+      <td style="padding:6px 12px;color:#888;">${item.unit}</td>
+      <td style="padding:6px 12px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:120px;padding:4px;border:1px solid #ccc;border-radius:3px;text-align:right;font-size:13px;" ${item.calc?'disabled':''}></td>
+    </tr>`;
+  });
+
+  html += '</tbody>';
+  table.innerHTML = html;
+
+  if (!hasValues) {
+    container.insertAdjacentHTML('afterbegin', '<div style="background:#fdebd0;padding:8px 16px;border-radius:4px;margin-bottom:8px;color:#e67e22;font-size:12px;">⚠ 自動抽出できませんでした。PDFの形式が異なる可能性があります。手動で数値を入力してください。</div>');
+  }
+
+  document.getElementById('salesSubmitBtn').style.display = 'inline-block';
+}
+
+async function submitSalesData() {
+  const month = document.getElementById('salesMonth').value;
+  const deptId = document.getElementById('salesDept').value;
+  const deptName = DEPTS.find(d => d.id === deptId)?.name || deptId;
+
+  if (!month || !deptId) { alert('月と部門を選択してください'); return; }
+
+  // 入力値を収集（手動修正を優先）
+  const values = {};
+  SALES_ITEMS.forEach(item => {
+    const input = document.getElementById(`sales_${item.id}`);
+    if (input && input.value) values[item.id] = parseInt(input.value);
+  });
+
+  // 技術料/回を再計算
+  if (values.techFee && values.visitCount) {
+    values.techPerVisit = Math.round(values.techFee / values.visitCount);
+  }
+
+  if (Object.keys(values).length === 0) { alert('データがありません'); return; }
+
+  if (!confirm(`${deptName} ${month} のデータを提出しますか？`)) return;
+
+  try {
+    const docId = `${month}_${deptId}`;
+    await db.collection('salesData').doc(docId).set({
+      month, deptId, deptName, values,
+      submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      submittedBy: currentUser?.email || 'unknown',
+      fileName: document.getElementById('salesFileName').textContent,
+    }, { merge: true });
+
+    alert('提出完了！');
+    document.getElementById('salesExtracted').style.display = 'none';
+    document.getElementById('salesSubmitBtn').style.display = 'none';
+    document.getElementById('salesFileName').textContent = 'ファイル未選択';
+    document.getElementById('salesPdfFile').value = '';
+    salesExtractedData = {};
+    renderSalesHistory();
+  } catch (e) {
+    alert('保存エラー: ' + e.message);
+  }
+}
+
+async function renderSalesHistory() {
+  const table = document.getElementById('salesHistoryTable');
+  try {
+    const snap = await db.collection('salesData').orderBy('month', 'desc').limit(30).get();
+    if (snap.empty) { table.innerHTML = '<tr><td style="padding:12px;color:#999;">まだデータがありません</td></tr>'; return; }
+
+    let html = '<thead><tr><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">月</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">部門</th>';
+    SALES_ITEMS.forEach(item => { html += `<th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:right;">${item.name}</th>`; });
+    html += '<th style="padding:6px 10px;background:#1a5276;color:#fff;">提出者</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出日</th></tr></thead><tbody>';
+
+    snap.forEach(doc => {
+      const d = doc.data();
+      html += `<tr><td style="padding:4px 10px;">${d.month}</td><td style="padding:4px 10px;">${d.deptName||d.deptId}</td>`;
+      SALES_ITEMS.forEach(item => {
+        const v = d.values?.[item.id];
+        html += `<td style="padding:4px 10px;text-align:right;">${v != null ? v.toLocaleString() : '—'}</td>`;
+      });
+      const ts = d.submittedAt?.toDate ? d.submittedAt.toDate().toLocaleDateString('ja-JP') : '—';
+      html += `<td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td></tr>`;
+    });
+
+    html += '</tbody>';
+    table.innerHTML = html;
+  } catch (e) {
+    table.innerHTML = `<tr><td style="padding:12px;color:#c0392b;">読込エラー: ${e.message}</td></tr>`;
+  }
+}
+
+async function renderSalesTab() {
+  initSalesSelectors();
+  await renderSalesHistory();
 }
 </script>
 </body>

@@ -2551,13 +2551,14 @@ async function submitSalesData() {
     const docId = `${month}_${deptId}`;
     let pdfUrl = null;
 
-    // PDFをFirebase Storageにアップロード
+    // PDFをFirebase Storageにアップロード（リネーム: 年月_保険合計_店舗名.pdf）
     const fileInput = document.getElementById('salesPdfFile');
+    const renamedFileName = `${month}_保険合計_${deptName}.pdf`;
     if (fileInput.files[0]) {
       const file = fileInput.files[0];
-      const storagePath = `sales-pdf/${month}/${deptId}_${file.name}`;
+      const storagePath = `sales-pdf/${month}/${renamedFileName}`;
       const ref = storage.ref(storagePath);
-      await ref.put(file);
+      await ref.put(file, { contentType: 'application/pdf' });
       pdfUrl = await ref.getDownloadURL();
     }
 
@@ -2565,8 +2566,10 @@ async function submitSalesData() {
       month, deptId, deptName, values,
       submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
       submittedBy: currentUser?.email || 'unknown',
-      fileName: document.getElementById('salesFileName').textContent,
+      fileName: renamedFileName,
+      originalFileName: document.getElementById('salesFileName').textContent,
       pdfUrl: pdfUrl || null,
+      backupStatus: 'pending',
     }, { merge: true });
 
     alert('提出完了！');
@@ -2601,7 +2604,8 @@ async function renderSalesHistory() {
         html += `<td style="padding:4px 10px;text-align:right;">${v != null ? v.toLocaleString() : '—'}</td>`;
       });
       const ts = d.submittedAt?.toDate ? d.submittedAt.toDate().toLocaleDateString('ja-JP') : '—';
-      const pdfLink = d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;">📄 閲覧</a>` : '—';
+      const pdfLabel = d.fileName || '閲覧';
+      const pdfLink = d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;" title="${pdfLabel}">📄 ${pdfLabel}</a>` : '—';
       html += `<td style="padding:4px 10px;text-align:center;">${pdfLink}</td><td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td></tr>`;
     });
 

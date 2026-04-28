@@ -2629,16 +2629,14 @@ function renderSalesExtracted(hasValues) {
   const table = document.getElementById('salesTable');
   container.style.display = 'block';
 
-  let html = '<thead><tr><th style="text-align:left;padding:4px 8px;background:#1a5276;color:#fff;font-size:11px;">項目</th><th style="text-align:right;padding:4px 8px;background:#1a5276;color:#fff;font-size:11px;">抽出値</th><th style="padding:4px 8px;background:#1a5276;color:#fff;font-size:11px;">修正</th></tr></thead><tbody>';
+  let html = '<thead><tr><th style="text-align:left;padding:4px 8px;background:#1a5276;color:#fff;font-size:11px;">項目</th><th style="text-align:right;padding:4px 8px;background:#1a5276;color:#fff;font-size:11px;">数値</th></tr></thead><tbody>';
 
   SALES_ITEMS.forEach(item => {
     const val = salesExtractedData[item.id];
-    const displayVal = val !== null && val !== undefined ? val.toLocaleString() : '—';
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     html += `<tr style="background:${bgColor}">
-      <td style="padding:3px 6px;font-size:11px;">${item.name}<span style="color:#999;font-size:10px;"> ${item.unit}</span></td>
-      <td style="padding:3px 6px;text-align:right;font-weight:500;">${displayVal}</td>
-      <td style="padding:3px 4px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:70px;padding:2px 3px;border:1px solid #ccc;border-radius:3px;text-align:right;font-size:11px;" ${item.calc?'disabled':''}></td>
+      <td style="padding:4px 8px;font-size:11px;white-space:nowrap;">${item.name}<br><span style="color:#999;font-size:9px;">${item.unit}</span></td>
+      <td style="padding:4px 8px;text-align:right;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100%;padding:4px;border:1px solid ${val?'#2ecc71':'#e74c3c'};border-radius:3px;text-align:right;font-size:13px;font-weight:500;" ${item.calc?'disabled':''}></td>
     </tr>`;
   });
 

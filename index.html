@@ -2481,10 +2481,7 @@ async function handleSalesPdf(input) {
     // PDFをBase64に変換
     const arrayBuffer = await file.arrayBuffer();
 
-    // PDFプレビュー表示（自前PDF.jsビューアにデータ送信）
     const pdfData = new Uint8Array(arrayBuffer);
-    const viewer = document.getElementById('salesPdfPreview');
-    viewer.contentWindow.postMessage({type: 'loadPdf', data: Array.from(pdfData)}, '*');
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
 
     // Gemini Flash APIに送信
@@ -2541,6 +2538,12 @@ JSONのみを返してください。説明不要。` }
     label.innerHTML = '✅ 読み取り完了 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
     label.style.pointerEvents = 'auto';
     renderSalesExtracted(hasAny);
+    // PDFプレビュー表示：renderSalesExtracted()でdivが表示された後にpostMessage。
+    // display:none状態のiframeへ送るとclientWidth=0でscaleが負数になりPDFが空白になるため。
+    requestAnimationFrame(() => {
+      const viewer = document.getElementById('salesPdfPreview');
+      viewer.contentWindow.postMessage({type: 'loadPdf', data: Array.from(pdfData)}, '*');
+    });
   } catch (e) {
     label.style.background = '#e74c3c';
     label.innerHTML = '❌ 読み取り失敗 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';

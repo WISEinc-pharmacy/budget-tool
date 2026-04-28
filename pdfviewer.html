@@ -67,7 +67,8 @@ async function fitWidth() {
   if (!pdfDoc) return;
   const page = await pdfDoc.getPage(currentPage);
   const vp = page.getViewport({scale:1});
-  scale = (container.clientWidth - 20) / vp.width;
+  const w = container.clientWidth;
+  scale = w > 20 ? (w - 20) / vp.width : 1.0;
   renderPage();
 }
 

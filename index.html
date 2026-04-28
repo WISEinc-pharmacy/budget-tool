@@ -286,8 +286,15 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     </div>
   </div>
   <div id="salesExtracted" style="padding:16px 24px;display:none;">
-    <h4 style="color:#1a5276;margin-bottom:8px;">抽出結果 — 内容を確認してください</h4>
-    <div class="table-wrap"><table id="salesTable" style="font-size:13px;"></table></div>
+    <h4 style="color:#1a5276;margin-bottom:8px;">抽出結果 — PDFと見比べて確認してください</h4>
+    <div style="display:flex;gap:16px;align-items:flex-start;">
+      <div style="flex:1;min-width:0;">
+        <iframe id="salesPdfPreview" style="width:100%;height:70vh;border:1px solid #ccc;border-radius:4px;"></iframe>
+      </div>
+      <div style="flex:0 0 420px;">
+        <div class="table-wrap"><table id="salesTable" style="font-size:13px;"></table></div>
+      </div>
+    </div>
   </div>
   <div id="salesHistory" style="padding:16px 24px;">
     <h4 style="color:#1a5276;margin-bottom:8px;">提出済みデータ</h4>
@@ -2462,6 +2469,10 @@ async function handleSalesPdf(input) {
   label.innerHTML = '⏳ AI読み取り中... <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
 
   try {
+    // PDFプレビュー表示
+    const previewUrl = URL.createObjectURL(file);
+    document.getElementById('salesPdfPreview').src = previewUrl;
+
     // PDFをBase64に変換
     const arrayBuffer = await file.arrayBuffer();
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));

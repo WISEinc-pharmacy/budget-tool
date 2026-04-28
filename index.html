@@ -2659,13 +2659,22 @@ async function submitSalesData() {
 
   if (Object.keys(values).length === 0) { alert('データがありません'); return; }
 
-  if (!confirm(`${deptName} ${month} のデータを提出しますか？`)) return;
+  // 年月確認の警告
+  const [y, m] = month.split('-');
+  if (!confirm(`📅 提出先: ${deptName} / ${y}年${parseInt(m)}月\n\n年月に間違いはありませんか？`)) return;
+
+  // 既存データの重複チェック
+  const docId = `${month}_${deptId}`;
+  const existingDoc = await db.collection('salesData').doc(docId).get();
+  if (existingDoc.exists) {
+    alert(`⚠ ${deptName} ${y}年${parseInt(m)}月 のデータは既に提出済みです。\n\n上書きはできません。先に提出済みデータ一覧から削除してから、再度アップロードしてください。`);
+    return;
+  }
 
   const btn = document.getElementById('salesSubmitBtn');
   btn.disabled = true; btn.textContent = '送信中...';
 
   try {
-    const docId = `${month}_${deptId}`;
     let pdfUrl = null;
 
     // PDFをFirebase Storageにアップロード（リネーム: 年月_保険合計_店舗名.pdf）
@@ -2715,7 +2724,7 @@ async function renderSalesHistory() {
 
     let html = '<thead><tr><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">月</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">部門</th>';
     SALES_ITEMS.forEach(item => { html += `<th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:right;">${item.name}</th>`; });
-    html += '<th style="padding:6px 10px;background:#1a5276;color:#fff;">PDF</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出者</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出日</th></tr></thead><tbody>';
+    html += '<th style="padding:6px 10px;background:#1a5276;color:#fff;">PDF</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出者</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出日</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">操作</th></tr></thead><tbody>';
 
     snap.forEach(doc => {
       const d = doc.data();
@@ -2727,13 +2736,25 @@ async function renderSalesHistory() {
       const ts = d.submittedAt?.toDate ? d.submittedAt.toDate().toLocaleDateString('ja-JP') : '—';
       const pdfLabel = d.fileName || '閲覧';
       const pdfLink = d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;" title="${pdfLabel}">📄 ${pdfLabel}</a>` : '—';
-      html += `<td style="padding:4px 10px;text-align:center;">${pdfLink}</td><td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td></tr>`;
+      const delBtn = `<button onclick="deleteSalesData('${doc.id}','${d.deptName||d.deptId}','${d.month}')" style="padding:2px 8px;font-size:11px;background:#e74c3c;color:#fff;border:none;border-radius:3px;cursor:pointer;">削除</button>`;
+      html += `<td style="padding:4px 10px;text-align:center;">${pdfLink}</td><td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td><td style="padding:4px 10px;text-align:center;">${delBtn}</td></tr>`;
     });
 
     html += '</tbody>';
     table.innerHTML = html;
   } catch (e) {
     table.innerHTML = `<tr><td style="padding:12px;color:#c0392b;">読込エラー: ${e.message}<br><span style="font-size:11px;color:#888;">※初回はFirestoreのセキュリティルールに salesData の許可追加が必要です</span></td></tr>`;
+  }
+}
+
+async function deleteSalesData(docId, deptName, month) {
+  if (!confirm(`⚠ ${deptName} ${month} のデータを削除します。\n\n削除したら元に戻せません。本当に削除しますか？`)) return;
+  try {
+    await db.collection('salesData').doc(docId).delete();
+    alert('削除しました');
+    renderSalesHistory();
+  } catch (e) {
+    alert('削除エラー: ' + e.message);
   }
 }
 

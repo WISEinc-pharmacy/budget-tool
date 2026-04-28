@@ -2509,7 +2509,7 @@ JSONのみを返してください。説明不要。` }
 
     // JSONを抽出（```json ... ``` で囲まれてる場合も対応）
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('AI応答からJSONを抽出できませんでした');
+    if (!jsonMatch) throw new Error('AI応答からJSONを抽出できませんでした。応答: ' + JSON.stringify(data).slice(0, 300));
 
     const extracted = JSON.parse(jsonMatch[0]);
     salesExtractedData = {};

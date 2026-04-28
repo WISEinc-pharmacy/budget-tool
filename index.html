@@ -2465,32 +2465,78 @@ async function handleSalesPdf(input) {
 }
 
 function extractSalesValues(text) {
-  // 数値抽出（カンマ付き数字を検出）
-  const num = (pattern) => {
-    const m = text.match(pattern);
-    if (!m) return null;
-    return parseInt(m[1].replace(/,/g, ''));
+  // OCR化けや全角数字対応の前処理
+  let t = text
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/，/g, ',');
+
+  // 複数パターン対応の数値抽出
+  const num = (...patterns) => {
+    for (const p of patterns) {
+      const m = t.match(p);
+      if (m) {
+        const raw = (m[1] || '').replace(/,/g, '').replace(/[^0-9]/g, '');
+        if (raw && parseInt(raw) > 0) return parseInt(raw);
+      }
+    }
+    return null;
   };
 
-  // ファーミー保険合計PDFのパターン
   salesExtractedData = {};
-  salesExtractedData.rxCount = num(/(?:レセプト|ﾚｾﾌﾟﾄ).*?件数[^\d]*([0-9,]+)/);
-  salesExtractedData.visitCount = num(/(?:受付|算定).*?(?:回数|件数)[^\d]*([0-9,]+)/);
-  salesExtractedData.totalInsurance = num(/(?:保険|請求).*?合計[^\d]*([0-9,]+)/);
-  salesExtractedData.techFee = num(/技術料[^\d]*([0-9,]+)/);
-  salesExtractedData.drugFee = num(/薬剤料[^\d]*([0-9,]+)/);
-  salesExtractedData.basicFee = num(/(?:調剤基本料|基本料)[^\d]*([0-9,]+)/);
-  salesExtractedData.genericCount = num(/(?:後発|ｼﾞｪﾈﾘｯｸ|GE).*?(?:回数|件数|使用)[^\d]*([0-9,]+)/) || num(/(?:回数|件数|使用).*?(?:後発|ｼﾞｪﾈﾘｯｸ|GE)[^\d]*([0-9,]+)/);
-  salesExtractedData.medicalInstitutions = num(/医療機関[^\d]*([0-9,]+)/);
+
+  // レセプト件数（OCRで「ﾚｾﾌﾟﾄ」になることも）
+  salesExtractedData.rxCount = num(
+    /[ﾚレ][ｾセ][ﾌフ][ﾟ゚]?[ﾄト]件数\s*([0-9,]+)/,
+    /レセプト件数\s*([0-9,]+)/
+  );
+
+  // 受付回数
+  salesExtractedData.visitCount = num(
+    /受付回数\s*([0-9,]+)/,
+    /処方[箋籓篓]枚数\s*([0-9,]+)/
+  );
+
+  // 保険合計（OCRで「保險」になることも）
+  salesExtractedData.totalInsurance = num(
+    /保[険險]合計\s*([0-9,]+)/,
+    /保[険險]合計[^\d]*([0-9,]+)/
+  );
+
+  // 調剤基本料（OCRで「鋼基本料」になることも）
+  salesExtractedData.basicFee = num(
+    /[調訓鋼][剤劑]基本料\s*([0-9,]+)/,
+    /基本料\s*([0-9,]+)\s*円/
+  );
+
+  // 技術料（末尾の集計行「技術料 XX 円 XX%」）
+  salesExtractedData.techFee = num(
+    /技[術衍]料\s+([0-9,.]+)\s*[円内PIF]\s*[\d.]+\s*%/,
+    /技[術衍]料\s*\n?\s*([0-9,.]+)/
+  );
+
+  // 薬剤料（OCRで「葉剤/萊剤/藥剤」になることも）
+  salesExtractedData.drugFee = num(
+    /[薬葉萊藥][剤劑]料\s+([0-9,.]+)\s*[円内PIF]\s*[\d.]+\s*%/,
+    /[薬葉萊藥][剤劑]料\s*\n?\s*([0-9,.]+)/
+  );
+
+  // 後発薬使用回数
+  salesExtractedData.genericCount = num(
+    /後発[薬藥萊葉]使用回[数教]\s*([0-9,]+)/,
+    /後発.*?回[数教]\s*([0-9,]+)/
+  );
+
+  // 医療機関数
+  salesExtractedData.medicalInstitutions = num(
+    /医療機関[数敷]\s*([0-9,]+)/
+  );
 
   // 技術料/回を計算
   if (salesExtractedData.techFee && salesExtractedData.visitCount) {
     salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
   }
 
-  // もしパターンマッチが全く効かない場合、テキスト中の数値を行ごとに表示
   const hasAny = Object.values(salesExtractedData).some(v => v !== null && v !== undefined);
-
   renderSalesExtracted(hasAny);
 }
 
@@ -2612,7 +2658,7 @@ async function renderSalesHistory() {
     html += '</tbody>';
     table.innerHTML = html;
   } catch (e) {
-    table.innerHTML = `<tr><td style="padding:12px;color:#c0392b;">読込エラー: ${e.message}</td></tr>`;
+    table.innerHTML = `<tr><td style="padding:12px;color:#c0392b;">読込エラー: ${e.message}<br><span style="font-size:11px;color:#888;">※初回はFirestoreのセキュリティルールに salesData の許可追加が必要です</span></td></tr>`;
   }
 }
 

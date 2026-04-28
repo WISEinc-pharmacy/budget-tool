@@ -287,8 +287,14 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
   <div id="salesExtracted" style="padding:16px 24px;display:none;">
     <h4 style="color:#1a5276;margin-bottom:8px;">抽出結果 — PDFと見比べて確認してください</h4>
-    <iframe id="salesPdfPreview" style="width:100%;height:60vh;border:1px solid #ccc;border-radius:4px;margin-bottom:12px;"></iframe>
-    <table id="salesTable" style="font-size:13px;width:100%;border-collapse:collapse;max-width:800px;"></table>
+    <div style="display:flex;gap:16px;align-items:flex-start;">
+      <div style="flex:2;min-width:0;">
+        <iframe id="salesPdfPreview" style="width:100%;height:85vh;border:1px solid #ccc;border-radius:4px;"></iframe>
+      </div>
+      <div style="flex:1;min-width:320px;max-height:85vh;overflow-y:auto;">
+        <table id="salesTable" style="font-size:13px;width:100%;border-collapse:collapse;"></table>
+      </div>
+    </div>
   </div>
   <div id="salesHistory" style="padding:16px 24px;">
     <h4 style="color:#1a5276;margin-bottom:8px;">提出済みデータ</h4>
@@ -2623,18 +2629,19 @@ function renderSalesExtracted(hasValues) {
   const table = document.getElementById('salesTable');
   container.style.display = 'block';
 
-  // 横並びテーブル（ヘッダー行=項目名、データ行=入力欄）
-  let headerHtml = '';
-  let dataHtml = '';
+  let html = '<thead><tr><th style="text-align:left;padding:6px 10px;background:#1a5276;color:#fff;font-size:12px;">項目</th><th style="text-align:right;padding:6px 10px;background:#1a5276;color:#fff;font-size:12px;">数値</th></tr></thead><tbody>';
+
   SALES_ITEMS.forEach(item => {
     const val = salesExtractedData[item.id];
     const borderColor = val !== null && val !== undefined ? '#2ecc71' : '#e74c3c';
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
-    headerHtml += `<th style="padding:6px 8px;background:#1a5276;color:#fff;font-size:11px;text-align:center;white-space:nowrap;">${item.name}<br><span style="font-size:9px;opacity:0.7;">${item.unit}</span></th>`;
-    dataHtml += `<td style="padding:6px 4px;background:${bgColor};text-align:center;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100px;padding:6px 4px;border:2px solid ${borderColor};border-radius:4px;text-align:right;font-size:14px;font-weight:600;" ${item.calc?'disabled':''}></td>`;
+    html += `<tr style="background:${bgColor}">
+      <td style="padding:5px 10px;font-size:12px;">${item.name} <span style="color:#999;font-size:10px;">${item.unit}</span></td>
+      <td style="padding:5px 10px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100%;padding:5px;border:2px solid ${borderColor};border-radius:4px;text-align:right;font-size:14px;font-weight:600;" ${item.calc?'disabled':''}></td>
+    </tr>`;
   });
 
-  let html = `<thead><tr>${headerHtml}</tr></thead><tbody><tr>${dataHtml}</tr></tbody>`;
+  html += '</tbody>';
   table.innerHTML = html;
 
   if (!hasValues) {

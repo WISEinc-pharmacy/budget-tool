@@ -278,10 +278,10 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <select id="salesDept" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
     </div>
     <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-      <label class="btn btn-import" style="cursor:pointer;">
-        PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">
+      <label class="btn btn-import" id="salesPdfLabel" style="cursor:pointer;">
+        📄 PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">
       </label>
-      <span id="salesFileName" style="color:#666;font-size:12px;">ファイル未選択</span>
+      <span id="salesFileName" style="color:#666;font-size:12px;"></span>
       <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
     </div>
   </div>
@@ -2449,13 +2449,17 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemi
 async function handleSalesPdf(input) {
   const file = input.files[0];
   if (!file) return;
-  document.getElementById('salesFileName').textContent = file.name;
   document.getElementById('salesExtracted').style.display = 'none';
   document.getElementById('salesSubmitBtn').style.display = 'none';
 
-  // ステータス表示
-  const statusEl = document.getElementById('salesFileName');
-  statusEl.textContent = file.name + ' — AI読み取り中...';
+  const label = document.getElementById('salesPdfLabel');
+  const nameEl = document.getElementById('salesFileName');
+  nameEl.textContent = file.name;
+
+  // ボタンを「読み取り中」状態に変更
+  label.style.pointerEvents = 'none';
+  label.style.background = '#f39c12';
+  label.innerHTML = '⏳ AI読み取り中... <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
 
   try {
     // PDFをBase64に変換
@@ -2508,10 +2512,14 @@ JSONのみを返してください。説明不要。` }
     }
 
     const hasAny = Object.values(salesExtractedData).some(v => v !== null && v !== undefined);
-    statusEl.textContent = file.name + (hasAny ? ' — 読み取り完了 ✓' : ' — 読み取り失敗');
+    label.style.background = '#2ecc71';
+    label.innerHTML = '✅ 読み取り完了 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
+    label.style.pointerEvents = 'auto';
     renderSalesExtracted(hasAny);
   } catch (e) {
-    statusEl.textContent = file.name + ' — エラー';
+    label.style.background = '#e74c3c';
+    label.innerHTML = '❌ 読み取り失敗 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
+    label.style.pointerEvents = 'auto';
     alert('PDF読み取りエラー: ' + e.message);
   }
 }
@@ -2673,7 +2681,11 @@ async function submitSalesData() {
     alert('提出完了！');
     document.getElementById('salesExtracted').style.display = 'none';
     btn.style.display = 'none';
-    document.getElementById('salesFileName').textContent = 'ファイル未選択';
+    document.getElementById('salesFileName').textContent = '';
+    const lbl = document.getElementById('salesPdfLabel');
+    lbl.style.background = '#3498db';
+    lbl.innerHTML = '📄 PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
+    lbl.style.pointerEvents = 'auto';
     fileInput.value = '';
     salesExtractedData = {};
     renderSalesHistory();

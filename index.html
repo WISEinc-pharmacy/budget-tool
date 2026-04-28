@@ -289,7 +289,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <h4 style="color:#1a5276;margin-bottom:8px;">抽出結果 — PDFと見比べて確認してください</h4>
     <div style="display:flex;gap:16px;align-items:flex-start;">
       <div style="flex:1;min-width:0;">
-        <iframe id="salesPdfPreview" style="width:100%;height:120vh;border:1px solid #ccc;border-radius:4px;"></iframe>
+        <iframe id="salesPdfPreview" style="width:100%;height:120vh;border:1px solid #ccc;border-radius:4px;" sandbox="allow-scripts allow-same-origin"></iframe>
       </div>
       <div style="flex:0 0 400px;">
         <table id="salesTable" style="font-size:13px;width:400px;table-layout:fixed;border-collapse:collapse;"></table>
@@ -2478,9 +2478,9 @@ async function handleSalesPdf(input) {
   label.innerHTML = '⏳ AI読み取り中... <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
 
   try {
-    // PDFプレビュー表示
+    // PDFプレビュー表示（PDF.jsビューア経由）
     const previewUrl = URL.createObjectURL(file);
-    document.getElementById('salesPdfPreview').src = previewUrl;
+    document.getElementById('salesPdfPreview').src = `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(previewUrl)}`;
 
     // PDFをBase64に変換
     const arrayBuffer = await file.arrayBuffer();

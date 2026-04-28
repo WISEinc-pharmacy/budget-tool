@@ -2478,13 +2478,13 @@ async function handleSalesPdf(input) {
   label.innerHTML = '⏳ AI読み取り中... <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
 
   try {
+    // PDFをBase64に変換
+    const arrayBuffer = await file.arrayBuffer();
+
     // PDFプレビュー表示（自前PDF.jsビューアにデータ送信）
     const pdfData = new Uint8Array(arrayBuffer);
     const viewer = document.getElementById('salesPdfPreview');
     viewer.contentWindow.postMessage({type: 'loadPdf', data: Array.from(pdfData)}, '*');
-
-    // PDFをBase64に変換
-    const arrayBuffer = await file.arrayBuffer();
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
 
     // Gemini Flash APIに送信

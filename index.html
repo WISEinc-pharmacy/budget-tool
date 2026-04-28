@@ -291,7 +291,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <div style="flex:2;min-width:0;">
         <iframe id="salesPdfPreview" style="width:100%;height:85vh;border:1px solid #ccc;border-radius:4px;"></iframe>
       </div>
-      <div style="flex:1;min-width:280px;max-height:85vh;overflow-y:auto;">
+      <div style="flex:0 0 240px;max-height:85vh;overflow-y:auto;">
         <table id="salesTable" style="font-size:12px;width:100%;border-collapse:collapse;"></table>
       </div>
     </div>
@@ -2625,7 +2625,7 @@ function renderSalesExtracted(hasValues) {
     html += `<tr style="background:${bgColor}">
       <td style="padding:3px 6px;font-size:11px;">${item.name}<span style="color:#999;font-size:10px;"> ${item.unit}</span></td>
       <td style="padding:3px 6px;text-align:right;font-weight:500;">${displayVal}</td>
-      <td style="padding:3px 6px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:90px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;text-align:right;font-size:12px;" ${item.calc?'disabled':''}></td>
+      <td style="padding:3px 4px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:70px;padding:2px 3px;border:1px solid #ccc;border-radius:3px;text-align:right;font-size:11px;" ${item.calc?'disabled':''}></td>
     </tr>`;
   });
 

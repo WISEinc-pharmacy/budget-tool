@@ -2449,9 +2449,18 @@ function initSalesSelectors() {
   });
 }
 
-// Gemini Flash APIでPDFを読み取り
-const GEMINI_API_KEY = 'AIzaSyD27gg91lcEM3SVskA3pW5fi5YwNms9tMc';
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+// Gemini Flash APIでPDFを読み取り（キーはFirestoreから取得）
+let GEMINI_API_KEY = null;
+async function getGeminiKey() {
+  if (GEMINI_API_KEY) return GEMINI_API_KEY;
+  const doc = await db.collection('config').doc('gemini').get();
+  if (!doc.exists) throw new Error('Gemini APIキーが未設定です。Firestore config/gemini に apiKey を登録してください。');
+  GEMINI_API_KEY = doc.data().apiKey;
+  return GEMINI_API_KEY;
+}
+function getGeminiUrl(key) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
+}
 
 async function handleSalesPdf(input) {
   const file = input.files[0];
@@ -2478,7 +2487,8 @@ async function handleSalesPdf(input) {
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
 
     // Gemini Flash APIに送信
-    const resp = await fetch(GEMINI_URL, {
+    const geminiKey = await getGeminiKey();
+    const resp = await fetch(getGeminiUrl(geminiKey), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

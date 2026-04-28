@@ -2488,7 +2488,9 @@ async function handleSalesPdf(input) {
 
     // Gemini Flash APIに送信
     const geminiKey = await getGeminiKey();
-    const resp = await fetch(getGeminiUrl(geminiKey), {
+    console.log('Gemini API呼び出し中... keyLength:', geminiKey?.length);
+    const geminiUrl = getGeminiUrl(geminiKey);
+    const resp = await fetch(geminiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2515,6 +2517,7 @@ JSONのみを返してください。説明不要。` }
     });
 
     const data = await resp.json();
+    if (data.error) throw new Error(`Gemini APIエラー: ${data.error.message} (${data.error.code})`);
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     // JSONを抽出（```json ... ``` で囲まれてる場合も対応）

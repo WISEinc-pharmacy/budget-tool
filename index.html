@@ -2455,7 +2455,7 @@ async function getGeminiKey() {
   if (GEMINI_API_KEY) return GEMINI_API_KEY;
   const doc = await db.collection('config').doc('gemini').get();
   if (!doc.exists) throw new Error('Gemini APIキーが未設定です。Firestore config/gemini に apiKey を登録してください。');
-  GEMINI_API_KEY = doc.data().apiKey;
+  GEMINI_API_KEY = doc.data().apiKey || doc.data().apikey;
   return GEMINI_API_KEY;
 }
 function getGeminiUrl(key) {

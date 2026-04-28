@@ -373,8 +373,6 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script>pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -2444,22 +2442,76 @@ function initSalesSelectors() {
   });
 }
 
+// Gemini Flash APIでPDFを読み取り
+const GEMINI_API_KEY = 'AIzaSyAhWLtLK15xcsxcJOW7C7MinHs-NSmY1J0';
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+
 async function handleSalesPdf(input) {
   const file = input.files[0];
   if (!file) return;
   document.getElementById('salesFileName').textContent = file.name;
+  document.getElementById('salesExtracted').style.display = 'none';
+  document.getElementById('salesSubmitBtn').style.display = 'none';
+
+  // ステータス表示
+  const statusEl = document.getElementById('salesFileName');
+  statusEl.textContent = file.name + ' — AI読み取り中...';
 
   try {
+    // PDFをBase64に変換
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      fullText += content.items.map(item => item.str).join(' ') + '\n';
+    const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
+
+    // Gemini Flash APIに送信
+    const resp = await fetch(GEMINI_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: 'application/pdf', data: base64 } },
+            { text: `この調剤薬局の保険合計PDFから、以下の数値を正確に抽出してJSON形式で返してください。数値のみ（カンマなし整数）で返してください。見つからない場合はnullにしてください。
+
+{
+  "rxCount": レセプト件数,
+  "visitCount": 受付回数,
+  "totalInsurance": 保険合計（円）,
+  "techFee": 技術料合計（円）,
+  "drugFee": 薬剤料合計（円）,
+  "basicFee": 調剤基本料（円）,
+  "genericCount": 後発薬使用回数,
+  "medicalInstitutions": 医療機関数
+}
+
+JSONのみを返してください。説明不要。` }
+          ]
+        }]
+      })
+    });
+
+    const data = await resp.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    // JSONを抽出（```json ... ``` で囲まれてる場合も対応）
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('AI応答からJSONを抽出できませんでした');
+
+    const extracted = JSON.parse(jsonMatch[0]);
+    salesExtractedData = {};
+    for (const [key, val] of Object.entries(extracted)) {
+      if (val !== null && val !== undefined) salesExtractedData[key] = parseInt(val);
     }
-    extractSalesValues(fullText);
+
+    // 技術料/回を計算
+    if (salesExtractedData.techFee && salesExtractedData.visitCount) {
+      salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
+    }
+
+    const hasAny = Object.values(salesExtractedData).some(v => v !== null && v !== undefined);
+    statusEl.textContent = file.name + (hasAny ? ' — 読み取り完了 ✓' : ' — 読み取り失敗');
+    renderSalesExtracted(hasAny);
   } catch (e) {
+    statusEl.textContent = file.name + ' — エラー';
     alert('PDF読み取りエラー: ' + e.message);
   }
 }

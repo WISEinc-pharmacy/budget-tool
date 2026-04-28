@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#404040;overflow:hidden;font-family:sans-serif;}
+#toolbar{background:#333;padding:6px 12px;display:flex;gap:8px;align-items:center;position:fixed;top:0;left:0;right:0;z-index:10;height:36px;}
+#toolbar button{background:#555;color:#fff;border:none;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:13px;}
+#toolbar button:hover{background:#777;}
+#toolbar span{color:#fff;font-size:12px;}
+#container{position:absolute;top:36px;bottom:0;left:0;right:0;overflow:auto;cursor:grab;text-align:center;}
+#container.dragging{cursor:grabbing;}
+canvas{display:block;margin:8px auto;box-shadow:0 2px 8px rgba(0,0,0,0.5);}
+</style>
+</head><body>
+<div id="toolbar">
+  <button onclick="prevPage()">◀</button>
+  <span><span id="pageNum">0</span> / <span id="pageCount">0</span></span>
+  <button onclick="nextPage()">▶</button>
+  <span>|</span>
+  <button onclick="zoomOut()">−</button>
+  <span id="zoomLevel">100%</span>
+  <button onclick="zoomIn()">+</button>
+  <button onclick="fitWidth()">幅に合わせる</button>
+</div>
+<div id="container"></div>
+
+<script src="pdfjs/pdf.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdfjs/pdf.worker.min.js';
+
+let pdfDoc = null, currentPage = 1, scale = 1.0;
+const container = document.getElementById('container');
+
+// 親ページからPDFデータを受信
+window.addEventListener('message', async (e) => {
+  if (e.data?.type === 'loadPdf') {
+    const data = new Uint8Array(e.data.data);
+    pdfDoc = await pdfjsLib.getDocument({data}).promise;
+    document.getElementById('pageCount').textContent = pdfDoc.numPages;
+    currentPage = 1;
+    fitWidth();
+  }
+});
+
+async function renderPage() {
+  if (!pdfDoc) return;
+  const page = await pdfDoc.getPage(currentPage);
+  const viewport = page.getViewport({scale});
+
+  container.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  container.appendChild(canvas);
+
+  await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+  document.getElementById('pageNum').textContent = currentPage;
+  document.getElementById('zoomLevel').textContent = Math.round(scale * 100) + '%';
+}
+
+function prevPage() { if (currentPage > 1) { currentPage--; renderPage(); } }
+function nextPage() { if (pdfDoc && currentPage < pdfDoc.numPages) { currentPage++; renderPage(); } }
+function zoomIn() { scale *= 1.25; renderPage(); }
+function zoomOut() { scale /= 1.25; renderPage(); }
+async function fitWidth() {
+  if (!pdfDoc) return;
+  const page = await pdfDoc.getPage(currentPage);
+  const vp = page.getViewport({scale:1});
+  scale = (container.clientWidth - 20) / vp.width;
+  renderPage();
+}
+
+// ドラッグでスクロール
+let isDragging = false, startX, startY, scrollLeft, scrollTop;
+container.addEventListener('mousedown', (e) => {
+  isDragging = true; container.classList.add('dragging');
+  startX = e.pageX; startY = e.pageY;
+  scrollLeft = container.scrollLeft; scrollTop = container.scrollTop;
+});
+container.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  container.scrollLeft = scrollLeft - (e.pageX - startX);
+  container.scrollTop = scrollTop - (e.pageY - startY);
+});
+container.addEventListener('mouseup', () => { isDragging = false; container.classList.remove('dragging'); });
+container.addEventListener('mouseleave', () => { isDragging = false; container.classList.remove('dragging'); });
+
+// マウスホイールでズーム
+container.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (e.deltaY < 0) zoomIn(); else zoomOut();
+}, {passive: false});
+</script>
+</body></html>

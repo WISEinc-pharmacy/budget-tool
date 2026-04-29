@@ -2667,7 +2667,7 @@ function renderSalesExtracted(hasValues) {
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     html += `<tr style="background:${bgColor}">
       <td style="padding:5px 6px;font-size:26px;">${item.name} <span style="color:#999;font-size:20px;">${item.unit}</span></td>
-      <td style="padding:4px 6px;overflow:hidden;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100%;min-width:0;max-width:100%;padding:4px 4px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:28px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''}></td>
+      <td style="padding:4px 6px;text-align:right;font-size:28px;font-weight:600;border:1px solid ${borderColor};border-radius:3px;" id="sales_${item.id}" data-value="${val||''}">${val!=null?val.toLocaleString():'—'}</td>
     </tr>`;
   });
 

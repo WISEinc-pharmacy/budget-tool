@@ -287,10 +287,10 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
   <div style="display:flex;align-items:flex-start;min-height:500px;">
     <!-- 左カラム: 抽出結果 + 提出済みデータ（iframeを含まないのでdisplay切替の影響なし） -->
-    <div style="flex:0 0 300px;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;">
+    <div style="flex:0 0 300px;min-width:0;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;">
       <div id="salesExtracted" style="padding:12px 16px;display:none;border-bottom:1px solid #e0e0e0;">
         <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">抽出結果 — 確認・修正してください</h4>
-        <table id="salesTable" style="width:100%;border-collapse:collapse;"></table>
+        <table id="salesTable" style="width:100%;border-collapse:collapse;table-layout:fixed;"></table>
       </div>
       <div id="salesHistory" style="padding:12px 16px;flex:1;">
         <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">提出済みデータ</h4>
@@ -2656,15 +2656,15 @@ function renderSalesExtracted(hasValues) {
   container.style.display = 'block';
   document.getElementById('salesPdfArea').style.display = 'block';
 
-  let html = '<thead><tr><th style="text-align:left;padding:5px 6px;background:#1a5276;color:#fff;font-size:36px;width:55%;">項目</th><th style="text-align:right;padding:5px 6px;background:#1a5276;color:#fff;font-size:36px;width:45%;">数値</th></tr></thead><tbody>';
+  let html = '<thead><tr><th style="text-align:left;padding:5px 6px;background:#1a5276;color:#fff;font-size:13px;width:55%;">項目</th><th style="text-align:right;padding:5px 6px;background:#1a5276;color:#fff;font-size:13px;width:45%;">数値</th></tr></thead><tbody>';
 
   SALES_ITEMS.forEach(item => {
     const val = salesExtractedData[item.id];
     const borderColor = val !== null && val !== undefined ? '#2ecc71' : '#e74c3c';
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     html += `<tr style="background:${bgColor}">
-      <td style="padding:5px 6px;font-size:36px;">${item.name} <span style="color:#999;font-size:28px;">${item.unit}</span></td>
-      <td style="padding:4px 6px;overflow:hidden;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100%;min-width:0;max-width:100%;padding:4px 4px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:36px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''}></td>
+      <td style="padding:5px 6px;font-size:13px;">${item.name} <span style="color:#999;font-size:10px;">${item.unit}</span></td>
+      <td style="padding:4px 6px;overflow:hidden;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100%;min-width:0;max-width:100%;padding:4px 4px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:14px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''}></td>
     </tr>`;
   });
 

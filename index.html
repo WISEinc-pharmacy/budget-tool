@@ -285,22 +285,24 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
     </div>
   </div>
-  <div style="display:flex;align-items:flex-start;min-height:500px;">
-    <!-- 左カラム: 抽出結果 + 提出済みデータ（iframeを含まないのでdisplay切替の影響なし） -->
-    <div style="flex:0 0 300px;min-width:0;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;">
+  <div style="display:flex;align-items:flex-start;min-height:400px;border-bottom:1px solid #e0e0e0;">
+    <!-- 左カラム: 抽出結果（320px固定）display:noneなし・常にレイアウト確定 -->
+    <div style="flex:0 0 320px;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;">
       <div id="salesExtracted" style="padding:12px 16px;display:none;border-bottom:1px solid #e0e0e0;">
         <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">抽出結果 — 確認・修正してください</h4>
         <table id="salesTable" style="width:100%;border-collapse:collapse;table-layout:fixed;"></table>
       </div>
-      <div id="salesHistory" style="padding:12px 16px;flex:1;">
-        <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">提出済みデータ</h4>
-        <div class="table-wrap"><table id="salesHistoryTable" style="font-size:12px;"></table></div>
-      </div>
+      <div id="salesNoExtracted" style="padding:32px 16px;color:#aaa;font-size:12px;text-align:center;">📄 PDFを選択してAI読み取りを開始</div>
     </div>
-    <!-- 右カラム: PDFプレビュー（常にマウント済み・salesExtractedの開閉に影響されない） -->
-    <div id="salesPdfArea" style="flex:1;min-width:0;padding:8px;display:none;">
+    <!-- 右カラム: PDFプレビュー（常に表示・display:noneなし → clientWidth=0問題を解消） -->
+    <div id="salesPdfArea" style="flex:1;min-width:0;padding:8px;">
       <iframe id="salesPdfPreview" src="pdfviewer.html" style="width:100%;height:80vh;border:1px solid #ccc;border-radius:4px;"></iframe>
     </div>
+  </div>
+  <!-- 提出済みデータ（全幅 → 列見切れ問題を解消） -->
+  <div id="salesHistory" style="padding:12px 24px;">
+    <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">提出済みデータ</h4>
+    <div style="overflow-x:auto;"><table id="salesHistoryTable" style="font-size:12px;white-space:nowrap;border-collapse:collapse;min-width:100%;"></table></div>
   </div>
 </div>
 
@@ -2554,10 +2556,10 @@ JSONのみを返してください。説明不要。` }
     label.innerHTML = '✅ 読み取り完了 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
     label.style.pointerEvents = 'auto';
     renderSalesExtracted(hasAny);
-    // PDFプレビュー表示：
-    // - iframeがロード済み(_salesPdfViewerReady=true)なら即送信（100ms待機でlayout確定を保証）
-    // - 未ロード(display:none内でブラウザがiframeをdefer)なら _pendingSalesPdfData に保存し、
-    //   pdfViewerReady受信時に送信する（上のwindow.addEventListener参照）
+    // PDFプレビュー送信：
+    // salesPdfAreaは常に表示済みなのでiframeのclientWidthは確定している。
+    // _salesPdfViewerReadyがtrueであれば即送信（念のため100ms待機）。
+    // 万一ロード未完了ならpendingに保存し pdfViewerReady 受信後に送信。
     if (_salesPdfViewerReady) {
       setTimeout(() => {
         const viewer = document.getElementById('salesPdfPreview');
@@ -2654,9 +2656,10 @@ function renderSalesExtracted(hasValues) {
   const container = document.getElementById('salesExtracted');
   const table = document.getElementById('salesTable');
   container.style.display = 'block';
-  document.getElementById('salesPdfArea').style.display = 'block';
+  const noExt = document.getElementById('salesNoExtracted');
+  if (noExt) noExt.style.display = 'none';
 
-  let html = '<thead><tr><th style="text-align:left;padding:5px 6px;background:#1a5276;color:#fff;font-size:13px;width:55%;">項目</th><th style="text-align:right;padding:5px 6px;background:#1a5276;color:#fff;font-size:13px;width:45%;">数値</th></tr></thead><tbody>';
+  let html = '<colgroup><col style="width:150px"><col style="width:138px"></colgroup><thead><tr><th style="text-align:left;padding:5px 6px;background:#1a5276;color:#fff;font-size:13px;">項目</th><th style="text-align:right;padding:5px 6px;background:#1a5276;color:#fff;font-size:13px;">数値</th></tr></thead><tbody>';
 
   SALES_ITEMS.forEach(item => {
     const val = salesExtractedData[item.id];
@@ -2736,6 +2739,20 @@ async function submitSalesData() {
       backupStatus: 'pending',
     }, { merge: true });
 
+    // サーバーへの書き込みを確認（キャッシュ保存のみでサーバー拒否されていないかチェック）
+    try {
+      const verify = await db.collection('salesData').doc(docId).get({source: 'server'});
+      if (!verify.exists) {
+        alert('⚠ 警告: データはローカルに保存されましたが、Firestoreサーバーへの書き込みが確認できませんでした。\n\nリロード後にデータが消える場合は、Firebase コンソール → Firestore → ルール で以下を追加してください:\n  match /salesData/{doc} { allow read, write: if request.auth != null; }');
+      }
+    } catch (verifyErr) {
+      if (verifyErr.code === 'permission-denied') {
+        alert('⚠ Firestoreセキュリティルールエラー: salesData への書き込みが拒否されました。\n\nリロード後にデータが消えます。Firebase コンソール → Firestore → ルール で salesData の read/write を許可してください。');
+      } else {
+        console.warn('書き込み確認エラー:', verifyErr.message);
+      }
+    }
+
     alert('提出完了！');
     document.getElementById('salesExtracted').style.display = 'none';
     btn.style.display = 'none';
@@ -2756,8 +2773,10 @@ async function submitSalesData() {
 
 async function renderSalesHistory() {
   const table = document.getElementById('salesHistoryTable');
+  table.innerHTML = '<tr><td style="padding:12px;color:#999;">読み込み中...</td></tr>';
   try {
-    const snap = await db.collection('salesData').orderBy('month', 'desc').limit(30).get();
+    // source:'server' でキャッシュを使わず必ずサーバーから取得（リロード後の消失を防ぐ）
+    const snap = await db.collection('salesData').orderBy('month', 'desc').limit(30).get({source: 'server'});
     if (snap.empty) { table.innerHTML = '<tr><td style="padding:12px;color:#999;">まだデータがありません</td></tr>'; return; }
 
     let html = '<thead><tr><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">月</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">部門</th>';
@@ -2781,7 +2800,11 @@ async function renderSalesHistory() {
     html += '</tbody>';
     table.innerHTML = html;
   } catch (e) {
-    table.innerHTML = `<tr><td style="padding:12px;color:#c0392b;">読込エラー: ${e.message}<br><span style="font-size:11px;color:#888;">※初回はFirestoreのセキュリティルールに salesData の許可追加が必要です</span></td></tr>`;
+    const isPermission = e.code === 'permission-denied';
+    const hint = isPermission
+      ? '⚠ Firestoreセキュリティルールで salesData の読み込みが拒否されています。<br>Firebase コンソール → Firestore → ルール で以下を追加してください:<br><code>match /salesData/{doc} { allow read, write: if request.auth != null; }</code>'
+      : `読込エラー: ${e.message}<br><span style="font-size:11px;color:#888;">※Firestoreのセキュリティルールに salesData の許可追加が必要な場合があります</span>`;
+    table.innerHTML = `<tr><td style="padding:12px;color:#c0392b;">${hint}</td></tr>`;
   }
 }
 

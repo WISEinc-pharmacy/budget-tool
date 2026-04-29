@@ -2476,8 +2476,9 @@ async function getGeminiKey() {
   GEMINI_API_KEY = doc.data().apiKey || doc.data().apikey;
   return GEMINI_API_KEY;
 }
-function getGeminiUrl(key) {
-  return `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+function getGeminiUrl(key, model) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 }
 
 async function handleSalesPdf(input) {
@@ -2502,18 +2503,13 @@ async function handleSalesPdf(input) {
     const pdfData = new Uint8Array(arrayBuffer);
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
 
-    // Gemini Flash APIに送信
+    // Gemini Flash APIに送信（503ならフォールバック）
     const geminiKey = await getGeminiKey();
-    console.log('Gemini API呼び出し中... keyLength:', geminiKey?.length);
-    const geminiUrl = getGeminiUrl(geminiKey);
-    const resp = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { inlineData: { mimeType: 'application/pdf', data: base64 } },
-            { text: `この調剤薬局の保険合計PDFから、以下の数値を正確に抽出してJSON形式で返してください。数値のみ（カンマなし整数）で返してください。見つからない場合はnullにしてください。
+    const requestBody = JSON.stringify({
+      contents: [{
+        parts: [
+          { inlineData: { mimeType: 'application/pdf', data: base64 } },
+          { text: `この調剤薬局の保険合計PDFから、以下の数値を正確に抽出してJSON形式で返してください。数値のみ（カンマなし整数）で返してください。見つからない場合はnullにしてください。
 
 {
   "rxCount": レセプト件数,
@@ -2527,13 +2523,29 @@ async function handleSalesPdf(input) {
 }
 
 JSONのみを返してください。説明不要。` }
-          ]
-        }]
-      })
+        ]
+      }]
     });
 
-    const data = await resp.json();
-    if (data.error) throw new Error(`Gemini APIエラー: ${data.error.message} (${data.error.code})`);
+    let data = null;
+    let usedModel = '';
+    for (const model of GEMINI_MODELS) {
+      usedModel = model;
+      const resp = await fetch(getGeminiUrl(geminiKey, model), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: requestBody
+      });
+      data = await resp.json();
+      if (!data.error) break;
+      if (data.error.code === 503) {
+        console.log(`${model} が503。次のモデルを試行...`);
+        continue;
+      }
+      throw new Error(`Gemini APIエラー: ${data.error.message} (${data.error.code})`);
+    }
+    if (data.error) throw new Error(`Gemini APIエラー: 全モデルで失敗。${data.error.message} (${data.error.code})`);
+    console.log(`使用モデル: ${usedModel}`);
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     // JSONを抽出（```json ... ``` で囲まれてる場合も対応）
@@ -2667,7 +2679,7 @@ function renderSalesExtracted(hasValues) {
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     html += `<tr style="background:${bgColor}">
       <td style="padding:5px 6px;font-size:26px;">${item.name} <span style="color:#999;font-size:20px;">${item.unit}</span></td>
-      <td style="padding:4px 6px;text-align:right;font-size:28px;font-weight:600;border:1px solid ${borderColor};border-radius:3px;" id="sales_${item.id}" data-value="${val||''}">${val!=null?val.toLocaleString():'—'}</td>
+      <td style="padding:4px 6px;overflow:hidden;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100%;min-width:0;max-width:100%;padding:4px 4px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:28px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''}></td>
     </tr>`;
   });
 

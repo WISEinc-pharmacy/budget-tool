@@ -43,6 +43,9 @@ window.addEventListener('message', async (e) => {
   }
 });
 
+// 準備完了を親に通知（iframeのロード完了タイミングを親が検知するため）
+window.parent.postMessage({type: 'pdfViewerReady'}, '*');
+
 async function renderPage() {
   if (!pdfDoc) return;
   const page = await pdfDoc.getPage(currentPage);
@@ -63,12 +66,28 @@ function prevPage() { if (currentPage > 1) { currentPage--; renderPage(); } }
 function nextPage() { if (pdfDoc && currentPage < pdfDoc.numPages) { currentPage++; renderPage(); } }
 function zoomIn() { scale *= 1.25; renderPage(); }
 function zoomOut() { scale /= 1.25; renderPage(); }
+let _fitWidthObserver = null;
 async function fitWidth() {
   if (!pdfDoc) return;
   const page = await pdfDoc.getPage(currentPage);
   const vp = page.getViewport({scale:1});
   const w = container.clientWidth;
-  scale = w > 20 ? (w - 20) / vp.width : 1.0;
+  if (w < 20) {
+    // display:none→blockの直後はレイアウト未確定でclientWidth=0になる場合がある。
+    // ResizeObserverで実際にサイズが確定してから再実行する。
+    if (!_fitWidthObserver) {
+      _fitWidthObserver = new ResizeObserver(() => {
+        if (container.clientWidth >= 20) {
+          _fitWidthObserver.disconnect();
+          _fitWidthObserver = null;
+          fitWidth();
+        }
+      });
+      _fitWidthObserver.observe(container);
+    }
+    return;
+  }
+  scale = (w - 20) / vp.width;
   renderPage();
 }
 

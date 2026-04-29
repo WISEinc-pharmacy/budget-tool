@@ -2431,6 +2431,20 @@ const SALES_ITEMS = [
 ];
 
 let salesExtractedData = {};
+let _salesPdfViewerReady = false;  // pdfviewer.html のロード完了フラグ
+let _pendingSalesPdfData = null;   // ビューア未準備時の一時保存
+
+// pdfviewer.html がロード完了したことを受信し、待機中のPDFデータがあれば送信する
+window.addEventListener('message', (e) => {
+  if (e.data?.type === 'pdfViewerReady') {
+    _salesPdfViewerReady = true;
+    if (_pendingSalesPdfData) {
+      const viewer = document.getElementById('salesPdfPreview');
+      viewer.contentWindow.postMessage({type: 'loadPdf', data: Array.from(_pendingSalesPdfData)}, '*');
+      _pendingSalesPdfData = null;
+    }
+  }
+});
 
 function initSalesSelectors() {
   const monthSel = document.getElementById('salesMonth');
@@ -2538,12 +2552,18 @@ JSONのみを返してください。説明不要。` }
     label.innerHTML = '✅ 読み取り完了 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
     label.style.pointerEvents = 'auto';
     renderSalesExtracted(hasAny);
-    // PDFプレビュー表示：renderSalesExtracted()でdivが表示された後にpostMessage。
-    // display:none状態のiframeへ送るとclientWidth=0でscaleが負数になりPDFが空白になるため。
-    requestAnimationFrame(() => {
-      const viewer = document.getElementById('salesPdfPreview');
-      viewer.contentWindow.postMessage({type: 'loadPdf', data: Array.from(pdfData)}, '*');
-    });
+    // PDFプレビュー表示：
+    // - iframeがロード済み(_salesPdfViewerReady=true)なら即送信（100ms待機でlayout確定を保証）
+    // - 未ロード(display:none内でブラウザがiframeをdefer)なら _pendingSalesPdfData に保存し、
+    //   pdfViewerReady受信時に送信する（上のwindow.addEventListener参照）
+    if (_salesPdfViewerReady) {
+      setTimeout(() => {
+        const viewer = document.getElementById('salesPdfPreview');
+        viewer.contentWindow.postMessage({type: 'loadPdf', data: Array.from(pdfData)}, '*');
+      }, 100);
+    } else {
+      _pendingSalesPdfData = pdfData;
+    }
   } catch (e) {
     label.style.background = '#e74c3c';
     label.innerHTML = '❌ 読み取り失敗 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';

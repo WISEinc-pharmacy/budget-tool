@@ -2841,10 +2841,22 @@ async function viewSalesPdf(docId) {
 }
 
 async function deleteSalesData(docId, deptName, month) {
-  if (!confirm(`⚠ ${deptName} ${month} のデータを削除します。\n\n削除したら元に戻せません。本当に削除しますか？`)) return;
+  if (!confirm(`⚠ ${deptName} ${month} のデータを削除します。\n\nFirestoreのデータとDriveのPDFも削除されます。\n削除したら元に戻せません。本当に削除しますか？`)) return;
   try {
+    // Driveバックアップがあれば削除予約（agent_runnerが実行）
+    const doc = await db.collection('salesData').doc(docId).get();
+    const data = doc.data();
+    if (data?.driveFileId) {
+      // 削除予約をFirestoreに記録（agent_runnerが処理）
+      await db.collection('salesDeleteQueue').doc(docId).set({
+        driveFileId: data.driveFileId,
+        deptName, month,
+        requestedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        requestedBy: currentUser?.email || 'unknown',
+      });
+    }
     await db.collection('salesData').doc(docId).delete();
-    alert('削除しました');
+    alert('削除しました' + (data?.driveFileId ? '\nDriveのPDFは数分以内に自動削除されます。' : ''));
     renderSalesHistory();
   } catch (e) {
     alert('削除エラー: ' + e.message);

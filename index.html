@@ -389,7 +389,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
+<!-- Firebase Storage不使用（PDFはFirestoreにBase64保存） -->
 
 <script>
 // ===== Firebase =====
@@ -403,7 +403,7 @@ firebase.initializeApp({
 });
 const auth = firebase.auth();
 const db = firebase.firestore();
-const storage = firebase.storage();
+// Firebase Storage不使用（PDFはFirestoreにBase64保存）
 let currentUser = null;
 let userRole = 'viewer';
 
@@ -2737,17 +2737,13 @@ async function submitSalesData() {
   btn.disabled = true; btn.textContent = '送信中...';
 
   try {
-    let pdfUrl = null;
-
-    // PDFをFirebase Storageにアップロード（リネーム: 年月_保険合計_店舗名.pdf）
+    // PDFをBase64に変換してFirestoreに保存
     const fileInput = document.getElementById('salesPdfFile');
     const renamedFileName = `${month}_保険合計_${deptName}.pdf`;
+    let pdfBase64 = null;
     if (fileInput.files[0]) {
-      const file = fileInput.files[0];
-      const storagePath = `sales-pdf/${month}/${renamedFileName}`;
-      const ref = storage.ref(storagePath);
-      await ref.put(file, { contentType: 'application/pdf' });
-      pdfUrl = await ref.getDownloadURL();
+      const buf = await fileInput.files[0].arrayBuffer();
+      pdfBase64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ''));
     }
 
     await db.collection('salesData').doc(docId).set({
@@ -2756,7 +2752,7 @@ async function submitSalesData() {
       submittedBy: currentUser?.email || 'unknown',
       fileName: renamedFileName,
       originalFileName: document.getElementById('salesFileName').textContent,
-      pdfUrl: pdfUrl || null,
+      pdfBase64: pdfBase64 || null,
       backupStatus: 'pending',
     }, { merge: true });
 
@@ -2813,7 +2809,7 @@ async function renderSalesHistory() {
       });
       const ts = d.submittedAt?.toDate ? d.submittedAt.toDate().toLocaleDateString('ja-JP') : '—';
       const pdfLabel = d.fileName || '閲覧';
-      const pdfLink = d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;" title="${pdfLabel}">📄 ${pdfLabel}</a>` : '—';
+      const pdfLink = d.pdfBase64 ? `<a href="#" onclick="viewSalesPdf('${doc.id}');return false;" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : (d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : '—');
       const delBtn = `<button onclick="deleteSalesData('${doc.id}','${d.deptName||d.deptId}','${d.month}')" style="padding:2px 8px;font-size:11px;background:#e74c3c;color:#fff;border:none;border-radius:3px;cursor:pointer;">削除</button>`;
       html += `<td style="padding:4px 10px;text-align:center;">${pdfLink}</td><td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td><td style="padding:4px 10px;text-align:center;">${delBtn}</td></tr>`;
     });
@@ -2826,6 +2822,21 @@ async function renderSalesHistory() {
       ? '⚠ Firestoreセキュリティルールで salesData の読み込みが拒否されています。<br>Firebase コンソール → Firestore → ルール で以下を追加してください:<br><code>match /salesData/{doc} { allow read, write: if request.auth != null; }</code>'
       : `読込エラー: ${e.message}<br><span style="font-size:11px;color:#888;">※Firestoreのセキュリティルールに salesData の許可追加が必要な場合があります</span>`;
     table.innerHTML = `<tr><td style="padding:12px;color:#c0392b;">${hint}</td></tr>`;
+  }
+}
+
+async function viewSalesPdf(docId) {
+  try {
+    const doc = await db.collection('salesData').doc(docId).get();
+    const data = doc.data();
+    if (!data?.pdfBase64) { alert('PDFデータがありません'); return; }
+    const binary = atob(data.pdfBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    window.open(URL.createObjectURL(blob), '_blank');
+  } catch (e) {
+    alert('PDF表示エラー: ' + e.message);
   }
 }
 

@@ -2687,7 +2687,7 @@ function renderSalesExtracted(hasValues) {
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     html += `<tr style="background:${bgColor}">
       <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${item.name} <span style="color:#999;font-size:17px;">${item.unit}</span></td>
-      <td style="padding:4px 6px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''}></td>
+      <td style="padding:4px 6px;"><input type="text" id="sales_${item.id}" value="${val!=null?val.toLocaleString():''}" data-raw="${val||''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''} onfocus="this.value=this.dataset.raw" onblur="this.dataset.raw=this.value.replace(/,/g,'');this.value=this.dataset.raw?parseInt(this.dataset.raw).toLocaleString():''"></td>
     </tr>`;
   });
 
@@ -2711,7 +2711,8 @@ async function submitSalesData() {
   const values = {};
   SALES_ITEMS.forEach(item => {
     const input = document.getElementById(`sales_${item.id}`);
-    if (input && input.value) values[item.id] = parseInt(input.value);
+    const rawVal = input?.dataset?.raw || input?.value?.replace(/,/g, '') || '';
+    if (rawVal) values[item.id] = parseInt(rawVal);
   });
 
   if (values.techFee && values.visitCount) {

@@ -2679,15 +2679,15 @@ function renderSalesExtracted(hasValues) {
   const noExt = document.getElementById('salesNoExtracted');
   if (noExt) noExt.style.display = 'none';
 
-  let html = '<colgroup><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:13px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:13px;">数値</th></tr></thead><tbody>';
+  let html = '<colgroup><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">数値</th></tr></thead><tbody>';
 
   SALES_ITEMS.forEach(item => {
     const val = salesExtractedData[item.id];
     const borderColor = val !== null && val !== undefined ? '#2ecc71' : '#e74c3c';
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     html += `<tr style="background:${bgColor}">
-      <td style="padding:6px 8px;font-size:13px;white-space:nowrap;">${item.name} <span style="color:#999;font-size:11px;">${item.unit}</span></td>
-      <td style="padding:4px 6px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:120px;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:15px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''}></td>
+      <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${item.name} <span style="color:#999;font-size:17px;">${item.unit}</span></td>
+      <td style="padding:4px 6px;"><input type="number" id="sales_${item.id}" value="${val||''}" style="width:120px;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''}></td>
     </tr>`;
   });
 

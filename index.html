@@ -2437,6 +2437,7 @@ const SALES_ITEMS = [
 ];
 
 let salesExtractedData = {};
+let salesPdfArrayBuffer = null; // PDF読み取り時に保持
 let _salesPdfViewerReady = false;  // pdfviewer.html のロード完了フラグ
 let _pendingSalesPdfData = null;   // ビューア未準備時の一時保存
 
@@ -2501,6 +2502,7 @@ async function handleSalesPdf(input) {
   try {
     // PDFをBase64に変換
     const arrayBuffer = await file.arrayBuffer();
+    salesPdfArrayBuffer = arrayBuffer.slice(0); // 提出時用にコピーを保持
 
     const pdfData = new Uint8Array(arrayBuffer);
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
@@ -2737,13 +2739,11 @@ async function submitSalesData() {
   btn.disabled = true; btn.textContent = '送信中...';
 
   try {
-    // PDFをBase64に変換してFirestoreに保存
-    const fileInput = document.getElementById('salesPdfFile');
+    // 保持済みのPDF arrayBufferからBase64に変換
     const renamedFileName = `${month}_保険合計_${deptName}.pdf`;
     let pdfBase64 = null;
-    if (fileInput.files[0]) {
-      const buf = await fileInput.files[0].arrayBuffer();
-      pdfBase64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ''));
+    if (salesPdfArrayBuffer) {
+      pdfBase64 = btoa(new Uint8Array(salesPdfArrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
     }
 
     await db.collection('salesData').doc(docId).set({
@@ -2778,8 +2778,8 @@ async function submitSalesData() {
     lbl.style.background = '#3498db';
     lbl.innerHTML = '📄 PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
     lbl.style.pointerEvents = 'auto';
-    fileInput.value = '';
     salesExtractedData = {};
+    salesPdfArrayBuffer = null;
     renderSalesHistory();
   } catch (e) {
     alert('保存エラー: ' + e.message);

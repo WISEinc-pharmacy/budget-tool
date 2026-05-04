@@ -2892,7 +2892,7 @@ async function renderSalesTab() {
   await renderSalesHistory();
 }
 
-// ===== 労務タブ（KOT連携） =====
+// ===== 労務タブ（KOT連携・期間連動） =====
 let laborDataCache = null;
 async function loadLaborData() {
   const summaryEl = document.getElementById('laborSummary');
@@ -2911,14 +2911,56 @@ async function loadLaborData() {
   }
 
   const d = laborDataCache;
-  const { monthly, employees, holidays } = d;
+  const { months, employees, holidays } = d;
+  if (!months || months.length === 0) { summaryEl.innerHTML = '<p>データなし</p>'; return; }
+
+  // 上部の表示期間セレクタからフィルタ
+  const filterFrom = document.getElementById('filterFrom')?.value || '';
+  const filterTo = document.getElementById('filterTo')?.value || '';
+
+  // 表示期間に合致する月データを抽出
+  let filteredMonths = months;
+  if (filterFrom || filterTo) {
+    filteredMonths = months.filter(m => {
+      const ym = m.yearMonth;
+      // yyyy-MM を月番号に変換して比較
+      if (filterFrom && ym < filterFrom) return false;
+      if (filterTo && ym > filterTo) return false;
+      return true;
+    });
+  }
+  if (filteredMonths.length === 0) filteredMonths = months;
+
+  // 期間内データを集約
+  const periodLabel = filteredMonths.length === 1
+    ? filteredMonths[0].yearMonth
+    : `${filteredMonths[0].yearMonth} 〜 ${filteredMonths[filteredMonths.length - 1].yearMonth}`;
+
+  let totalOvertime = 0;
+  let totalActive = 0;
+  const divAgg = {};
+
+  for (const m of filteredMonths) {
+    totalOvertime += m.totalOvertimeHours || 0;
+    totalActive += m.activeEmployees || 0;
+    for (const div of (m.divisions || [])) {
+      if (!divAgg[div.name]) divAgg[div.name] = { count: 0, overtime: 0, months: 0 };
+      divAgg[div.name].count += div.count;
+      divAgg[div.name].overtime += div.overtimeHours;
+      divAgg[div.name].months++;
+    }
+  }
+
+  const avgMonthlyOvertime = filteredMonths.length > 0 ? Math.round(totalOvertime / filteredMonths.length * 10) / 10 : 0;
+  const avgActive = filteredMonths.length > 0 ? Math.round(totalActive / filteredMonths.length) : 0;
+  const avgPerPerson = avgActive > 0 ? Math.round(avgMonthlyOvertime / avgActive * 10) / 10 : 0;
 
   // サマリーカード
   summaryEl.innerHTML = [
     { label: '従業員数', value: `${employees.totalCount}名`, sub: `薬剤師${employees.pharmacistCount}名` },
-    { label: '平均残業', value: `${monthly.avgOvertimeHours}h/月`, sub: `全社${monthly.totalOvertimeHours}h` },
+    { label: '月平均残業/人', value: `${avgPerPerson}h`, sub: `全社月平均${avgMonthlyOvertime}h` },
     { label: '有給取得率', value: `${holidays.rate}%`, sub: `平均${holidays.avgObtained}日/年` },
-    { label: '稼働人数', value: `${monthly.activeEmployees}名`, sub: `${monthly.yearMonth}` },
+    { label: '表示期間', value: `${filteredMonths.length}ヶ月`, sub: periodLabel },
   ].map(c => `
     <div style="background:#fff;border-radius:8px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;">
       <div style="font-size:11px;color:#7f8c8d;margin-bottom:4px;">${c.label}</div>
@@ -2927,15 +2969,38 @@ async function loadLaborData() {
     </div>
   `).join('');
 
-  // 店舗別テーブル
-  let html = '<thead><tr><th style="text-align:left">店舗</th><th>人数</th><th>残業合計</th><th>平均残業/人</th></tr></thead><tbody>';
-  for (const div of monthly.divisions) {
-    const color = div.avgOvertimeHours > 10 ? '#e74c3c' : div.avgOvertimeHours > 5 ? '#f39c12' : '#27ae60';
+  // 店舗別テーブル（月平均）
+  const divList = Object.entries(divAgg)
+    .map(([name, d]) => ({
+      name,
+      avgCount: Math.round(d.count / d.months),
+      totalOvertime: Math.round(d.overtime * 10) / 10,
+      avgOvertime: d.months > 0 ? Math.round(d.overtime / d.months * 10) / 10 : 0,
+      avgPerPerson: d.count > 0 ? Math.round(d.overtime / d.count * 60 * 10) / 10 / 60 : 0,
+    }))
+    .map(d => ({ ...d, avgPerPerson: d.count > 0 ? Math.round(d.totalOvertime / (d.avgCount * filteredMonths.length) * 10) / 10 : 0 }))
+    .sort((a, b) => b.avgCount - a.count);
+
+  // 再計算（シンプルに）
+  const divDisplay = Object.entries(divAgg)
+    .map(([name, d]) => {
+      const avgMonths = d.months;
+      const monthlyAvgOvertime = avgMonths > 0 ? Math.round(d.overtime / avgMonths * 10) / 10 : 0;
+      const avgCount = avgMonths > 0 ? Math.round(d.count / avgMonths) : 0;
+      const perPerson = avgCount > 0 ? Math.round(monthlyAvgOvertime / avgCount * 10) / 10 : 0;
+      return { name, avgCount, monthlyAvgOvertime, perPerson, totalOvertime: Math.round(d.overtime * 10) / 10 };
+    })
+    .sort((a, b) => b.avgCount - a.avgCount);
+
+  let html = `<thead><tr><th style="text-align:left">店舗</th><th>平均人数</th><th>期間残業合計</th><th>月平均残業</th><th>月平均/人</th></tr></thead><tbody>`;
+  for (const div of divDisplay) {
+    const color = div.perPerson > 10 ? '#e74c3c' : div.perPerson > 5 ? '#f39c12' : '#27ae60';
     html += `<tr>
       <td style="text-align:left;font-weight:500">${div.name}</td>
-      <td>${div.count}名</td>
-      <td>${div.overtimeHours}h</td>
-      <td style="color:${color};font-weight:700">${div.avgOvertimeHours}h</td>
+      <td>${div.avgCount}名</td>
+      <td>${div.totalOvertime}h</td>
+      <td>${div.monthlyAvgOvertime}h</td>
+      <td style="color:${color};font-weight:700">${div.perPerson}h</td>
     </tr>`;
   }
   html += '</tbody>';
@@ -2943,7 +3008,7 @@ async function loadLaborData() {
 
   // 更新日
   const updated = new Date(d.updatedAt);
-  infoEl.textContent = `最終更新: ${updated.toLocaleDateString('ja-JP')} ${updated.toLocaleTimeString('ja-JP', {hour:'2-digit',minute:'2-digit'})}`;
+  infoEl.textContent = `最終更新: ${updated.toLocaleDateString('ja-JP')} ${updated.toLocaleTimeString('ja-JP', {hour:'2-digit',minute:'2-digit'})} | ${periodLabel}`;
 }
 </script>
 </body>

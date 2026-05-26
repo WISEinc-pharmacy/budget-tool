@@ -2968,16 +2968,27 @@ async function loadLaborData(forceRefresh) {
   const { months, employees, holidays } = d;
   if (!months || months.length === 0) { summaryEl.innerHTML = '<p>データなし</p>'; return; }
 
-  // 上部の表示期間セレクタからフィルタ
-  const filterFrom = document.getElementById('filterFrom')?.value || '';
-  const filterTo = document.getElementById('filterTo')?.value || '';
+  // 上部の表示期間セレクタからフィルタ（月インデックスをyyyy-MMに変換）
+  const filterFromIdx = document.getElementById('filterFrom')?.value;
+  const filterToIdx = document.getElementById('filterTo')?.value;
+
+  function idxToYearMonth(idx) {
+    const start = parseInt(document.getElementById('startMonth')?.value || '2');
+    const year = parseInt(document.getElementById('fiscalYear')?.value || '2026');
+    const i = parseInt(idx);
+    const m = ((start - 1 + (i < 0 ? i + 12 : i)) % 12) + 1;
+    const baseYear = i < 0 ? year - 1 : year;
+    const y = (start + (i < 0 ? i + 12 : i) > 12) ? baseYear + 1 : baseYear;
+    return `${y}-${String(m).padStart(2, '0')}`;
+  }
 
   let filteredMonths = months;
-  if (filterFrom || filterTo) {
+  if (filterFromIdx !== '' && filterToIdx !== '') {
+    const fromYM = idxToYearMonth(filterFromIdx);
+    const toYM = idxToYearMonth(filterToIdx);
     filteredMonths = months.filter(m => {
-      const ym = m.yearMonth;
-      if (filterFrom && ym < filterFrom) return false;
-      if (filterTo && ym > filterTo) return false;
+      if (m.yearMonth < fromYM) return false;
+      if (m.yearMonth > toYM) return false;
       return true;
     });
   }

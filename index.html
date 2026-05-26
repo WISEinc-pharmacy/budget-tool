@@ -315,12 +315,16 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div style="padding:16px 24px;background:#eef6fc;border-bottom:1px solid #aed6f1;">
     <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
       <h3 style="margin:0;color:#1a5276;font-size:15px;">👥 労務 — KOT連携</h3>
-      <button class="btn btn-secondary" onclick="loadLaborData()">データ更新</button>
+      <button class="btn btn-secondary" onclick="loadLaborData(true)">データ更新</button>
       <span id="laborUpdateInfo" style="font-size:11px;color:#999;"></span>
     </div>
   </div>
   <div style="padding:16px 24px;">
     <div id="laborSummary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px;"></div>
+    <h4 style="color:#1a5276;margin-bottom:8px;">月別 残業推移</h4>
+    <div style="max-width:900px;margin:0 auto 24px;">
+      <canvas id="laborChart" height="260"></canvas>
+    </div>
     <h4 style="color:#1a5276;margin-bottom:8px;">店舗別 残業時間</h4>
     <div class="table-wrap"><table id="laborTable" style="min-width:0;"></table></div>
   </div>
@@ -405,6 +409,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <!-- Firebase Storage不使用（PDFはFirestoreにBase64保存） -->
 
 <script>
@@ -1952,7 +1957,7 @@ async function parseFreeeFiles() {
   freeeParsedData.sort((a,b) => (a.fiscalYear||'').localeCompare(b.fiscalYear||'') || (a.deptName||'').localeCompare(b.deptName||''));
   html += '<div style="overflow-x:auto;margin:8px 0">';
   html += '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:700px">';
-  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">ファイル名</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">年度</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上高</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上原価</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">販管費</th></tr>';
+  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">ファイル名</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">年度</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">検出根拠</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上高</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上原価</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">販管費</th></tr>';
   let prevFY = null;
   for (let i = 0; i < freeeParsedData.length; i++) {
     const d = freeeParsedData[i];
@@ -1964,7 +1969,7 @@ async function parseFreeeFiles() {
     const sgaTotal = Object.entries(feb).filter(([k])=>!excludeIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
     // 年度区切り線
     if (fySet.size > 1 && prevFY !== null && prevFY !== fy) {
-      html += `<tr><td colspan="6" style="border-top:2px solid #2c3e50;padding:0"></td></tr>`;
+      html += `<tr><td colspan="7" style="border-top:2px solid #2c3e50;padding:0"></td></tr>`;
     }
     prevFY = fy;
     // ファイル名（長い場合は末尾のみ）
@@ -1978,6 +1983,10 @@ async function parseFreeeFiles() {
     const confLabel = {high:'✓確実', medium:'△推定', none:'?不明'}[d.confidence]||'?不明';
     const confColor = {high:'#27ae60', medium:'#e67e22', none:'#e74c3c'}[d.confidence]||'#e74c3c';
     html += `</select><div style="color:${confColor};font-size:10px">${confLabel}: ${d.deptName}</div></td>`;
+    // 検出根拠列
+    const hints = (d.matchedHints || []).join(', ');
+    const l3Info = (d.l3Values || []).length > 0 ? `<div style="color:#888;font-size:9px;margin-top:2px">L3: ${d.l3Values.slice(0,4).join(' / ')}${d.l3Values.length > 4 ? ' ...' : ''}</div>` : '';
+    html += `<td style="padding:4px;border:1px solid #ccc;font-size:10px;max-width:200px"><span style="color:#2c3e50">${hints || '—'}</span>${l3Info}</td>`;
     html += `<td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${sgaTotal.toLocaleString()}</td></tr>`;
   }
   html += '</table></div>';
@@ -2237,17 +2246,24 @@ function parseFreeeCSV(text) {
     { name: 'アイ調剤薬局', id: 'ai_chozai',   l3: ['幸楽土地', '㈱幸楽'],                         text: ['アイ調剤'] },
   ];
   let deptConfidence = 'none';
+  let matchedHints = []; // 判定根拠（検出したテナント名・物件名等）
   // L3物件名で判定（高精度）
   for (const hint of DEPT_HINTS) {
-    if (hint.l3.some(p => l3Values.some(v => v.includes(p)))) {
-      deptName = hint.name; deptId = hint.id; deptConfidence = 'high'; break;
+    const matched = hint.l3.filter(p => l3Values.some(v => v.includes(p)));
+    if (matched.length > 0) {
+      deptName = hint.name; deptId = hint.id; deptConfidence = 'high';
+      matchedHints = matched.map(m => `L3: ${m}`);
+      break;
     }
   }
   // 全文テキストで判定（低精度フォールバック）
   if (!deptId) {
     for (const hint of DEPT_HINTS) {
-      if (hint.text.some(p => csvFullText.includes(p))) {
-        deptName = hint.name; deptId = hint.id; deptConfidence = 'medium'; break;
+      const matched = hint.text.filter(p => csvFullText.includes(p));
+      if (matched.length > 0) {
+        deptName = hint.name; deptId = hint.id; deptConfidence = 'medium';
+        matchedHints = matched.map(m => `テキスト: ${m}`);
+        break;
       }
     }
   }
@@ -2263,25 +2279,34 @@ function parseFreeeCSV(text) {
       // 売上0 + 技術料なし → 管理部 or 役員
       if (hasYakuinHoshu && !hasKyuryo) {
         deptName = '役員'; deptId = 'yakuin'; deptConfidence = 'medium';
+        matchedHints = ['役員報酬あり・給与なし'];
       } else {
         deptName = '管理部・本部'; deptId = 'kanribu'; deptConfidence = 'medium';
+        matchedHints = ['売上0・技術料なし'];
       }
     } else if (!hasTech && totalSales > 0) {
       // 技術料なし + 売上あり → 役員 or 学術研修
       if (hasYakuinHoshu || totalSales > 2000000) {
         deptName = '役員'; deptId = 'yakuin'; deptConfidence = 'medium';
+        matchedHints = ['技術料なし・役員報酬or高額売上'];
       } else {
         deptName = '学術研修'; deptId = 'gakujutsu'; deptConfidence = 'medium';
+        matchedHints = ['技術料なし・少額売上'];
       }
     } else if (hasTech && hasYaku) {
       // 技術料+薬剤料あり → 調剤薬局系だが物件名ヒントなし
       deptName = '不明（調剤薬局系）'; deptId = '';
+      matchedHints = ['技術料+薬剤料あり・物件名なし'];
     } else {
       deptName = '不明(' + totalSales.toLocaleString() + ')'; deptId = '';
+      matchedHints = ['判定不能'];
     }
   }
 
-  return { deptId, deptName, confidence: deptConfidence, monthValues, unmappedL2: [...unmappedL2], fiscalYear: detectedFY };
+  // L3に出現したユニークな値一覧（判定根拠の補助情報）
+  const l3Unique = [...new Set(l3Values)].slice(0, 8);
+
+  return { deptId, deptName, confidence: deptConfidence, matchedHints, l3Values: l3Unique, monthValues, unmappedL2: [...unmappedL2], fiscalYear: detectedFY };
 }
 
 async function doFreeeImport() {
@@ -2892,21 +2917,50 @@ async function renderSalesTab() {
   await renderSalesHistory();
 }
 
-// ===== 労務タブ（KOT連携・期間連動） =====
+// ===== 労務タブ（KOT連携・Firestore） =====
 let laborDataCache = null;
-async function loadLaborData() {
+let laborChartInstance = null;
+
+async function loadLaborData(forceRefresh) {
   const summaryEl = document.getElementById('laborSummary');
   const tableEl = document.getElementById('laborTable');
   const infoEl = document.getElementById('laborUpdateInfo');
 
-  if (!laborDataCache) {
+  if (!laborDataCache || forceRefresh) {
     summaryEl.innerHTML = '<p style="color:#999">読み込み中...</p>';
     try {
-      const res = await fetch('https://wiseinc-pharmacy.github.io/wise-numbers/data/kot_data.json');
-      laborDataCache = await res.json();
+      // Firestoreから取得
+      const monthSnap = await db.collection('kot_monthly').orderBy('yearMonth', 'desc').limit(12).get();
+      const months = monthSnap.docs.map(d => d.data()).reverse(); // 古い順に
+
+      const empDoc = await db.collection('kot_summary').doc('employees').get();
+      const employees = empDoc.exists ? empDoc.data() : { totalCount: 0, pharmacistCount: 0 };
+
+      // 有給: 最新年度を取得（2025→2026...）
+      const holSnap = await db.collection('kot_summary').where(firebase.firestore.FieldPath.documentId(), '>=', 'holidays_').where(firebase.firestore.FieldPath.documentId(), '<=', 'holidays_~').get();
+      let holidays = { rate: 0, avgObtained: 0 };
+      if (!holSnap.empty) {
+        // 最新年度を選択
+        const sorted = holSnap.docs.sort((a, b) => b.id.localeCompare(a.id));
+        holidays = sorted[0].data();
+      }
+
+      laborDataCache = {
+        months,
+        employees,
+        holidays,
+        updatedAt: months.length > 0 ? months[months.length - 1].updatedAt : null,
+      };
     } catch (e) {
-      summaryEl.innerHTML = '<p style="color:#e74c3c">データ取得失敗。wise-numbers/data/kot_data.json を確認してください。</p>';
-      return;
+      // Firestoreが空 or ルール未設定 → 旧JSON fallback
+      console.warn('Firestore労務データ取得失敗、JSONフォールバック:', e.message);
+      try {
+        const res = await fetch('https://wiseinc-pharmacy.github.io/wise-numbers/data/kot_data.json');
+        laborDataCache = await res.json();
+      } catch (e2) {
+        summaryEl.innerHTML = '<p style="color:#e74c3c">データ取得失敗。Firestoreにデータがありません。sync_to_firebase.mjs を実行してください。</p>';
+        return;
+      }
     }
   }
 
@@ -2918,12 +2972,10 @@ async function loadLaborData() {
   const filterFrom = document.getElementById('filterFrom')?.value || '';
   const filterTo = document.getElementById('filterTo')?.value || '';
 
-  // 表示期間に合致する月データを抽出
   let filteredMonths = months;
   if (filterFrom || filterTo) {
     filteredMonths = months.filter(m => {
       const ym = m.yearMonth;
-      // yyyy-MM を月番号に変換して比較
       if (filterFrom && ym < filterFrom) return false;
       if (filterTo && ym > filterTo) return false;
       return true;
@@ -2931,7 +2983,6 @@ async function loadLaborData() {
   }
   if (filteredMonths.length === 0) filteredMonths = months;
 
-  // 期間内データを集約
   const periodLabel = filteredMonths.length === 1
     ? filteredMonths[0].yearMonth
     : `${filteredMonths[0].yearMonth} 〜 ${filteredMonths[filteredMonths.length - 1].yearMonth}`;
@@ -2969,19 +3020,10 @@ async function loadLaborData() {
     </div>
   `).join('');
 
-  // 店舗別テーブル（月平均）
-  const divList = Object.entries(divAgg)
-    .map(([name, d]) => ({
-      name,
-      avgCount: Math.round(d.count / d.months),
-      totalOvertime: Math.round(d.overtime * 10) / 10,
-      avgOvertime: d.months > 0 ? Math.round(d.overtime / d.months * 10) / 10 : 0,
-      avgPerPerson: d.count > 0 ? Math.round(d.overtime / d.count * 60 * 10) / 10 / 60 : 0,
-    }))
-    .map(d => ({ ...d, avgPerPerson: d.count > 0 ? Math.round(d.totalOvertime / (d.avgCount * filteredMonths.length) * 10) / 10 : 0 }))
-    .sort((a, b) => b.avgCount - a.count);
+  // 月別推移チャート
+  renderLaborChart(filteredMonths);
 
-  // 再計算（シンプルに）
+  // 店舗別テーブル
   const divDisplay = Object.entries(divAgg)
     .map(([name, d]) => {
       const avgMonths = d.months;
@@ -3007,8 +3049,82 @@ async function loadLaborData() {
   tableEl.innerHTML = html;
 
   // 更新日
-  const updated = new Date(d.updatedAt);
-  infoEl.textContent = `最終更新: ${updated.toLocaleDateString('ja-JP')} ${updated.toLocaleTimeString('ja-JP', {hour:'2-digit',minute:'2-digit'})} | ${periodLabel}`;
+  if (d.updatedAt) {
+    const updated = new Date(d.updatedAt);
+    infoEl.textContent = `最終更新: ${updated.toLocaleDateString('ja-JP')} ${updated.toLocaleTimeString('ja-JP', {hour:'2-digit',minute:'2-digit'})} | ${periodLabel}`;
+  } else {
+    infoEl.textContent = periodLabel;
+  }
+}
+
+function renderLaborChart(months) {
+  const canvas = document.getElementById('laborChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+
+  if (laborChartInstance) { laborChartInstance.destroy(); laborChartInstance = null; }
+  if (months.length < 2) { canvas.style.display = 'none'; return; }
+  canvas.style.display = 'block';
+
+  const labels = months.map(m => m.yearMonth.replace(/^\d{4}-/, ''));
+  const overtimeData = months.map(m => m.totalOvertimeHours || 0);
+  const perPersonData = months.map(m => m.avgOvertimeHours || 0);
+
+  laborChartInstance = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '全社残業(h)',
+          data: overtimeData,
+          backgroundColor: 'rgba(52,152,219,0.6)',
+          borderColor: 'rgba(52,152,219,1)',
+          borderWidth: 1,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          label: '平均残業/人(h)',
+          data: perPersonData,
+          type: 'line',
+          borderColor: '#e67e22',
+          backgroundColor: 'rgba(230,126,34,0.1)',
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: '#e67e22',
+          fill: false,
+          yAxisID: 'y1',
+          order: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            title: (items) => months[items[0].dataIndex]?.yearMonth || '',
+          },
+        },
+      },
+      scales: {
+        y: {
+          type: 'linear', position: 'left',
+          title: { display: true, text: '全社残業(h)', font: { size: 11 } },
+          beginAtZero: true,
+          grid: { color: 'rgba(0,0,0,0.05)' },
+        },
+        y1: {
+          type: 'linear', position: 'right',
+          title: { display: true, text: '平均/人(h)', font: { size: 11 } },
+          beginAtZero: true,
+          grid: { drawOnChartArea: false },
+        },
+      },
+    },
+  });
 }
 </script>
 </body>

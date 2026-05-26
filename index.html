@@ -1966,7 +1966,7 @@ async function parseFreeeFiles() {
   freeeParsedData.sort((a,b) => (a.fiscalYear||'').localeCompare(b.fiscalYear||'') || (a.deptName||'').localeCompare(b.deptName||''));
   html += '<div style="overflow-x:auto;margin:8px 0">';
   html += '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:700px">';
-  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">ファイル名</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">年度</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">検出根拠</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上高</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上原価</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">販管費</th></tr>';
+  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc;width:28px"></th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">ファイル名</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">年度</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">検出根拠</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上高</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上原価</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">販管費</th></tr>';
   let prevFY = null;
   for (let i = 0; i < freeeParsedData.length; i++) {
     const d = freeeParsedData[i];
@@ -1978,13 +1978,14 @@ async function parseFreeeFiles() {
     const sgaTotal = Object.entries(feb).filter(([k])=>!excludeIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
     // 年度区切り線
     if (fySet.size > 1 && prevFY !== null && prevFY !== fy) {
-      html += `<tr><td colspan="7" style="border-top:2px solid #2c3e50;padding:0"></td></tr>`;
+      html += `<tr><td colspan="8" style="border-top:2px solid #2c3e50;padding:0"></td></tr>`;
     }
     prevFY = fy;
     // ファイル名（長い場合は末尾のみ）
     const shortName = (d.fileName||'').replace(/^.*[\/\\]/, '').replace(/月次推移[：:]損益計算書_ワイズ株式会社/, '').replace(/[（(]表示単位[：:]円[）)]/, '').replace(/[（(]期間[：:]/, '').replace(/[）)]/, '').trim() || d.fileName || '?';
     const selId = `freee_dept_${i}`;
-    html += `<tr>`;
+    html += `<tr id="freee_row_${i}">`;
+    html += `<td style="padding:2px;border:1px solid #ccc;text-align:center"><button onclick="removeFreeeItem(${i})" style="background:none;border:none;cursor:pointer;color:#e74c3c;font-size:16px;line-height:1;padding:0 4px" title="この候補を除外">×</button></td>`;
     html += `<td style="padding:4px;border:1px solid #ccc;font-size:10px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.fileName||''}">${shortName}</td>`;
     html += `<td style="padding:4px;border:1px solid #ccc;text-align:center;font-weight:bold">${fy}</td>`;
     html += `<td style="padding:4px;border:1px solid #ccc"><select id="${selId}" style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
@@ -2017,6 +2018,65 @@ async function parseFreeeFiles() {
   html += `<p style="color:#666;font-size:11px">${freeeParsedData.length}件検出。部門が正しいか確認してから取込実行してください。</p>`;
   preview.innerHTML = html;
   document.getElementById('btnFreeeExec').disabled = false;
+}
+
+function removeFreeeItem(idx) {
+  freeeParsedData.splice(idx, 1);
+  // プレビューを再描画
+  const preview = document.getElementById('freeePreview');
+  if (freeeParsedData.length === 0) {
+    preview.innerHTML = '<p style="color:#999;font-size:12px">全ての候補が除外されました。</p>';
+    document.getElementById('btnFreeeExec').disabled = true;
+    return;
+  }
+  // 簡易再描画: parseFreeeFilesの表示部分を再実行
+  const fySet = new Set(freeeParsedData.map(d => d.fiscalYear).filter(Boolean));
+  const deptOptions = DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('') + '<option value="">-- スキップ --</option>';
+  let html = '';
+  if (fySet.size > 1) {
+    html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 複数年度のCSVが混在しています: <strong>${[...fySet].sort().join('・')}年度</strong></div>`;
+  } else if (fySet.size === 1) {
+    html += `<div style="background:#e8f4e8;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 CSVの年度: <strong>${[...fySet][0]}年度</strong></div>`;
+  }
+  freeeParsedData.sort((a,b) => (a.fiscalYear||'').localeCompare(b.fiscalYear||'') || (a.deptName||'').localeCompare(b.deptName||''));
+  html += '<div style="overflow-x:auto;margin:8px 0">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:700px">';
+  html += '<tr style="background:#eee"><th style="padding:4px;border:1px solid #ccc;width:28px"></th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">ファイル名</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">年度</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">部門（変更可）</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">検出根拠</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上高</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">売上原価</th><th style="padding:4px;border:1px solid #ccc;white-space:nowrap">販管費</th></tr>';
+  let prevFY = null;
+  for (let i = 0; i < freeeParsedData.length; i++) {
+    const d = freeeParsedData[i];
+    const fy = d.fiscalYear || '不明';
+    const feb = d.monthValues;
+    const sales = (feb['gijutsu']||[]).reduce((s,v)=>s+v,0) + (feb['yakuzai']||[]).reduce((s,v)=>s+v,0) + (feb['chiryo']||[]).reduce((s,v)=>s+v,0) + (feb['uriage_other']||[]).reduce((s,v)=>s+v,0);
+    const genka = (feb['tsukisho_zaiko']||[]).reduce((s,v)=>s+v,0) + (feb['shiire']||[]).reduce((s,v)=>s+v,0) - (feb['tsukimatsu_zaiko']||[]).reduce((s,v)=>s+v,0);
+    const excludeIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko','genka_total'];
+    const sgaTotal = Object.entries(feb).filter(([k])=>!excludeIds.includes(k)).reduce((s,[,v])=>s+v.reduce((a,b)=>a+b,0),0);
+    if (fySet.size > 1 && prevFY !== null && prevFY !== fy) {
+      html += `<tr><td colspan="8" style="border-top:2px solid #2c3e50;padding:0"></td></tr>`;
+    }
+    prevFY = fy;
+    const shortName = (d.fileName||'').replace(/^.*[\/\\]/, '').replace(/月次推移[：:]損益計算書_ワイズ株式会社/, '').replace(/[（(]表示単位[：:]円[）)]/, '').replace(/[（(]期間[：:]/, '').replace(/[）)]/, '').trim() || d.fileName || '?';
+    const confLabel = {high:'✓確実', medium:'△推定', none:'?不明'}[d.confidence]||'?不明';
+    const confColor = {high:'#27ae60', medium:'#e67e22', none:'#e74c3c'}[d.confidence]||'#e74c3c';
+    const hints = (d.matchedHints || []).join(', ');
+    const l3Info = (d.l3Values || []).length > 0 ? `<div style="color:#888;font-size:9px;margin-top:2px">L3: ${d.l3Values.slice(0,4).join(' / ')}${d.l3Values.length > 4 ? ' ...' : ''}</div>` : '';
+    html += `<tr>`;
+    html += `<td style="padding:2px;border:1px solid #ccc;text-align:center"><button onclick="removeFreeeItem(${i})" style="background:none;border:none;cursor:pointer;color:#e74c3c;font-size:16px;line-height:1;padding:0 4px" title="この候補を除外">×</button></td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;font-size:10px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.fileName||''}">${shortName}</td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;text-align:center;font-weight:bold">${fy}</td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc"><select style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
+    html += deptOptions.replace(`value="${d.deptId}"`, `value="${d.deptId}" selected`);
+    html += `</select><div style="color:${confColor};font-size:10px">${confLabel}: ${d.deptName}</div></td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;font-size:10px;max-width:200px"><span style="color:#2c3e50">${hints || '—'}</span>${l3Info}</td>`;
+    html += `<td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${sales.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${genka.toLocaleString()}</td><td style="padding:4px;border:1px solid #ccc;text-align:right;white-space:nowrap">${sgaTotal.toLocaleString()}</td></tr>`;
+  }
+  html += '</table></div>';
+  const deptFyCounts = {};
+  freeeParsedData.forEach(d => { if (d.deptId) { const key = `${d.fiscalYear}_${d.deptId}`; deptFyCounts[key] = (deptFyCounts[key]||0)+1; } });
+  const dupKeys = Object.entries(deptFyCounts).filter(([,c])=>c>1).map(([key])=>{ const [fy,id]=key.split('_'); const name=freeeParsedData.find(d=>d.deptId===id&&d.fiscalYear===fy)?.deptName||id; return `${name}(${fy})`; });
+  if (dupKeys.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一年度・同一部門が重複しています: ${dupKeys.join('、')}。スキップに変更してください。</div>`;
+  html += `<p style="color:#666;font-size:11px">${freeeParsedData.length}件検出。部門が正しいか確認してから取込実行してください。</p>`;
+  preview.innerHTML = html;
 }
 
 function readFileAsText(file) {

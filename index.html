@@ -3043,18 +3043,27 @@ async function loadLaborData(forceRefresh) {
     ? filteredMonths[0].yearMonth
     : `${filteredMonths[0].yearMonth} 〜 ${filteredMonths[filteredMonths.length - 1].yearMonth}`;
 
+  // 選択中の部門に対応するKOT店舗名を取得
+  const selectedKotNames = selectedDepts.map(id => DEPT_TO_KOT[id]).filter(Boolean);
+  const isFiltered = selectedKotNames.length > 0;
+  const filterLabel = isFiltered
+    ? selectedDepts.map(id => DEPTS.find(d => d.id === id)?.name).filter(Boolean).join('・')
+    : '全社';
+
   let totalOvertime = 0;
   let totalActive = 0;
   const divAgg = {};
 
   for (const m of filteredMonths) {
-    totalOvertime += m.totalOvertimeHours || 0;
-    totalActive += m.activeEmployees || 0;
     for (const div of (m.divisions || [])) {
+      // 部門フィルタ: 店舗が選択されている場合は該当店舗のみ集計
+      if (isFiltered && !selectedKotNames.includes(div.name)) continue;
       if (!divAgg[div.name]) divAgg[div.name] = { count: 0, overtime: 0, months: 0 };
       divAgg[div.name].count += div.count;
       divAgg[div.name].overtime += div.overtimeHours;
       divAgg[div.name].months++;
+      totalOvertime += div.overtimeHours;
+      totalActive += div.count;
     }
   }
 
@@ -3064,8 +3073,8 @@ async function loadLaborData(forceRefresh) {
 
   // サマリーカード
   summaryEl.innerHTML = [
-    { label: '従業員数', value: `${employees.totalCount}名`, sub: `薬剤師${employees.pharmacistCount}名` },
-    { label: '月平均残業/人', value: `${avgPerPerson}h`, sub: `全社月平均${avgMonthlyOvertime}h` },
+    { label: isFiltered ? filterLabel : '従業員数', value: isFiltered ? `${avgActive}名` : `${employees.totalCount}名`, sub: isFiltered ? `月平均人数` : `薬剤師${employees.pharmacistCount}名` },
+    { label: '月平均残業/人', value: `${avgPerPerson}h`, sub: `${filterLabel}月平均${avgMonthlyOvertime}h` },
     { label: '有給取得率', value: `${holidays.rate}%`, sub: `平均${holidays.avgObtained}日/年` },
     { label: '表示期間', value: `${filteredMonths.length}ヶ月`, sub: periodLabel },
   ].map(c => `
@@ -3076,8 +3085,8 @@ async function loadLaborData(forceRefresh) {
     </div>
   `).join('');
 
-  // 月別推移チャート
-  renderLaborChart(filteredMonths);
+  // 月別推移チャート（選択部門でフィルタ）
+  renderLaborChart(filteredMonths, selectedKotNames);
 
   // 店舗別テーブル
   const divDisplay = Object.entries(divAgg)
@@ -3113,7 +3122,7 @@ async function loadLaborData(forceRefresh) {
   }
 }
 
-function renderLaborChart(months) {
+function renderLaborChart(months, kotNameFilter) {
   const canvas = document.getElementById('laborChart');
   if (!canvas || typeof Chart === 'undefined') return;
 
@@ -3121,9 +3130,18 @@ function renderLaborChart(months) {
   if (months.length < 2) { canvas.style.display = 'none'; return; }
   canvas.style.display = 'block';
 
+  const isFiltered = kotNameFilter && kotNameFilter.length > 0;
   const labels = months.map(m => m.yearMonth.replace(/^\d{4}-/, ''));
-  const overtimeData = months.map(m => m.totalOvertimeHours || 0);
-  const perPersonData = months.map(m => m.avgOvertimeHours || 0);
+  const overtimeData = months.map(m => {
+    if (!isFiltered) return m.totalOvertimeHours || 0;
+    return (m.divisions || []).filter(d => kotNameFilter.includes(d.name)).reduce((s, d) => s + d.overtimeHours, 0);
+  });
+  const perPersonData = months.map((m, i) => {
+    if (!isFiltered) return m.avgOvertimeHours || 0;
+    const divs = (m.divisions || []).filter(d => kotNameFilter.includes(d.name));
+    const count = divs.reduce((s, d) => s + d.count, 0);
+    return count > 0 ? Math.round(overtimeData[i] / count * 10) / 10 : 0;
+  });
 
   laborChartInstance = new Chart(canvas, {
     type: 'bar',

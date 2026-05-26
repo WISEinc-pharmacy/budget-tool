@@ -553,6 +553,7 @@ const ITEMS = [
   { id: 'kpi_labor_equip', name: '技術料労働/設備分配率', type: 'ratio', level: 1,
     numerator: (m) => sum(m, ['kyuryo','shoyo','gaicyu_fl','hotei','lease','genka_shokyaku']),
     denominator: (m) => val(m, 'gijutsu') },
+  { id: 'kpi_productivity', name: '技術料人時生産性', type: 'kot_kpi', level: 1, actualOnly: true },
 ];
 
 const nameToItem = {};
@@ -1279,6 +1280,8 @@ async function renderBudgetTable() {
 }
 
 async function renderActualTable() {
+  // KOTデータが未ロードなら自動取得（人時生産性KPI用）
+  if (!laborDataCache) { try { await loadLaborData(); } catch(e) {} }
   const data = getBudgetActual();
   const vm = getVisibleMonths();
   const needsPrev = vm.some(i => i < 0);
@@ -1303,6 +1306,12 @@ async function renderActualTable() {
       let numSum=0,denSum=0; vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
       html += `<td class="calc-value">${fmtPct(numSum,denSum)}</td>`;
       vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); html+=`<td class="calc-value">${fmtPct(it.numerator(mv),it.denominator(mv))}</td>`; });
+    } else if (it.type === 'kot_kpi') {
+      const deptId = currentDeptId();
+      let gTotal=0,hTotal=0;
+      vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); gTotal+=mv.gijutsu||0; hTotal+=getKotWorkingHours(deptId,m); });
+      html += `<td class="calc-value">${fmtProductivity(gTotal,hTotal)}</td>`;
+      vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); html+=`<td class="calc-value">${fmtProductivity(mv.gijutsu||0,getKotWorkingHours(deptId,m))}</td>`; });
     }
     html += '</tr>';
   });
@@ -1572,7 +1581,7 @@ async function saveVersion() {
     userName: currentUser.displayName || currentUser.email
   };
   ITEMS.forEach(it => {
-    if (it.type === 'header' || it.type === 'ratio') return;
+    if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
     versionData.budget[it.id] = d.budget[it.id];
     versionData.actual[it.id] = d.actual[it.id];
     versionData.annualInputs[it.id] = d.annualInputs[it.id];
@@ -1739,7 +1748,7 @@ function doRecalc() {
 
 function getRowClass(it) {
   let cls = `level-${it.level||0}`;
-  if (it.type==='header') cls+=' header-row'; else if (it.type==='ratio') cls+=' ratio-row'; else if (it.style==='subtotal') cls+=' subtotal-row'; else if (it.style==='profit') cls+=' profit-row'; else if (it.style==='calc') cls+=' calc-row';
+  if (it.type==='header') cls+=' header-row'; else if (it.type==='ratio' || it.type==='kot_kpi') cls+=' ratio-row'; else if (it.style==='subtotal') cls+=' subtotal-row'; else if (it.style==='profit') cls+=' profit-row'; else if (it.style==='calc') cls+=' calc-row';
   return cls;
 }
 function fmt(n,isCalc) { if(isNaN(n)) return '-'; if(n===0) return isCalc?'0':'-'; return n.toLocaleString('ja-JP'); }
@@ -2915,6 +2924,42 @@ async function deleteSalesData(docId, deptName, month) {
 async function renderSalesTab() {
   initSalesSelectors();
   await renderSalesHistory();
+}
+
+// ===== KOT労働時間ヘルパー（KPI用） =====
+// budget-tool部門ID → KOT店舗名マッピング
+const DEPT_TO_KOT = {
+  kashiwa: '柏', adachi: '足立', nagareyama: 'ながれやま',
+  ai_chozai: 'アイ調剤', abiko: '我孫子', sakuradai: 'さくら台',
+};
+
+/** budget-toolの月インデックス(0=期首月)をyyyy-MMに変換 */
+function monthIdxToYM(idx) {
+  const start = parseInt(document.getElementById('startMonth')?.value || '2');
+  const year = parseInt(document.getElementById('fiscalYear')?.value || '2026');
+  const i = idx < 0 ? idx + 12 : idx;
+  const m = ((start - 1 + i) % 12) + 1;
+  const baseYear = idx < 0 ? year - 1 : year;
+  const y = (start + i > 12) ? baseYear + 1 : baseYear;
+  return `${y}-${String(m).padStart(2, '0')}`;
+}
+
+/** 指定部門・月のKOT総労働時間(h)を返す。データなし→0 */
+function getKotWorkingHours(deptId, monthIdx) {
+  if (!laborDataCache?.months) return 0;
+  const kotName = DEPT_TO_KOT[deptId];
+  if (!kotName) return 0;
+  const ym = monthIdxToYM(monthIdx);
+  const mData = laborDataCache.months.find(m => m.yearMonth === ym);
+  if (!mData?.divisions) return 0;
+  const div = mData.divisions.find(d => d.name === kotName);
+  return div ? div.assignedMinutes / 60 : 0;
+}
+
+/** 技術料人時生産性: 技術料 ÷ 総労働時間(h) → 円/h */
+function fmtProductivity(gijutsu, hours) {
+  if (!hours || hours === 0) return '-';
+  return Math.round(gijutsu / hours).toLocaleString() + '円/h';
 }
 
 // ===== 労務タブ（KOT連携・Firestore） =====

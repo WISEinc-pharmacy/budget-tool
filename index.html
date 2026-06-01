@@ -1799,20 +1799,21 @@ function exportCSV(mode) {
   let csv = '';
   const deptName = isSingleDept() ? DEPTS.find(d=>d.id===currentDeptId())?.name : `${selectedDepts.length}部門合計`;
 
+  const visibleItems = ITEMS.filter(it => it.type !== 'header' && isItemVisible(it));
   if (mode==='budget'||mode==='all') {
     if (mode==='all') csv+='【予算】\n';
     csv += '"科目","年間合計",' + months.map(m=>`"${m}"`).join(',') + '\n';
-    ITEMS.forEach(it => { if(it.type==='header') return; const a=data.budget[it.id].reduce((s,v)=>s+v,0); csv+=`"${it.name}",${a||''}`; for(let m=0;m<12;m++) csv+=`,${data.budget[it.id][m]||''}`; csv+='\n'; });
+    visibleItems.forEach(it => { const a=data.budget[it.id].reduce((s,v)=>s+v,0); csv+=`"${it.name}",${a||''}`; for(let m=0;m<12;m++) csv+=`,${data.budget[it.id][m]||''}`; csv+='\n'; });
   }
   if (mode==='actual'||mode==='all') {
     if (mode==='all') csv+='\n【実績】\n';
     csv += '"科目","年間合計",' + months.map(m=>`"${m}"`).join(',') + '\n';
-    ITEMS.forEach(it => { if(it.type==='header') return; const a=data.actual[it.id].reduce((s,v)=>s+v,0); csv+=`"${it.name}",${a||''}`; for(let m=0;m<12;m++) csv+=`,${data.actual[it.id][m]||''}`; csv+='\n'; });
+    visibleItems.forEach(it => { const a=data.actual[it.id].reduce((s,v)=>s+v,0); csv+=`"${it.name}",${a||''}`; for(let m=0;m<12;m++) csv+=`,${data.actual[it.id][m]||''}`; csv+='\n'; });
   }
   if (mode==='all') {
     csv+='\n【差異】\n';
     csv += '"科目","年間合計",' + months.map(m=>`"${m}"`).join(',') + '\n';
-    ITEMS.forEach(it => { if(it.type==='header') return; const diff=data.actual[it.id].map((v,i)=>v-data.budget[it.id][i]); const a=diff.reduce((s,v)=>s+v,0); csv+=`"${it.name}",${a}`; diff.forEach(d=>csv+=`,${d}`); csv+='\n'; });
+    visibleItems.forEach(it => { const diff=data.actual[it.id].map((v,i)=>v-data.budget[it.id][i]); const a=diff.reduce((s,v)=>s+v,0); csv+=`"${it.name}",${a}`; diff.forEach(d=>csv+=`,${d}`); csv+='\n'; });
   }
   const blob = new Blob([bom+csv],{type:'text/csv;charset=utf-8'});
   const a = document.createElement('a'); a.href=URL.createObjectURL(blob);

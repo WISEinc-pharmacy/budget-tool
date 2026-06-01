@@ -119,6 +119,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .role-badge.viewer_kanribu { background: #8e44ad; color: #fff; }
 .role-badge.viewer_gakujutsu { background: #2980b9; color: #fff; }
 .role-badge.admin { background: #e74c3c; color: #fff; }
+.role-badge.tax_advisor { background: #f39c12; color: #fff; }
 .save-status { font-size: 11px; color: #999; margin-left: 12px; }
 .current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; display: flex; align-items: center; gap: 12px; }
 .mode-indicator { font-size: 12px; padding: 3px 10px; border-radius: 4px; font-weight: 600; }
@@ -164,6 +165,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .help-tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 600; margin-left: 6px; }
 .help-tag.editor-only { background: #d5f5e3; color: #1e8449; }
 .help-tag.admin-only { background: #fadbd8; color: #c0392b; }
+.help-tag.tax_advisor { background: #fdebd0; color: #e67e22; }
 .help-tip { background: #eaf2f8; border-left: 3px solid #3498db; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0; font-size: 12px; color: #2c3e50; }
 .help-shortcut { display: inline-block; background: #ecf0f1; border: 1px solid #bdc3c7; border-radius: 3px; padding: 1px 6px; font-size: 11px; font-family: monospace; }
 </style>
@@ -387,6 +389,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
         <option value="viewer">閲覧者（店舗）</option>
         <option value="viewer_kanribu">閲覧者（管理部）</option>
         <option value="viewer_gakujutsu">閲覧者（学術）</option>
+        <option value="tax_advisor">税理士</option>
         <option value="admin">管理者</option>
       </select>
       <button class="btn btn-primary" onclick="addUser()" style="margin-left:8px">追加</button>
@@ -616,7 +619,7 @@ function docId(deptId) { return `FY${getFiscalYear()}_${deptId}`; }
 function showSaveStatus(s, t) { const el = document.getElementById('saveStatus'); el.textContent = t; el.className = 'save-status ' + s; if (s === 'saved') setTimeout(() => el.textContent = '', 2000); }
 
 async function saveToFirestore() {
-  if (userRole === 'viewer') return;
+  if (isViewerRole(userRole) || userRole === 'tax_advisor') return;
   showSaveStatus('saving', '保存中...');
   try {
     await saveDeptToFirestore(currentDeptId());
@@ -691,7 +694,7 @@ async function loadAllFromFirestore() {
         if (loadedFromNew.has(deptId)) return;
         migratedCount++;
         // 新形式で保存（移行）
-        if (userRole === 'admin' || userRole === 'editor') {
+        if (userRole === 'admin' || userRole === 'editor' || userRole === 'tax_advisor') {
           db.collection('budgetData').doc(prefix + doc.id).set(data);
         }
       } else {
@@ -761,7 +764,7 @@ async function checkUserRole(user) {
 }
 
 function getRoleLabel(role) {
-  const labels = { admin: '管理者', editor: '編集者', viewer: '閲覧者（店舗）', viewer_kanribu: '閲覧者（管理部）', viewer_gakujutsu: '閲覧者（学術）' };
+  const labels = { admin: '管理者', editor: '編集者', viewer: '閲覧者（店舗）', viewer_kanribu: '閲覧者（管理部）', viewer_gakujutsu: '閲覧者（学術）', tax_advisor: '税理士' };
   return labels[role] || role;
 }
 function isViewerRole(role) { return role === 'viewer' || role === 'viewer_kanribu' || role === 'viewer_gakujutsu'; }
@@ -770,6 +773,8 @@ function applyPermissions() {
   const canEdit = userRole === 'admin' || userRole === 'editor';
   document.getElementById('btnEditMode').style.display = canEdit ? '' : 'none';
   document.getElementById('btnAdmin').style.display = userRole === 'admin' ? '' : 'none';
+  // 税理士: Freee取込ボタンだけ常時表示（編集モード不要）
+  document.getElementById('btnFreee').style.display = userRole === 'tax_advisor' ? '' : 'none';
   // 編集系ボタンは updateModeUI で制御
 }
 
@@ -831,6 +836,13 @@ function openHelpModal() {
   } else if (userRole === 'viewer_gakujutsu') {
     h += `<div class="help-section"><h3>部門の表示</h3>
       <p>あなたの権限では<strong>学術研修企画運営室</strong>のデータを閲覧できます。</p></div>`;
+  } else if (userRole === 'tax_advisor') {
+    h += `<div class="help-section"><h3>税理士向け機能</h3>
+      <ul>
+        <li><strong>全部門</strong>のデータ（本部経費内訳含む）を閲覧できます。</li>
+        <li><strong>Freee取込</strong>ボタンからFreee会計CSVの実績データを取り込めます。</li>
+        <li>数値の直接編集・予算入力はできません。</li>
+      </ul></div>`;
   } else {
     h += `<div class="help-section"><h3>部門の選択</h3>
       <ul>
@@ -944,6 +956,7 @@ async function renderUserList() {
         <option value="viewer" ${u.role==='viewer'?'selected':''}>閲覧者（店舗）</option>
         <option value="viewer_kanribu" ${u.role==='viewer_kanribu'?'selected':''}>閲覧者（管理部）</option>
         <option value="viewer_gakujutsu" ${u.role==='viewer_gakujutsu'?'selected':''}>閲覧者（学術）</option>
+        <option value="tax_advisor" ${u.role==='tax_advisor'?'selected':''}>税理士</option>
       </select></td>
       <td>${isSelf?'-':'<button class="btn btn-warn" style="font-size:11px;padding:2px 8px" onclick="removeUser(\''+u.email+'\')">削除</button>'}</td></tr>`;
   });
@@ -952,7 +965,7 @@ async function renderUserList() {
 
 // ===== 部門チェックボックス =====
 function getVisibleDepts() {
-  if (userRole === 'admin' || userRole === 'editor') return DEPTS;
+  if (userRole === 'admin' || userRole === 'editor' || userRole === 'tax_advisor') return DEPTS;
   if (userRole === 'viewer_kanribu') return DEPTS.filter(d => d.id === 'kanribu');
   if (userRole === 'viewer_gakujutsu') return DEPTS.filter(d => d.id === 'gakujutsu');
   // viewer（店舗閲覧）: adminOnly以外
@@ -1694,7 +1707,10 @@ function updateModeUI() {
   // 編集系ボタンの表示制御
   const showEdit = editMode && (userRole === 'admin' || userRole === 'editor');
   document.getElementById('btnImport').style.display = showEdit ? '' : 'none';
-  document.getElementById('btnFreee').style.display = showEdit ? '' : 'none';
+  // 税理士はFreee取込ボタンを常時表示（applyPermissionsで制御）、編集者・管理者は編集モード時のみ
+  if (userRole !== 'tax_advisor') {
+    document.getElementById('btnFreee').style.display = showEdit ? '' : 'none';
+  }
   document.getElementById('btnRecalc').style.display = showEdit ? '' : 'none';
   document.getElementById('btnClear').style.display = showEdit ? '' : 'none';
   document.getElementById('btnUndo').parentElement.style.display = showEdit ? '' : 'none';
@@ -1904,7 +1920,7 @@ const FREEE_SUB_MAP = {
 let freeeParsedData = []; // [{deptId, deptName, monthData: {itemId: [12values]}}]
 
 function openFreeeModal() {
-  if (userRole !== 'admin') { alert('管理者のみ使用できます'); return; }
+  if (userRole !== 'admin' && userRole !== 'tax_advisor') { alert('管理者または税理士のみ使用できます'); return; }
   document.getElementById('freeeModal').classList.add('show');
   document.getElementById('freeePreview').innerHTML = '';
   document.getElementById('freeeResult').innerHTML = '';

@@ -191,7 +191,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     </div>
     <button class="btn btn-import" onclick="openImportModal()" id="btnImport">CSVインポート</button>
     <button class="btn btn-import" onclick="openFreeeModal()" id="btnFreee" style="background:#8e44ad">Freee取込</button>
-    <div class="btn-group-export">
+    <div class="btn-group-export" id="btnExportGroup">
       <span class="btn-group-label">エクスポート</span>
       <button class="btn btn-primary" onclick="exportCSV('budget')">予算</button>
       <button class="btn btn-primary" onclick="exportCSV('actual')">実績</button>
@@ -201,6 +201,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <button class="btn btn-secondary" onclick="clearAll()" id="btnClear">クリア</button>
     <button class="btn" onclick="openHistoryModal()" style="background:#8e44ad;color:#fff">履歴</button>
     <button class="btn" onclick="doPrint()" style="background:#34495e;color:#fff">印刷</button>
+    <button class="btn" onclick="openExportLogModal()" id="btnExportLog" style="background:#e67e22;color:#fff">DL履歴</button>
     <button class="btn" onclick="toggleEditMode()" id="btnEditMode" style="background:#c0392b;color:#fff;font-weight:700;padding:6px 18px">編集モード</button>
   </div>
 </div>
@@ -396,6 +397,15 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     </div>
     <div id="userList"></div>
     <div class="btn-group"><button class="btn btn-secondary" onclick="closeAdminModal()">閉じる</button></div>
+  </div>
+</div>
+
+<!-- エクスポート履歴モーダル -->
+<div class="modal-overlay" id="exportLogModal">
+  <div class="modal" style="max-width:750px">
+    <h2>エクスポート履歴</h2>
+    <div id="exportLogList" style="margin-top:12px;max-height:450px;overflow-y:auto;"></div>
+    <div class="btn-group"><button class="btn btn-secondary" onclick="closeExportLogModal()">閉じる</button></div>
   </div>
 </div>
 
@@ -771,8 +781,11 @@ function isViewerRole(role) { return role === 'viewer' || role === 'viewer_kanri
 
 function applyPermissions() {
   const canEdit = userRole === 'admin' || userRole === 'editor';
+  const canExport = canEdit || userRole === 'tax_advisor';
   document.getElementById('btnEditMode').style.display = canEdit ? '' : 'none';
   document.getElementById('btnAdmin').style.display = userRole === 'admin' ? '' : 'none';
+  document.getElementById('btnExportLog').style.display = userRole === 'admin' ? '' : 'none';
+  document.getElementById('btnExportGroup').style.display = canExport ? '' : 'none';
   // 税理士: Freee取込ボタンだけ常時表示（編集モード不要）
   document.getElementById('btnFreee').style.display = userRole === 'tax_advisor' ? '' : 'none';
   // 編集系ボタンは updateModeUI で制御
@@ -1793,11 +1806,13 @@ function clearAll() {
 
 // ===== CSV =====
 function exportCSV(mode) {
+  if (isViewerRole(userRole)) { alert('エクスポート権限がありません'); return; }
   const data = getBudgetActual();
   const months = getMonthHeaders();
   const bom = '\uFEFF';
   let csv = '';
   const deptName = isSingleDept() ? DEPTS.find(d=>d.id===currentDeptId())?.name : `${selectedDepts.length}部門合計`;
+  const fy = document.getElementById('fiscalYear').value;
 
   const visibleItems = ITEMS.filter(it => it.type !== 'header' && isItemVisible(it));
   if (mode==='budget'||mode==='all') {
@@ -1817,8 +1832,48 @@ function exportCSV(mode) {
   }
   const blob = new Blob([bom+csv],{type:'text/csv;charset=utf-8'});
   const a = document.createElement('a'); a.href=URL.createObjectURL(blob);
-  a.download=`${deptName}_${mode==='budget'?'予算':mode==='actual'?'実績':'予実管理'}_${document.getElementById('fiscalYear').value}年度.csv`;
+  const fileName = `${deptName}_${mode==='budget'?'予算':mode==='actual'?'実績':'予実管理'}_${fy}年度.csv`;
+  a.download = fileName;
   a.click();
+  // Firestoreにエクスポート履歴を記録
+  db.collection('exportLogs').add({
+    email: currentUser.email,
+    name: currentUser.displayName || '',
+    role: userRole,
+    mode: mode,
+    depts: [...selectedDepts],
+    deptName: deptName,
+    fiscalYear: fy,
+    fileName: fileName,
+    exportedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(e => console.error('エクスポートログ記録失敗:', e));
+}
+
+// ===== エクスポート履歴 =====
+function openExportLogModal() {
+  if (userRole !== 'admin') return;
+  document.getElementById('exportLogModal').classList.add('show');
+  renderExportLogs();
+}
+function closeExportLogModal() { document.getElementById('exportLogModal').classList.remove('show'); }
+
+async function renderExportLogs() {
+  const el = document.getElementById('exportLogList');
+  el.innerHTML = '読み込み中...';
+  try {
+    const snap = await db.collection('exportLogs').orderBy('exportedAt', 'desc').limit(50).get();
+    if (snap.empty) { el.innerHTML = '<p style="color:#999;font-size:13px">エクスポート履歴はありません</p>'; return; }
+    const modeLabel = { budget: '予算', actual: '実績', all: '全体' };
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<tr style="background:#eaf2f8"><th style="padding:6px;text-align:left;border-bottom:1px solid #ccc">日時</th><th style="padding:6px;text-align:left;border-bottom:1px solid #ccc">ユーザー</th><th style="padding:6px;text-align:left;border-bottom:1px solid #ccc">権限</th><th style="padding:6px;text-align:left;border-bottom:1px solid #ccc">種別</th><th style="padding:6px;text-align:left;border-bottom:1px solid #ccc">部門</th><th style="padding:6px;text-align:left;border-bottom:1px solid #ccc">年度</th></tr>';
+    snap.forEach(doc => {
+      const d = doc.data();
+      const t = d.exportedAt ? d.exportedAt.toDate() : null;
+      const ts = t ? `${t.getFullYear()}/${String(t.getMonth()+1).padStart(2,'0')}/${String(t.getDate()).padStart(2,'0')} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}` : '-';
+      html += `<tr style="border-bottom:1px solid #eee"><td style="padding:4px 6px">${ts}</td><td style="padding:4px 6px">${d.email||''}</td><td style="padding:4px 6px"><span class="role-badge ${d.role||''}">${getRoleLabel(d.role)||''}</span></td><td style="padding:4px 6px">${modeLabel[d.mode]||d.mode}</td><td style="padding:4px 6px">${d.deptName||''}</td><td style="padding:4px 6px">${d.fiscalYear||''}年度</td></tr>`;
+    });
+    el.innerHTML = html + '</table>';
+  } catch(e) { el.innerHTML = '<p style="color:#e74c3c">読み込みエラー: ' + e.message + '</p>'; }
 }
 
 // ===== CSVインポート =====

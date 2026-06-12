@@ -1707,7 +1707,8 @@ function canEditMidterm() {
 
 async function renderMidtermTable() {
   const table = document.getElementById('midtermTable');
-  table.innerHTML = '<tbody><tr><td style="text-align:center;padding:20px;color:#999">読み込み中...</td></tr></tbody>';
+  table.innerHTML = '<tbody><tr><td style="text-align:center;padding:20px;color:#999">⏳ 最新の月次データから着地予想を再計算中...</td></tr></tbody>';
+  document.getElementById('midtermInfo').textContent = '⏳ 着地予想を再計算中...';
   const ys = getMidtermYears();
   const allYears = [ys.prev, ys.base, ...ys.plans];
   const dataByYear = {};
@@ -1715,7 +1716,7 @@ async function renderMidtermTable() {
   const closed = getClosedMonths(dataByYear[ys.base]);
   const closedCount = closed.filter(Boolean).length;
   document.getElementById('midtermInfo').textContent =
-    `${ys.base}年度着地予想 = 実績${closedCount}か月（技術料実績あり=確定月） + 予算${12 - closedCount}か月で自動算出`;
+    `${ys.base}年度着地予想 = 実績${closedCount}か月（技術料実績あり=確定月） + 予算${12 - closedCount}か月 ｜ タブを開くたびに最新の月次データから自動計算されます（保存値ではありません）`;
 
   const canEdit = canEditMidterm();
 

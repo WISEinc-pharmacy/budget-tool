@@ -1712,7 +1712,15 @@ async function renderMidtermTable() {
   const ys = getMidtermYears();
   const allYears = [ys.prev, ys.base, ...ys.plans];
   const dataByYear = {};
+  // 再取得が発生する場合は「再計算中」を最低2秒表示する（一瞬で消えると何が起きたか分からないため）。
+  // キャッシュ済みの再描画（計画値入力など）は待たない
+  const needsFetch = allYears.some(fy => !midtermCache[fy]);
+  const t0 = Date.now();
   await Promise.all(allYears.map(async fy => { dataByYear[fy] = await loadMidtermYear(fy); }));
+  if (needsFetch) {
+    const wait = 2000 - (Date.now() - t0);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  }
   const closed = getClosedMonths(dataByYear[ys.base]);
   const closedCount = closed.filter(Boolean).length;
   document.getElementById('midtermInfo').textContent =

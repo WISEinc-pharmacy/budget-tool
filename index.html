@@ -227,6 +227,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div class="tab" onclick="switchTab('actual')">実績</div>
   <div class="tab" onclick="switchTab('compare')">予実比較</div>
   <div class="tab" onclick="switchTab('yoy')">年度比較</div>
+  <div class="tab" onclick="switchTab('midterm')">中期計画</div>
   <div class="tab" onclick="switchTab('sales')">営業分析</div>
   <div class="tab" onclick="switchTab('labor')">労務</div>
 </div>
@@ -274,6 +275,15 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <span style="color:#999;font-size:12px">← 現在の年度と比較します</span>
   </div>
   <div class="table-wrap"><table id="yoyTable"></table></div>
+</div>
+
+<div id="tab-midterm" class="tab-content">
+  <div style="padding:8px 24px;background:#eef9f3;border-bottom:1px solid #a9dfbf;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <h3 style="margin:0;color:#1a5276;font-size:15px">📈 中期計画（5年）</h3>
+    <span id="midtermInfo" style="font-size:12px;color:#666"></span>
+    <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="refreshMidterm()">🔄 データ更新</button>
+  </div>
+  <div class="table-wrap"><table id="midtermTable"></table></div>
 </div>
 
 <div id="tab-sales" class="tab-content">
@@ -634,6 +644,7 @@ async function saveToFirestore() {
   try {
     await saveDeptToFirestore(currentDeptId());
     scheduleVersionSave();
+    delete midtermCache[getFiscalYear()]; // 月次更新 → 中期計画の年間集計キャッシュを無効化
     showSaveStatus('saved', '保存しました');
   } catch(e) { showSaveStatus('error', '保存エラー: ' + e.message); }
 }
@@ -685,31 +696,13 @@ async function loadAllFromFirestore() {
     const fy = getFiscalYear();
     const prefix = `FY${fy}_`;
     const snap = await db.collection('budgetData').get();
-    const deptIds = DEPTS.map(d => d.id);
-    let migratedCount = 0;
 
-    const loadedFromNew = new Set(); // 新形式で読み込み済みの部門
+    // 新形式（FY{年度}_{部門ID}）のみ読み込む。
+    // 旧形式（FYなし）の自動移行は廃止: 未作成年度に切り替えた際、古いドラフトが新年度へコピーされる事故が起きていたため
     snap.forEach(doc => {
-      let deptId = null;
-      let data = doc.data();
-
-      if (doc.id.startsWith(prefix)) {
-        // 新形式: FY2026_kashiwa
-        deptId = doc.id.substring(prefix.length);
-        loadedFromNew.add(deptId);
-      } else if (deptIds.includes(doc.id)) {
-        // 旧形式: kashiwa（FYなし）
-        deptId = doc.id;
-        // 新形式で既に読み込み済みならスキップ（旧データで上書きしない）
-        if (loadedFromNew.has(deptId)) return;
-        migratedCount++;
-        // 新形式で保存（移行）
-        if (userRole === 'admin' || userRole === 'editor' || userRole === 'tax_advisor') {
-          db.collection('budgetData').doc(prefix + doc.id).set(data);
-        }
-      } else {
-        return; // 関係ないドキュメント
-      }
+      if (!doc.id.startsWith(prefix)) return;
+      const deptId = doc.id.substring(prefix.length);
+      const data = doc.data();
 
       if (!allData[deptId]) return;
       ITEMS.forEach(it => {
@@ -720,8 +713,6 @@ async function loadAllFromFirestore() {
       });
       if (data.startMonth) document.getElementById('startMonth').value = data.startMonth;
     });
-
-    if (migratedCount > 0) console.log(`${migratedCount}件の旧データを${fy}年度に移行しました`);
   } catch(e) { console.error('Load error:', e); }
 }
 
@@ -793,7 +784,7 @@ function applyPermissions() {
 
 // ===== 印刷 =====
 function doPrint() {
-  const tabNames = { budget: '予算', actual: '実績', compare: '予実比較', yoy: '年度比較' };
+  const tabNames = { budget: '予算', actual: '実績', compare: '予実比較', yoy: '年度比較', midterm: '中期計画' };
   const activeTab = document.querySelector('.tab.active');
   const tabId = activeTab ? activeTab.getAttribute('onclick').match(/'(\w+)'/)[1] : 'budget';
   const deptLabel = document.getElementById('currentDeptLabel').textContent;
@@ -873,6 +864,7 @@ function openHelpModal() {
       <li><strong>実績タブ</strong>：月別の実績を表示します。${canEdit ? '編集モードで入力できます。' : ''}</li>
       <li><strong>予実比較タブ</strong>：予算と実績を並べて表示し、<span style="color:#e74c3c">差異</span>（実績−予算）を確認できます。</li>
       <li><strong>年度比較タブ</strong>：当年度と過去年度の実績を比較します。上部のプルダウンで比較年度を選択してください。</li>
+      <li><strong>中期計画タブ</strong>：前年度実績・当年度予算・当年度着地予想・3年先までの計画を年間単位で表示します。着地予想は「実績が入った月＝実績、未経過月＝予算」で自動計算されます。${canEdit ? '編集モードで計画値の入力、前年比%の一括適用、月次予算への展開ができます。' : ''}</li>
     </ul></div>`;
 
   // 5. 編集モード（editor/admin のみ）
@@ -1164,9 +1156,28 @@ function selectBothYears() {
 function updateFyButtons() {
   const fy = parseInt(getFiscalYear());
   const el = document.getElementById('fyButtons');
-  el.innerHTML = `<button class="btn btn-secondary" onclick="selectPrevYear()" style="padding:3px 10px;font-size:11px">${fy-1}年度</button>
-    <button class="btn btn-secondary" onclick="resetFilter()" style="padding:3px 10px;font-size:11px">${fy}年度</button>
-    <button class="btn btn-secondary" onclick="selectBothYears()" style="padding:3px 10px;font-size:11px">全期間</button>`;
+  // 今日時点の年度（期首月基準）。翌年度まで切替ボタンを表示する
+  const start = parseInt(document.getElementById('startMonth').value) || 2;
+  const now = new Date();
+  const thisFY = (now.getMonth() + 1) >= start ? now.getFullYear() : now.getFullYear() - 1;
+  const minY = Math.min(2025, fy);
+  const maxY = Math.max(thisFY + 1, fy);
+  let html = '';
+  for (let y = minY; y <= maxY; y++) {
+    if (y === fy) {
+      html += `<button class="btn btn-secondary" onclick="resetFilter()" style="padding:3px 10px;font-size:11px;background:#1a5276;color:#fff">${y}年度</button>`;
+    } else {
+      html += `<button class="btn btn-secondary" onclick="switchFiscalYear(${y})" style="padding:3px 10px;font-size:11px">${y}年度</button>`;
+    }
+  }
+  html += `<button class="btn btn-secondary" onclick="selectBothYears()" style="padding:3px 10px;font-size:11px">全期間</button>`;
+  el.innerHTML = html;
+}
+
+// 年度ボタンから年度を切り替える（閲覧モードでも可）
+async function switchFiscalYear(y) {
+  document.getElementById('fiscalYear').value = y;
+  await updateHeaders();
 }
 
 // 拡張月インデックスからヘッダーラベルを取得
@@ -1534,6 +1545,306 @@ async function renderYoyTable() {
   table.innerHTML = html + '</tbody>';
 }
 
+// ===== 中期計画（5年計画） =====
+// 列構成: 前年度実績 / 当年度予算 / 当年度着地予想 / 翌年度〜3年後の計画（前年比付き）
+// 計画値は各年度FYドキュメントの annualInputs に保存。「月次へ展開」で当年度予算の配分パターンを引き継いで12か月予算化する
+let midtermCache = {}; // { fy: { deptId: {budget, actual, annualInputs, distMethod} } }
+const midtermSaveTimers = {};
+
+function getMidtermBaseFY() {
+  const start = parseInt(document.getElementById('startMonth').value) || 2;
+  const now = new Date();
+  return (now.getMonth() + 1) >= start ? now.getFullYear() : now.getFullYear() - 1;
+}
+function getMidtermYears() {
+  const base = getMidtermBaseFY();
+  return { prev: base - 1, base, plans: [base + 1, base + 2, base + 3] };
+}
+function sumMonths(arr) { return (arr || []).reduce((s, v) => s + (v || 0), 0); }
+
+async function loadMidtermYear(fy) {
+  if (midtermCache[fy]) return midtermCache[fy];
+  const result = {};
+  await Promise.all(DEPTS.map(async d => {
+    const store = { budget: {}, actual: {}, annualInputs: {}, distMethod: {} };
+    ITEMS.forEach(it => {
+      store.budget[it.id] = new Array(12).fill(0);
+      store.actual[it.id] = new Array(12).fill(0);
+      store.annualInputs[it.id] = 0;
+      store.distMethod[it.id] = 'even';
+    });
+    try {
+      const snap = await db.collection('budgetData').doc(`FY${fy}_${d.id}`).get();
+      if (snap.exists) {
+        const data = snap.data();
+        ITEMS.forEach(it => {
+          if (data.budget && data.budget[it.id]) store.budget[it.id] = data.budget[it.id];
+          if (data.actual && data.actual[it.id]) store.actual[it.id] = data.actual[it.id];
+          if (data.annualInputs && data.annualInputs[it.id] !== undefined) store.annualInputs[it.id] = data.annualInputs[it.id];
+          if (data.distMethod && data.distMethod[it.id]) store.distMethod[it.id] = data.distMethod[it.id];
+        });
+      }
+    } catch(e) { console.error(`midterm load FY${fy}_${d.id}:`, e); }
+    result[d.id] = store;
+  }));
+  midtermCache[fy] = result;
+  return result;
+}
+
+// 実績が1件でも入っている月＝確定月（全部門横断で判定）
+function getClosedMonths(yearData) {
+  const closed = new Array(12).fill(false);
+  for (let m = 0; m < 12; m++) {
+    outer:
+    for (const d of DEPTS) {
+      const st = yearData[d.id];
+      if (!st) continue;
+      for (const it of ITEMS) {
+        if (it.type !== 'input') continue;
+        if ((st.actual[it.id][m] || 0) !== 0) { closed[m] = true; break outer; }
+      }
+    }
+  }
+  return closed;
+}
+
+// 計画年の科目年間値（annualInputs優先、未入力なら展開済み月次予算の合計）
+function planAnnualOf(st, itemId) {
+  const ai = st.annualInputs[itemId] || 0;
+  return ai !== 0 ? ai : sumMonths(st.budget[itemId]);
+}
+
+// 選択部門合計の年間値ベクトル。mode: 'actual'|'budget'|'forecast'|'plan'
+function midtermAnnualVec(yearData, mode, closed) {
+  const vec = {};
+  ITEMS.forEach(it => {
+    if (it.type !== 'input') return;
+    let v = 0;
+    selectedDepts.forEach(deptId => {
+      const st = yearData[deptId];
+      if (!st) return;
+      if (mode === 'actual') v += sumMonths(st.actual[it.id]);
+      else if (mode === 'budget') v += sumMonths(st.budget[it.id]);
+      else if (mode === 'forecast') { for (let m = 0; m < 12; m++) v += closed[m] ? (st.actual[it.id][m] || 0) : (st.budget[it.id][m] || 0); }
+      else if (mode === 'plan') v += planAnnualOf(st, it.id);
+    });
+    vec[it.id] = v;
+  });
+  ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) vec[it.id] = it.calc(vec); });
+  return vec;
+}
+
+function fmtYoy(cur, prev) {
+  if (!prev || prev === 0) return '-';
+  return (cur / prev * 100).toFixed(1) + '%';
+}
+
+function canEditMidterm() {
+  return editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
+}
+
+async function renderMidtermTable() {
+  const table = document.getElementById('midtermTable');
+  table.innerHTML = '<tbody><tr><td style="text-align:center;padding:20px;color:#999">読み込み中...</td></tr></tbody>';
+  const ys = getMidtermYears();
+  const allYears = [ys.prev, ys.base, ...ys.plans];
+  const dataByYear = {};
+  await Promise.all(allYears.map(async fy => { dataByYear[fy] = await loadMidtermYear(fy); }));
+  const closed = getClosedMonths(dataByYear[ys.base]);
+  const closedCount = closed.filter(Boolean).length;
+  document.getElementById('midtermInfo').textContent =
+    `${ys.base}年度着地予想 = 実績${closedCount}か月 + 予算${12 - closedCount}か月で自動算出`;
+
+  const canEdit = canEditMidterm();
+
+  // 列定義（vec=科目別年間値、yoyBase=前年比の比較対象）
+  const cols = [];
+  cols.push({ label: `${ys.prev}年度実績`, vec: midtermAnnualVec(dataByYear[ys.prev], 'actual'), yoyBase: null });
+  const prevActualVec = cols[0].vec;
+  cols.push({ label: `${ys.base}年度予算`, vec: midtermAnnualVec(dataByYear[ys.base], 'budget'), yoyBase: prevActualVec });
+  const forecastVec = midtermAnnualVec(dataByYear[ys.base], 'forecast', closed);
+  cols.push({ label: `${ys.base}年度着地予想`, vec: forecastVec, yoyBase: prevActualVec, highlight: true });
+  let prevVec = forecastVec;
+  ys.plans.forEach(fy => {
+    const vec = midtermAnnualVec(dataByYear[fy], 'plan');
+    cols.push({ label: `${fy}年度計画`, vec, yoyBase: prevVec, planFY: fy });
+    prevVec = vec;
+  });
+
+  let html = '<thead><tr><th>科目</th>';
+  cols.forEach(col => {
+    const bg = col.highlight ? ';background:#fef9e7' : (col.planFY ? ';background:#eef9f3' : '');
+    let extra = '';
+    if (col.planFY && canEdit) {
+      extra = `<div style="margin-top:4px;font-weight:normal;font-size:10px">
+        前年比 <input type="number" id="bulkPct${col.planFY}" placeholder="120" style="width:46px;font-size:10px;padding:1px 2px">%
+        <button class="btn btn-secondary" style="padding:1px 6px;font-size:10px" onclick="applyBulkPct(${col.planFY})">一括</button>
+        <button class="btn btn-primary" style="padding:1px 6px;font-size:10px;margin-left:2px" onclick="expandPlanToMonthly(${col.planFY})">月次へ展開</button>
+      </div>`;
+    }
+    html += `<th style="min-width:120px${bg}">${col.label}${extra}</th>`;
+    if (col.yoyBase) html += `<th style="font-size:10px;color:#888${bg}">前年比</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  ITEMS.forEach(it => {
+    if (!isItemVisible(it)) return;
+    if (it.actualOnly || it.type === 'kot_kpi') return;
+    if (!it.name) return; // 空白スペーサー行
+    if (it.type === 'header') {
+      html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
+      cols.forEach(col => { html += '<td></td>'; if (col.yoyBase) html += '<td></td>'; });
+      html += '</tr>';
+      return;
+    }
+    if (it.type === 'ratio') {
+      html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
+      cols.forEach(col => {
+        html += `<td style="text-align:right">${fmtPct(it.numerator(col.vec), it.denominator(col.vec))}</td>`;
+        if (col.yoyBase) html += '<td></td>';
+      });
+      html += '</tr>';
+      return;
+    }
+    const isCalc = it.type === 'calc';
+    html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
+    cols.forEach(col => {
+      const v = col.vec[it.id] || 0;
+      if (col.planFY && canEdit && it.type === 'input') {
+        const st = midtermCache[col.planFY][currentDeptId()];
+        const editVal = planAnnualOf(st, it.id);
+        html += `<td><input type="number" value="${editVal || ''}" style="width:110px;text-align:right" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
+      } else {
+        html += `<td style="text-align:right" class="${v < 0 ? 'negative' : ''}">${fmt(v, isCalc)}</td>`;
+      }
+      if (col.yoyBase) {
+        const p = col.yoyBase[it.id] || 0;
+        html += `<td style="text-align:right;font-size:11px;color:#888">${fmtYoy(v, p)}</td>`;
+      }
+    });
+    html += '</tr>';
+  });
+
+  table.innerHTML = html + '</tbody>';
+}
+
+function onMidtermPlanChange(fy, itemId, v) {
+  const deptId = currentDeptId();
+  const st = midtermCache[fy] && midtermCache[fy][deptId];
+  if (!st) return;
+  st.annualInputs[itemId] = parseInt(v) || 0;
+  scheduleMidtermSave(fy, deptId);
+  renderMidtermTable();
+}
+
+function scheduleMidtermSave(fy, deptId) {
+  const key = `${fy}_${deptId}`;
+  if (midtermSaveTimers[key]) clearTimeout(midtermSaveTimers[key]);
+  midtermSaveTimers[key] = setTimeout(() => saveMidtermDept(fy, deptId), 1000);
+}
+
+async function saveMidtermDept(fy, deptId, includeBudget) {
+  if (isViewerRole(userRole) || userRole === 'tax_advisor') return;
+  const st = midtermCache[fy] && midtermCache[fy][deptId];
+  if (!st) return;
+  showSaveStatus('saving', '保存中...');
+  try {
+    const payload = {
+      annualInputs: {}, distMethod: {},
+      fiscalYear: String(fy),
+      startMonth: document.getElementById('startMonth').value,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedBy: currentUser.email,
+    };
+    if (includeBudget) payload.budget = {};
+    ITEMS.forEach(it => {
+      if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
+      payload.annualInputs[it.id] = st.annualInputs[it.id] || 0;
+      payload.distMethod[it.id] = st.distMethod[it.id] || 'even';
+      if (includeBudget) payload.budget[it.id] = st.budget[it.id];
+    });
+    // merge: 実績（actual）や未対象フィールドを壊さない
+    await db.collection('budgetData').doc(`FY${fy}_${deptId}`).set(payload, { merge: true });
+    // 同年度を月次タブで開いている場合はメモリにも反映
+    if (String(fy) === getFiscalYear() && allData[deptId]) {
+      ITEMS.forEach(it => {
+        if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
+        allData[deptId].annualInputs[it.id] = st.annualInputs[it.id] || 0;
+        allData[deptId].distMethod[it.id] = st.distMethod[it.id] || 'even';
+        if (includeBudget) allData[deptId].budget[it.id] = [...st.budget[it.id]];
+      });
+    }
+    if (prevYearCache.fy === fy) prevYearCache = { fy: null, data: null };
+    showSaveStatus('saved', '保存しました');
+  } catch(e) { showSaveStatus('error', '保存エラー: ' + e.message); }
+}
+
+// 前年比%を全科目に一括適用（基準: 翌年度は当年度着地予想、それ以降は前年計画）
+function applyBulkPct(fy) {
+  if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
+  const pct = parseFloat(document.getElementById(`bulkPct${fy}`).value);
+  if (!pct || pct <= 0) { alert('前年比%を入力してください（例: 120）'); return; }
+  if (!confirm(`${fy}年度の全科目に前年比${pct}%を一括適用しますか？\n（入力済みの計画値は上書きされます）`)) return;
+  const ys = getMidtermYears();
+  const deptId = currentDeptId();
+  const prevFY = fy - 1;
+  const prevData = midtermCache[prevFY];
+  const baseData = midtermCache[ys.base];
+  if (!prevData || !prevData[deptId] || !baseData) { alert('データ読込前です。少し待って再実行してください'); return; }
+  const closed = getClosedMonths(baseData);
+  const prevSt = prevData[deptId];
+  ITEMS.forEach(it => {
+    if (it.type !== 'input' || it.actualOnly || !it.name) return;
+    let baseVal = 0;
+    if (prevFY === ys.base) {
+      for (let m = 0; m < 12; m++) baseVal += closed[m] ? (prevSt.actual[it.id][m] || 0) : (prevSt.budget[it.id][m] || 0);
+    } else {
+      baseVal = planAnnualOf(prevSt, it.id);
+    }
+    midtermCache[fy][deptId].annualInputs[it.id] = Math.round(baseVal * pct / 100);
+  });
+  scheduleMidtermSave(fy, deptId);
+  renderMidtermTable();
+}
+
+// 計画年の年間額を月次予算へ展開（配分パターン・初月比率は当年度予算の設定を引き継ぐ）
+async function expandPlanToMonthly(fy) {
+  if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
+  const ys = getMidtermYears();
+  const deptId = currentDeptId();
+  const deptName = DEPTS.find(d => d.id === deptId)?.name || deptId;
+  if (!confirm(`「${deptName}」の${fy}年度計画を月次予算に展開しますか？\n配分パターンは${ys.base}年度予算の設定を引き継ぎます。\n（${fy}年度の既存の月次予算は上書きされます）`)) return;
+  const st = midtermCache[fy] && midtermCache[fy][deptId];
+  const baseSt = midtermCache[ys.base] && midtermCache[ys.base][deptId];
+  if (!st || !baseSt) { alert('データ読込前です。少し待って再実行してください'); return; }
+  ITEMS.forEach(it => {
+    if (it.type !== 'input' || it.actualOnly) return;
+    const annual = st.annualInputs[it.id] || 0;
+    const method = baseSt.distMethod[it.id] || 'even';
+    st.distMethod[it.id] = method;
+    if (annual === 0) { st.budget[it.id] = new Array(12).fill(0); return; }
+    // 初月値: 当年度予算の初月値を年間額の比率でスケール（当年度予算ゼロの科目は均等）
+    const baseAnnual = sumMonths(baseSt.budget[it.id]);
+    const baseM1 = baseSt.budget[it.id][0] || 0;
+    const m1 = baseAnnual !== 0 ? Math.round(baseM1 * annual / baseAnnual) : Math.round(annual / 12);
+    const arr = new Array(12).fill(0);
+    if (method === 'flat') { const p = Math.round(annual / 12); for (let m = 0; m < 12; m++) arr[m] = p; }
+    else if (method === 'growth') { const dd = (annual - 12 * m1) / 66; for (let m = 0; m < 12; m++) arr[m] = Math.round(m1 + m * dd); }
+    else { arr[0] = m1; const r = annual - m1; for (let m = 1; m < 12; m++) arr[m] = Math.round(r / 11); }
+    const t = arr.reduce((s, v) => s + v, 0);
+    arr[11] += annual - t;
+    st.budget[it.id] = arr;
+  });
+  await saveMidtermDept(fy, deptId, true);
+  alert(`${fy}年度の月次予算へ展開しました。\n年度ボタンで${fy}年度に切り替えると予算タブで確認できます。`);
+  renderMidtermTable();
+}
+
+function refreshMidterm() {
+  midtermCache = {};
+  renderMidtermTable();
+}
+
 // ===== Undo/Redo =====
 const undoStack = []; // { deptId, snapshot }
 const redoStack = [];
@@ -1767,6 +2078,10 @@ async function updateHeaders() {
     await loadAllFromFirestore();
     showSaveStatus('saved', '読込完了');
   }
+  // 年度が変わると月ラベル・年度ボタン・比較年度の選択肢も変わるため再生成する
+  updateFilterSelects();
+  updateFyButtons();
+  updateYoyYearSelect();
   renderCurrentTab();
 }
 function doRecalc() {
@@ -2592,7 +2907,7 @@ function switchTab(tab){
   currentTab=tab;
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-  const tabIdx = {budget:1, actual:2, compare:3, yoy:4, sales:5, labor:6}[tab] || 1;
+  const tabIdx = {budget:1, actual:2, compare:3, yoy:4, midterm:5, sales:6, labor:7}[tab] || 1;
   document.querySelector(`.tab:nth-child(${tabIdx})`).classList.add('active');
   document.getElementById(`tab-${tab}`).classList.add('active');
   renderCurrentTab();
@@ -2602,6 +2917,7 @@ async function renderCurrentTab(){
   else if(currentTab==='actual') await renderActualTable();
   else if(currentTab==='compare') await renderCompareTable();
   else if(currentTab==='yoy') await renderYoyTable();
+  else if(currentTab==='midterm') await renderMidtermTable();
   else if(currentTab==='sales') await renderSalesTab();
   else if(currentTab==='labor') await loadLaborData();
 }

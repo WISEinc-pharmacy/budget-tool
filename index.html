@@ -67,6 +67,23 @@ tr.level-2 td:first-child { padding-left: 32px; }
 /* 期間合計列の強調 */
 th.col-total, td.col-total { background: #2c3e50 !important; color: #fff !important; font-weight: 700; font-size: 13px; border-right: 3px solid #1a5276 !important; }
 td.col-total.negative { color: #e74c3c !important; }
+
+/* ===== 中期計画タブ ===== */
+#midtermTable th.mid-th { padding: 8px 12px; text-align: center; }
+#midtermTable th.mid-th-forecast { background: #7e5109; }            /* 着地予想: ダークアンバー×白字 */
+#midtermTable th.mid-th-plan { background: #1a5276; }                /* 計画年: ダークブルー×白字 */
+#midtermTable th.mid-th-yoy { background: #34495e; font-weight: 400; font-size: 10px; padding: 4px; }
+#midtermTable td.mid-td-forecast { background: rgba(254,249,231,0.85); font-weight: 600; }
+#midtermTable td.mid-td-plan { background: rgba(234,242,248,0.5); }
+#midtermTable td.mid-td-yoy { font-size: 11px; color: #5d6d7e; }
+#midtermTable tr.header-row td.mid-td-forecast,
+#midtermTable tr.header-row td.mid-td-plan,
+#midtermTable tr.header-row td.mid-td-yoy { background: inherit; }
+#midtermTable input[type=number] { width: 100%; min-width: 0; box-sizing: border-box; text-align: right; padding: 4px 6px; border: 1px solid #aed6f1; border-radius: 4px; background: #fffff0; }
+#midtermTable input[type=number]:focus-visible { outline: 2px solid #1a5276; outline-offset: 1px; }
+.mid-th-tools { margin-top: 6px; font-weight: 400; font-size: 10px; display: flex; gap: 4px; align-items: center; justify-content: center; flex-wrap: wrap; }
+#midtermTable .mid-th-tools input[type=number] { width: 48px; min-width: 0; box-sizing: border-box; font-size: 10px; padding: 2px 3px; border: none; border-radius: 3px; background: #fff; }
+.mid-th-tools .btn { padding: 2px 8px; font-size: 10px; }
 td.col-total input { background: #34495e; color: #fff; border-color: #5d6d7e; font-weight: 700; }
 tr.header-row td.col-total { background: #1a5276 !important; }
 tr.subtotal-row td.col-total { background: #1e8449 !important; color: #fff !important; }
@@ -278,7 +295,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 </div>
 
 <div id="tab-midterm" class="tab-content">
-  <div style="padding:8px 24px;background:#eef9f3;border-bottom:1px solid #a9dfbf;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+  <div style="padding:8px 24px;background:#eef4fb;border-bottom:1px solid #aed6f1;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
     <h3 style="margin:0;color:#1a5276;font-size:15px">📈 中期計画（5年）</h3>
     <span id="midtermInfo" style="font-size:12px;color:#666"></span>
     <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="refreshMidterm()">🔄 データ更新</button>
@@ -1673,17 +1690,17 @@ async function renderMidtermTable() {
 
   let html = '<thead><tr><th>科目</th>';
   cols.forEach(col => {
-    const bg = col.highlight ? ';background:#fef9e7' : (col.planFY ? ';background:#eef9f3' : '');
+    const thCls = col.highlight ? 'mid-th mid-th-forecast' : (col.planFY ? 'mid-th mid-th-plan' : 'mid-th');
     let extra = '';
     if (col.planFY && canEdit) {
-      extra = `<div style="margin-top:4px;font-weight:normal;font-size:10px">
-        前年比 <input type="number" id="bulkPct${col.planFY}" placeholder="120" style="width:46px;font-size:10px;padding:1px 2px">%
-        <button class="btn btn-secondary" style="padding:1px 6px;font-size:10px" onclick="applyBulkPct(${col.planFY})">一括</button>
-        <button class="btn btn-primary" style="padding:1px 6px;font-size:10px;margin-left:2px" onclick="expandPlanToMonthly(${col.planFY})">月次へ展開</button>
+      extra = `<div class="mid-th-tools">
+        前年比 <input type="number" id="bulkPct${col.planFY}" placeholder="120">%
+        <button class="btn btn-secondary" onclick="applyBulkPct(${col.planFY})">一括</button>
+        <button class="btn btn-primary" onclick="expandPlanToMonthly(${col.planFY})">月次へ展開</button>
       </div>`;
     }
-    html += `<th style="min-width:120px${bg}">${col.label}${extra}</th>`;
-    if (col.yoyBase) html += `<th style="font-size:10px;color:#888${bg}">前年比</th>`;
+    html += `<th class="${thCls}" style="min-width:130px">${col.label}${extra}</th>`;
+    if (col.yoyBase) html += `<th class="mid-th mid-th-yoy">前年比</th>`;
   });
   html += '</tr></thead><tbody>';
 
@@ -1691,17 +1708,18 @@ async function renderMidtermTable() {
     if (!isItemVisible(it)) return;
     if (it.actualOnly || it.type === 'kot_kpi') return;
     if (!it.name) return; // 空白スペーサー行
+    const tdCls = col => col.highlight ? 'mid-td-forecast' : (col.planFY ? 'mid-td-plan' : '');
     if (it.type === 'header') {
       html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
-      cols.forEach(col => { html += '<td></td>'; if (col.yoyBase) html += '<td></td>'; });
+      cols.forEach(col => { html += `<td class="${tdCls(col)}"></td>`; if (col.yoyBase) html += '<td class="mid-td-yoy"></td>'; });
       html += '</tr>';
       return;
     }
     if (it.type === 'ratio') {
       html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
       cols.forEach(col => {
-        html += `<td style="text-align:right">${fmtPct(it.numerator(col.vec), it.denominator(col.vec))}</td>`;
-        if (col.yoyBase) html += '<td></td>';
+        html += `<td class="${tdCls(col)}" style="text-align:right">${fmtPct(it.numerator(col.vec), it.denominator(col.vec))}</td>`;
+        if (col.yoyBase) html += '<td class="mid-td-yoy"></td>';
       });
       html += '</tr>';
       return;
@@ -1713,13 +1731,13 @@ async function renderMidtermTable() {
       if (col.planFY && canEdit && it.type === 'input') {
         const st = midtermCache[col.planFY][currentDeptId()];
         const editVal = planAnnualOf(st, it.id);
-        html += `<td><input type="number" value="${editVal || ''}" style="width:110px;text-align:right" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
+        html += `<td class="${tdCls(col)}"><input type="number" value="${editVal || ''}" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
       } else {
-        html += `<td style="text-align:right" class="${v < 0 ? 'negative' : ''}">${fmt(v, isCalc)}</td>`;
+        html += `<td style="text-align:right" class="${tdCls(col)} ${v < 0 ? 'negative' : ''}">${fmt(v, isCalc)}</td>`;
       }
       if (col.yoyBase) {
         const p = col.yoyBase[it.id] || 0;
-        html += `<td style="text-align:right;font-size:11px;color:#888">${fmtYoy(v, p)}</td>`;
+        html += `<td class="mid-td-yoy" style="text-align:right">${fmtYoy(v, p)}</td>`;
       }
     });
     html += '</tr>';

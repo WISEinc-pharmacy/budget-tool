@@ -303,6 +303,54 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div class="table-wrap"><table id="midtermTable"></table></div>
 </div>
 
+<!-- 予算アシストモーダル -->
+<div class="modal-overlay" id="assistModal">
+  <div class="modal" style="max-width:660px;max-height:88vh;overflow-y:auto">
+    <h2>🧮 予算アシスト <span id="assistFyLabel" style="font-size:14px;color:#1a5276"></span></h2>
+    <p style="font-size:12px;color:#666;margin:8px 0 12px">前年の着地予想（または前年計画）をベースに、少ない入力で年間予算のたたき台を作ります。反映後に中期計画タブで科目ごとの手直しができます。</p>
+    <table style="width:100%;min-width:0;box-shadow:none;font-size:13px;border-collapse:collapse">
+      <tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;width:55%">技術料 前年比</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><input id="assistGijutsuPct" type="number" step="0.1" oninput="renderAssistPreview()" style="width:80px;text-align:right"> %</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee">薬剤料・治療器材料 前年比 <span style="color:#999;font-size:11px">(処方量連動)</span></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><input id="assistYakuzaiPct" type="number" step="0.1" oninput="renderAssistPreview()" style="width:80px;text-align:right"> %</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee">その他売上 前年比</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><input id="assistOtherSalesPct" type="number" step="0.1" oninput="renderAssistPreview()" style="width:80px;text-align:right"> %</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee">売上原価率 <span style="color:#999;font-size:11px">(対 薬剤料+治療器材料)</span></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><input id="assistGenkaRate" type="number" step="0.1" oninput="renderAssistPreview()" style="width:80px;text-align:right"> %</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee">技術料労働分配率 目標 <span style="color:#999;font-size:11px">(給料+賞与(一般)+法定福利+外注FL ÷ 技術料)</span></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><input id="assistLaborRate" type="number" step="0.1" oninput="renderAssistPreview()" style="width:80px;text-align:right"> %</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="padding:6px 8px;border-bottom:1px solid #eee;background:#f8fafc;font-size:12px">
+          ↳ 人時生産性から換算:
+          目標 <input id="assistProductivity" type="number" placeholder="例:8000" style="width:74px;text-align:right"> 円/h ／
+          平均人件費単価 <input id="assistUnitCost" type="number" placeholder="例:3200" style="width:74px;text-align:right"> 円/h
+          <button class="btn btn-secondary" style="padding:2px 10px;font-size:11px" onclick="convertProductivityToRate()">→分配率に換算</button>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee">その他販管費 前年比 <span style="color:#999;font-size:11px">(家賃・水道光熱・リース等)</span></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><input id="assistSgaPct" type="number" step="0.1" oninput="renderAssistPreview()" style="width:80px;text-align:right"> %</td>
+      </tr>
+    </table>
+    <p style="font-size:11px;color:#999;margin-top:6px">※ 役員報酬・役員賞与・本部経費・営業外収益/費用は前年値を据え置きます（反映後に個別調整してください）</p>
+    <div id="assistPreview" style="margin-top:12px"></div>
+    <div class="btn-group">
+      <button class="btn btn-secondary" onclick="closeAssistModal()">閉じる</button>
+      <button class="btn btn-primary" onclick="applyAssist()">この内容で計画に反映</button>
+    </div>
+  </div>
+</div>
+
 <div id="tab-sales" class="tab-content">
   <div style="padding:16px 24px;background:#f0f9f4;border-bottom:1px solid #a9dfbf;">
     <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
@@ -881,7 +929,7 @@ function openHelpModal() {
       <li><strong>実績タブ</strong>：月別の実績を表示します。${canEdit ? '編集モードで入力できます。' : ''}</li>
       <li><strong>予実比較タブ</strong>：予算と実績を並べて表示し、<span style="color:#e74c3c">差異</span>（実績−予算）を確認できます。</li>
       <li><strong>年度比較タブ</strong>：当年度と過去年度の実績を比較します。上部のプルダウンで比較年度を選択してください。</li>
-      <li><strong>中期計画タブ</strong>：前年度実績・当年度予算・当年度着地予想・3年先までの計画を年間単位で表示します。着地予想は「技術料実績が入った月（確定月）＝実績、未確定月＝予算」で自動計算されます。${canEdit ? '編集モードで計画値の入力、前年比%の一括適用、月次予算への展開ができます。' : ''}</li>
+      <li><strong>中期計画タブ</strong>：前年度実績・当年度予算・当年度着地予想・3年先までの計画を年間単位で表示します。着地予想は「技術料実績が入った月（確定月）＝実績、未確定月＝予算」で自動計算されます。${canEdit ? '編集モードで計画値の入力、前年比%の一括適用、予算アシスト（技術料前年比・売上原価率・労働分配率などから全科目のたたき台を自動生成）、月次予算への展開ができます。' : ''}</li>
     </ul></div>`;
 
   // 5. 編集モード（editor/admin のみ）
@@ -1691,6 +1739,7 @@ async function renderMidtermTable() {
     let extra = '';
     if (col.planFY && canEdit) {
       extra = `<div class="mid-th-tools">
+        <button class="btn btn-secondary" onclick="openAssistModal(${col.planFY})">🧮 アシスト</button>
         前年比 <input type="number" id="bulkPct${col.planFY}" placeholder="120">%
         <button class="btn btn-secondary" onclick="applyBulkPct(${col.planFY})">一括</button>
         <button class="btn btn-primary" onclick="expandPlanToMonthly(${col.planFY})">月次へ展開</button>
@@ -1857,6 +1906,135 @@ async function expandPlanToMonthly(fy) {
 
 function refreshMidterm() {
   midtermCache = {};
+  renderMidtermTable();
+}
+
+// ===== 予算アシスト =====
+// 少数のドライバー（技術料前年比・原価率・労働分配率等）から計画年の全科目たたき台を生成する
+let assistFY = null;
+const ASSIST_LABOR_IDS = ['kyuryo','shoyo','hotei','gaicyu_fl']; // 分配率で逆算する人件費グループ（役員賞与は据え置き）
+
+// アシストのベース年間値: 前年が当年度なら着地予想、前年度なら実績、それ以外は計画値
+function getAssistBaseVec(fy) {
+  const ys = getMidtermYears();
+  const deptId = currentDeptId();
+  const prevFY = fy - 1;
+  const yearData = midtermCache[prevFY];
+  if (!yearData || !yearData[deptId]) return null;
+  const st = yearData[deptId];
+  const v = {};
+  if (prevFY === ys.base) {
+    const closed = getClosedMonths(yearData);
+    ITEMS.forEach(it => {
+      if (it.type !== 'input') return;
+      let s = 0;
+      for (let m = 0; m < 12; m++) s += closed[m] ? (st.actual[it.id][m] || 0) : (st.budget[it.id][m] || 0);
+      v[it.id] = s;
+    });
+  } else if (prevFY === ys.prev) {
+    ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = sumMonths(st.actual[it.id]); });
+  } else {
+    ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = planAnnualOf(st, it.id); });
+  }
+  ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) v[it.id] = it.calc(v); });
+  return v;
+}
+
+function openAssistModal(fy) {
+  if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
+  const base = getAssistBaseVec(fy);
+  if (!base) { alert('データ読込前です。少し待って再実行してください'); return; }
+  assistFY = fy;
+  const ys = getMidtermYears();
+  const baseLabel = fy - 1 === ys.base ? '着地予想' : (fy - 1 === ys.prev ? '実績' : '計画');
+  const deptName = DEPTS.find(d => d.id === currentDeptId())?.name || '';
+  document.getElementById('assistFyLabel').textContent = `— ${deptName} ${fy}年度（ベース: ${fy - 1}年度${baseLabel}）`;
+  // デフォルト値: 売上系110%、原価率・分配率はベース年の実態値
+  document.getElementById('assistGijutsuPct').value = 110;
+  document.getElementById('assistYakuzaiPct').value = 110;
+  document.getElementById('assistOtherSalesPct').value = 100;
+  const genkaBase = (base.yakuzai || 0) + (base.chiryo || 0);
+  document.getElementById('assistGenkaRate').value = genkaBase > 0 ? (base.genka_total / genkaBase * 100).toFixed(1) : 90;
+  const laborSum = ASSIST_LABOR_IDS.reduce((s, id) => s + (base[id] || 0), 0);
+  document.getElementById('assistLaborRate').value = (base.gijutsu || 0) > 0 ? (laborSum / base.gijutsu * 100).toFixed(1) : 40;
+  document.getElementById('assistSgaPct').value = 100;
+  document.getElementById('assistProductivity').value = '';
+  document.getElementById('assistUnitCost').value = '';
+  renderAssistPreview();
+  document.getElementById('assistModal').classList.add('show');
+}
+function closeAssistModal() { document.getElementById('assistModal').classList.remove('show'); }
+
+// 人時生産性(円/h)と平均人件費単価(円/h)から労働分配率%へ換算（分配率 = 単価 ÷ 生産性）
+function convertProductivityToRate() {
+  const prod = parseFloat(document.getElementById('assistProductivity').value);
+  const unit = parseFloat(document.getElementById('assistUnitCost').value);
+  if (!prod || !unit || prod <= 0) { alert('目標人時生産性と平均人件費単価（円/h）の両方を入力してください'); return; }
+  document.getElementById('assistLaborRate').value = (unit / prod * 100).toFixed(1);
+  renderAssistPreview();
+}
+
+function computeAssist(fy) {
+  const base = getAssistBaseVec(fy);
+  if (!base) return null;
+  const num = id => parseFloat(document.getElementById(id).value) || 0;
+  const p = { gijutsuPct: num('assistGijutsuPct'), yakuzaiPct: num('assistYakuzaiPct'), otherSalesPct: num('assistOtherSalesPct'),
+    genkaRate: num('assistGenkaRate'), laborRate: num('assistLaborRate'), sgaPct: num('assistSgaPct') };
+  const a = {};
+  a.gijutsu = Math.round((base.gijutsu || 0) * p.gijutsuPct / 100);
+  a.yakuzai = Math.round((base.yakuzai || 0) * p.yakuzaiPct / 100);
+  a.chiryo = Math.round((base.chiryo || 0) * p.yakuzaiPct / 100);
+  a.uriage_other = Math.round((base.uriage_other || 0) * p.otherSalesPct / 100);
+  a.genka_total = Math.round((a.yakuzai + a.chiryo) * p.genkaRate / 100);
+  // 人件費: 技術料×分配率をベース年の科目内訳比率で按分
+  const laborTotal = a.gijutsu * p.laborRate / 100;
+  const baseLaborSum = ASSIST_LABOR_IDS.reduce((s, id) => s + (base[id] || 0), 0);
+  ASSIST_LABOR_IDS.forEach(id => {
+    a[id] = Math.round(baseLaborSum > 0 ? laborTotal * (base[id] || 0) / baseLaborSum : laborTotal / ASSIST_LABOR_IDS.length);
+  });
+  const handled = new Set(['gijutsu','yakuzai','chiryo','uriage_other','genka_total', ...ASSIST_LABOR_IDS]);
+  ITEMS.forEach(it => {
+    if (it.type !== 'input' || it.actualOnly || !it.name || handled.has(it.id)) return;
+    if (it.adminOnly) a[it.id] = Math.round(base[it.id] || 0);           // 役員・本部経費・営業外は据え置き
+    else a[it.id] = Math.round((base[it.id] || 0) * p.sgaPct / 100);
+  });
+  const vec = { ...a };
+  ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) vec[it.id] = it.calc(vec); });
+  return { annuals: a, vec, base };
+}
+
+function renderAssistPreview() {
+  if (assistFY === null) return;
+  const r = computeAssist(assistFY);
+  if (!r) return;
+  const rows = [['売上合計','uriage_total'], ['売上原価合計','genka_total'], ['売上総利益','gross_profit'], ['販管費合計','sga_total'], ['営業利益','op_profit']];
+  const thS = 'padding:4px 8px;background:#1a5276;color:#fff;position:static';
+  let h = `<table style="width:100%;min-width:0;box-shadow:none;font-size:12px;border-collapse:collapse">
+    <tr><th style="${thS};text-align:left">プレビュー</th><th style="${thS};text-align:right">${assistFY - 1}年度ベース</th><th style="${thS};text-align:right">${assistFY}年度計画案</th><th style="${thS};text-align:right">前年比</th></tr>`;
+  rows.forEach(([name, id]) => {
+    const b = r.base[id] || 0, v = r.vec[id] || 0;
+    h += `<tr><td style="padding:3px 8px;border-bottom:1px solid #eee;text-align:left">${name}</td>
+      <td style="padding:3px 8px;text-align:right;border-bottom:1px solid #eee">${fmt(b, true)}</td>
+      <td style="padding:3px 8px;text-align:right;border-bottom:1px solid #eee;font-weight:700" class="${v < 0 ? 'negative' : ''}">${fmt(v, true)}</td>
+      <td style="padding:3px 8px;text-align:right;border-bottom:1px solid #eee;color:#5d6d7e">${fmtYoy(v, b)}</td></tr>`;
+  });
+  const kpi = ITEMS.find(i => i.id === 'kpi_labor');
+  h += `<tr><td style="padding:3px 8px;text-align:left">技術料労働分配率</td>
+    <td style="padding:3px 8px;text-align:right">${fmtPct(kpi.numerator(r.base), kpi.denominator(r.base))}</td>
+    <td style="padding:3px 8px;text-align:right;font-weight:700">${fmtPct(kpi.numerator(r.vec), kpi.denominator(r.vec))}</td><td></td></tr>`;
+  h += '</table>';
+  document.getElementById('assistPreview').innerHTML = h;
+}
+
+function applyAssist() {
+  if (assistFY === null) return;
+  const r = computeAssist(assistFY);
+  if (!r) return;
+  if (!confirm(`${assistFY}年度の計画値を生成して反映しますか？\n（入力済みの計画値は上書きされます）`)) return;
+  const st = midtermCache[assistFY][currentDeptId()];
+  Object.entries(r.annuals).forEach(([id, v]) => { st.annualInputs[id] = v; });
+  scheduleMidtermSave(assistFY, currentDeptId());
+  closeAssistModal();
   renderMidtermTable();
 }
 
@@ -2914,6 +3092,7 @@ async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
     }
   }
   await db.collection('budgetData').doc(did).set(data);
+  delete midtermCache[fiscalYear]; // 実績更新 → 中期計画の着地予想キャッシュを無効化（次回表示時に再計算）
 }
 
 // ===== タブ =====

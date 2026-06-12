@@ -881,7 +881,7 @@ function openHelpModal() {
       <li><strong>実績タブ</strong>：月別の実績を表示します。${canEdit ? '編集モードで入力できます。' : ''}</li>
       <li><strong>予実比較タブ</strong>：予算と実績を並べて表示し、<span style="color:#e74c3c">差異</span>（実績−予算）を確認できます。</li>
       <li><strong>年度比較タブ</strong>：当年度と過去年度の実績を比較します。上部のプルダウンで比較年度を選択してください。</li>
-      <li><strong>中期計画タブ</strong>：前年度実績・当年度予算・当年度着地予想・3年先までの計画を年間単位で表示します。着地予想は「実績が入った月＝実績、未経過月＝予算」で自動計算されます。${canEdit ? '編集モードで計画値の入力、前年比%の一括適用、月次予算への展開ができます。' : ''}</li>
+      <li><strong>中期計画タブ</strong>：前年度実績・当年度予算・当年度着地予想・3年先までの計画を年間単位で表示します。着地予想は「技術料実績が入った月（確定月）＝実績、未確定月＝予算」で自動計算されます。${canEdit ? '編集モードで計画値の入力、前年比%の一括適用、月次予算への展開ができます。' : ''}</li>
     </ul></div>`;
 
   // 5. 編集モード（editor/admin のみ）
@@ -1608,18 +1608,15 @@ async function loadMidtermYear(fy) {
   return result;
 }
 
-// 実績が1件でも入っている月＝確定月（全部門横断で判定）
+// 技術料(KGI)の実績が入っている月＝確定月（全部門横断で判定）
+// 注: 「何かの実績があれば確定」にすると、減価償却費など通期で前入力される科目のせいで
+//     全月が確定扱いになり着地予想が過小になる。売上系は締めた月にしか入らないためKGIで判定する
 function getClosedMonths(yearData) {
   const closed = new Array(12).fill(false);
   for (let m = 0; m < 12; m++) {
-    outer:
     for (const d of DEPTS) {
       const st = yearData[d.id];
-      if (!st) continue;
-      for (const it of ITEMS) {
-        if (it.type !== 'input') continue;
-        if ((st.actual[it.id][m] || 0) !== 0) { closed[m] = true; break outer; }
-      }
+      if (st && st.actual['gijutsu'] && (st.actual['gijutsu'][m] || 0) !== 0) { closed[m] = true; break; }
     }
   }
   return closed;
@@ -1670,7 +1667,7 @@ async function renderMidtermTable() {
   const closed = getClosedMonths(dataByYear[ys.base]);
   const closedCount = closed.filter(Boolean).length;
   document.getElementById('midtermInfo').textContent =
-    `${ys.base}年度着地予想 = 実績${closedCount}か月 + 予算${12 - closedCount}か月で自動算出`;
+    `${ys.base}年度着地予想 = 実績${closedCount}か月（技術料実績あり=確定月） + 予算${12 - closedCount}か月で自動算出`;
 
   const canEdit = canEditMidterm();
 

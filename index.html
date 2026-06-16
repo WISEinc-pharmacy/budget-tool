@@ -1656,15 +1656,43 @@ async function loadMidtermYear(fy) {
   return result;
 }
 
-// 技術料(KGI)の実績が入っている月＝確定月（全部門横断で判定）
-// 注: 「何かの実績があれば確定」にすると、減価償却費など通期で前入力される科目のせいで
-//     全月が確定扱いになり着地予想が過小になる。売上系は締めた月にしか入らないためKGIで判定する
+// 売上系（技術料・薬剤料・治療器材料・その他売上）の実績がある月＝その部門の確定月。
+// 注1: 「何かの実績があれば確定」にすると減価償却費など通期で前入力される科目のせいで全月確定になり過小化する。
+//      売上系は月を締めたときにしか入らないため売上系で判定する。
+// 注2: 部門ごとに判定する（全社一律にすると、実績が遅れている店舗で確定済み月の予算が抜け落ちる／
+//      技術料を持たない役員(医薬品販売)の実績が反映されない）。
+const SALES_LINES = ['gijutsu','yakuzai','chiryo','uriage_other'];
+function deptClosedMonths(st) {
+  const closed = new Array(12).fill(false);
+  let hasAny = false;
+  for (let m = 0; m < 12; m++) {
+    for (const k of SALES_LINES) {
+      if (((st.actual[k] || [])[m] || 0) !== 0) { closed[m] = true; hasAny = true; break; }
+    }
+  }
+  return { closed, hasAny };
+}
+// 1部門・1科目の着地予想年間値（自部門の確定月=実績、それ以外=予算。売上実績ゼロの部門は予算ベース）
+function deptForecastAnnual(st, itemId) {
+  const { closed, hasAny } = deptClosedMonths(st);
+  let v = 0;
+  for (let m = 0; m < 12; m++) {
+    if (!hasAny) v += (st.budget[itemId][m] || 0);
+    else v += closed[m] ? (st.actual[itemId][m] || 0) : (st.budget[itemId][m] || 0);
+  }
+  return v;
+}
+// 表示用: 全社の確定月数（いずれかの部門で売上実績がある月）。部門ごとの確定月数の最大に一致する
 function getClosedMonths(yearData) {
   const closed = new Array(12).fill(false);
   for (let m = 0; m < 12; m++) {
     for (const d of DEPTS) {
       const st = yearData[d.id];
-      if (st && st.actual['gijutsu'] && (st.actual['gijutsu'][m] || 0) !== 0) { closed[m] = true; break; }
+      if (!st) continue;
+      for (const k of SALES_LINES) {
+        if (((st.actual[k] || [])[m] || 0) !== 0) { closed[m] = true; break; }
+      }
+      if (closed[m]) break;
     }
   }
   return closed;
@@ -1687,7 +1715,7 @@ function midtermAnnualVec(yearData, mode, closed) {
       if (!st) return;
       if (mode === 'actual') v += sumMonths(st.actual[it.id]);
       else if (mode === 'budget') v += sumMonths(st.budget[it.id]);
-      else if (mode === 'forecast') { for (let m = 0; m < 12; m++) v += closed[m] ? (st.actual[it.id][m] || 0) : (st.budget[it.id][m] || 0); }
+      else if (mode === 'forecast') v += deptForecastAnnual(st, it.id); // 部門ごとの確定月で判定
       else if (mode === 'plan') v += planAnnualOf(st, it.id);
     });
     vec[it.id] = v;
@@ -1864,16 +1892,11 @@ function applyBulkPct(fy) {
   const prevData = midtermCache[prevFY];
   const baseData = midtermCache[ys.base];
   if (!prevData || !prevData[deptId] || !baseData) { alert('データ読込前です。少し待って再実行してください'); return; }
-  const closed = getClosedMonths(baseData);
   const prevSt = prevData[deptId];
   ITEMS.forEach(it => {
     if (it.type !== 'input' || it.actualOnly || !it.name) return;
-    let baseVal = 0;
-    if (prevFY === ys.base) {
-      for (let m = 0; m < 12; m++) baseVal += closed[m] ? (prevSt.actual[it.id][m] || 0) : (prevSt.budget[it.id][m] || 0);
-    } else {
-      baseVal = planAnnualOf(prevSt, it.id);
-    }
+    // 基準値: 翌年度は当年度着地予想（部門ごと確定月）、それ以降は前年計画
+    const baseVal = (prevFY === ys.base) ? deptForecastAnnual(prevSt, it.id) : planAnnualOf(prevSt, it.id);
     midtermCache[fy][deptId].annualInputs[it.id] = Math.round(baseVal * pct / 100);
   });
   scheduleMidtermSave(fy, deptId);
@@ -1933,13 +1956,7 @@ function getAssistBaseVec(fy) {
   const st = yearData[deptId];
   const v = {};
   if (prevFY === ys.base) {
-    const closed = getClosedMonths(yearData);
-    ITEMS.forEach(it => {
-      if (it.type !== 'input') return;
-      let s = 0;
-      for (let m = 0; m < 12; m++) s += closed[m] ? (st.actual[it.id][m] || 0) : (st.budget[it.id][m] || 0);
-      v[it.id] = s;
-    });
+    ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = deptForecastAnnual(st, it.id); }); // 部門ごと確定月の着地予想
   } else if (prevFY === ys.prev) {
     ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = sumMonths(st.actual[it.id]); });
   } else {

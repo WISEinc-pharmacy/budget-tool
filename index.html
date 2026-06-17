@@ -2524,7 +2524,10 @@ function openFreeeModal() {
   document.getElementById('freeePreview').innerHTML = '';
   document.getElementById('freeeResult').innerHTML = '';
   document.getElementById('freeeFiles').value = '';
-  document.getElementById('btnFreeeExec').disabled = true;
+  const btn = document.getElementById('btnFreeeExec');
+  btn.disabled = true;
+  btn.textContent = '取込実行';
+  btn.style.opacity = '';
   freeeParsedData = [];
   document.getElementById('freeeFiles').onchange = parseFreeeFiles;
 }
@@ -2998,7 +3001,8 @@ async function doFreeeImport() {
   const resultDiv = document.getElementById('freeeResult');
   const btn = document.getElementById('btnFreeeExec');
   btn.disabled = true;
-  btn.textContent = '保存中...';
+  btn.textContent = '⏳ 取込中...';
+  btn.style.opacity = '0.6';
   resultDiv.innerHTML = '<div class="import-result" style="color:#3498db">取込中... Firestoreに保存しています</div>';
 
   // 年度ごと・部門ごとにグループ化して保存
@@ -3043,8 +3047,8 @@ async function doFreeeImport() {
   freeeParsedData.filter(d => !d.deptId).forEach(d => skippedEntries.push(d));
   await Promise.all(savePromises);
 
-  btn.textContent = '取込実行';
-  btn.disabled = false;
+  btn.textContent = '✅ 取込完了';
+  btn.disabled = true;
 
   // 操作ログ形式で結果表示
   const genkaIds = ['gijutsu','yakuzai','chiryo','uriage_other','tsukisho_zaiko','shiire','tsukimatsu_zaiko','genka_total'];

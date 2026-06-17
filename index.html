@@ -244,7 +244,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div class="tab" onclick="switchTab('actual')">実績</div>
   <div class="tab" onclick="switchTab('compare')">予実比較</div>
   <div class="tab" onclick="switchTab('yoy')">年度比較</div>
-  <div class="tab" onclick="switchTab('midterm')">中期計画</div>
+  <div class="tab" id="tabMidterm" onclick="switchTab('midterm')">中期計画</div>
   <div class="tab" onclick="switchTab('sales')">営業分析</div>
   <div class="tab" onclick="switchTab('labor')">労務</div>
 </div>
@@ -844,6 +844,8 @@ function applyPermissions() {
   document.getElementById('btnExportGroup').style.display = canExport ? '' : 'none';
   // 税理士: Freee取込ボタンだけ常時表示（編集モード不要）
   document.getElementById('btnFreee').style.display = userRole === 'tax_advisor' ? '' : 'none';
+  // 中期計画タブは管理者・編集者のみ（着地予想データが荒いためスタッフに見せない）
+  document.getElementById('tabMidterm').style.display = canEdit ? '' : 'none';
   // 編集系ボタンは updateModeUI で制御
 }
 
@@ -1225,7 +1227,7 @@ function updateFyButtons() {
   const start = parseInt(document.getElementById('startMonth').value) || 2;
   const now = new Date();
   const thisFY = (now.getMonth() + 1) >= start ? now.getFullYear() : now.getFullYear() - 1;
-  const minY = Math.min(2025, fy);
+  const minY = Math.min(2024, fy);
   const maxY = Math.max(thisFY + 1, fy);
   let html = '';
   for (let y = minY; y <= maxY; y++) {
@@ -1680,6 +1682,12 @@ function deptForecastAnnual(st, itemId) {
     if (!hasAny) v += (st.budget[itemId][m] || 0);
     else v += closed[m] ? (st.actual[itemId][m] || 0) : (st.budget[itemId][m] || 0);
   }
+  // 着地予想の売上原価: 薬剤料+治療器材料の96%で補正（予算値が荒いため）
+  if (itemId === 'genka_total' && hasAny) {
+    const yakuzai = deptForecastAnnual(st, 'yakuzai');
+    const chiryo = deptForecastAnnual(st, 'chiryo');
+    v = Math.round((yakuzai + chiryo) * 0.96);
+  }
   return v;
 }
 // 表示用: 全社の確定月数（いずれかの部門で売上実績がある月）。部門ごとの確定月数の最大に一致する
@@ -1980,7 +1988,7 @@ function openAssistModal(fy) {
   document.getElementById('assistYakuzaiPct').value = 110;
   document.getElementById('assistOtherSalesPct').value = 100;
   const genkaBase = (base.yakuzai || 0) + (base.chiryo || 0);
-  document.getElementById('assistGenkaRate').value = genkaBase > 0 ? (base.genka_total / genkaBase * 100).toFixed(1) : 90;
+  document.getElementById('assistGenkaRate').value = genkaBase > 0 ? (base.genka_total / genkaBase * 100).toFixed(1) : 96;
   const laborSum = ASSIST_LABOR_IDS.reduce((s, id) => s + (base[id] || 0), 0);
   document.getElementById('assistLaborRate').value = (base.gijutsu || 0) > 0 ? (laborSum / base.gijutsu * 100).toFixed(1) : 40;
   document.getElementById('assistSgaPct').value = 100;

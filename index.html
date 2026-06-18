@@ -300,6 +300,16 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <span id="midtermInfo" style="font-size:12px;color:#666"></span>
     <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="refreshMidterm()">🔄 データ更新</button>
   </div>
+  <div id="midtermTopics" style="padding:10px 24px;background:#fffde7;border-bottom:1px solid #f0e68c;font-size:13px;display:none">
+    <strong style="color:#e65100">📌 FY2027 トピックス</strong>
+    <ul style="margin:4px 0 0 16px;padding:0;line-height:1.8">
+      <li><strong>柏・足立</strong>：労働分配率＋減価償却率 <strong>60%以下</strong>を目指す</li>
+      <li><strong>我孫子</strong>：労働分配率＋減価償却率 <strong>70%以下</strong>を目指す（技術料成長128%）</li>
+      <li><strong>ながれやま・アイ調剤</strong>：<strong>地域支援・医薬品供給対応体制加算２</strong>（59点）の取得</li>
+      <li><strong>管理部</strong>：キャスター廃止、関根＋佐々木＋村松体制（人件費1,176万/年）</li>
+      <li><strong>役員</strong>：医薬品販売事業の縮小（売上・原価ゼロ、販管費のみ）</li>
+    </ul>
+  </div>
   <div class="table-wrap"><table id="midtermTable"></table></div>
 </div>
 
@@ -1747,6 +1757,9 @@ async function renderMidtermTable() {
   table.innerHTML = '<tbody><tr><td style="text-align:center;padding:20px;color:#999">⏳ 最新の月次データから着地予想を再計算中...</td></tr></tbody>';
   document.getElementById('midtermInfo').textContent = '⏳ 着地予想を再計算中...';
   const ys = getMidtermYears();
+  // FY2027が表示範囲に含まれるときトピックスを表示
+  const topicsEl = document.getElementById('midtermTopics');
+  topicsEl.style.display = ys.plans.includes(2027) ? '' : 'none';
   const allYears = [ys.prev, ys.base, ...ys.plans];
   const dataByYear = {};
   // 再取得が発生する場合は「再計算中」を最低2秒表示する（一瞬で消えると何が起きたか分からないため）。

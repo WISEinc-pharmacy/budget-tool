@@ -1117,6 +1117,7 @@ function renderDeptBar() {
     html += `<button onclick="selectStoresOnly()">全店舗</button>`;
     html += `<button onclick="selectTokatsu()">東葛</button>`;
     html += `<button onclick="selectJohoku()">城北</button>`;
+    html += `<button onclick="selectOther()">その他</button>`;
     html += `</div>`;
   }
 
@@ -1163,6 +1164,12 @@ function selectTokatsu() {
 
 function selectJohoku() {
   selectedDepts = ['adachi', 'ai_chozai'];
+  renderDeptBar();
+  renderCurrentTab();
+}
+
+function selectOther() {
+  selectedDepts = ['yakuin', 'kanribu', 'gakujutsu'];
   renderDeptBar();
   renderCurrentTab();
 }

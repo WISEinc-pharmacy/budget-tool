@@ -136,6 +136,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .role-badge.viewer_kanribu { background: #8e44ad; color: #fff; }
 .role-badge.viewer_gakujutsu { background: #2980b9; color: #fff; }
 .role-badge.admin { background: #e74c3c; color: #fff; }
+.role-badge.owner { background: #1a1a2e; color: #e94560; }
 .role-badge.tax_advisor { background: #f39c12; color: #fff; }
 .save-status { font-size: 11px; color: #999; margin-left: 12px; }
 .current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; display: flex; align-items: center; gap: 12px; }
@@ -245,6 +246,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div class="tab" onclick="switchTab('compare')">予実比較</div>
   <div class="tab" onclick="switchTab('yoy')">年度比較</div>
   <div class="tab" id="tabMidterm" onclick="switchTab('midterm')">中期計画</div>
+  <div class="tab" id="tabKessanCheck" onclick="switchTab('kessanCheck')" style="display:none">決算照合</div>
   <div class="tab" onclick="switchTab('sales')">営業分析</div>
   <div class="tab" onclick="switchTab('labor')">労務</div>
 </div>
@@ -302,6 +304,42 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
   <div id="midtermTopics" style="padding:10px 24px;background:#fffde7;border-bottom:1px solid #f0e68c;font-size:13px;display:none"></div>
   <div class="table-wrap"><table id="midtermTable"></table></div>
+</div>
+
+<div id="tab-kessanCheck" class="tab-content">
+  <div style="padding:8px 24px;background:#fdf2e9;border-bottom:1px solid #f0c27a;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <h3 style="margin:0;color:#873600;font-size:15px">📊 決算照合 <span style="font-size:10px;background:#c0392b;color:#fff;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:400">オーナー限定</span></h3>
+    <span style="font-size:12px;color:#666">決算書P/Lと部門別Freee取込データの整合性を検証します</span>
+  </div>
+  <div style="padding:16px 24px">
+    <div style="display:flex;gap:24px;flex-wrap:wrap">
+      <div style="flex:1;min-width:300px">
+        <h4 style="margin:0 0 8px;color:#873600">決算書P/L（法人全体）</h4>
+        <table id="kessanInput" style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr><td style="padding:6px;border:1px solid #ddd">売上高</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_uriage" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr><td style="padding:6px;border:1px solid #ddd">売上原価</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_genka" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr style="background:#eaf2f8"><td style="padding:6px;border:1px solid #ddd;font-weight:600">売上総利益</td><td style="padding:6px;border:1px solid #ddd;text-align:right;font-weight:600" id="kessan_gross">-</td></tr>
+          <tr><td style="padding:6px;border:1px solid #ddd">販管費合計</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_sga" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr style="background:#fff2cc"><td style="padding:6px;border:1px solid #ddd;font-weight:600">営業利益</td><td style="padding:6px;border:1px solid #ddd;text-align:right;font-weight:600" id="kessan_op">-</td></tr>
+          <tr><td style="padding:6px;border:1px solid #ddd">営業外収益</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_eigyogai_rev" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr><td style="padding:6px;border:1px solid #ddd">営業外費用</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_eigyogai_exp" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr style="background:#eaf2f8"><td style="padding:6px;border:1px solid #ddd;font-weight:600">経常利益</td><td style="padding:6px;border:1px solid #ddd;text-align:right;font-weight:600" id="kessan_keijo">-</td></tr>
+          <tr><td style="padding:6px;border:1px solid #ddd">特別利益</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_special_rev" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr><td style="padding:6px;border:1px solid #ddd">特別損失</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_special_exp" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr><td style="padding:6px;border:1px solid #ddd">法人税等</td><td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_tax" style="width:100%;text-align:right;padding:4px" onchange="renderKessanCheck()"></td></tr>
+          <tr style="background:#d5f5e3"><td style="padding:6px;border:1px solid #ddd;font-weight:700">当期純利益</td><td style="padding:6px;border:1px solid #ddd;text-align:right;font-weight:700" id="kessan_net">-</td></tr>
+        </table>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="saveKessanData()">保存</button>
+          <button class="btn btn-secondary" onclick="loadKessanData()">読込</button>
+        </div>
+      </div>
+      <div style="flex:1.5;min-width:400px">
+        <h4 style="margin:0 0 8px;color:#873600">Freee取込合計との照合</h4>
+        <div id="kessanCheckResult" style="font-size:13px;color:#666">左の決算書データを入力すると照合結果が表示されます</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- 予算アシストモーダル -->
@@ -468,7 +506,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
         <option value="viewer_kanribu">閲覧者（管理部）</option>
         <option value="viewer_gakujutsu">閲覧者（学術）</option>
         <option value="tax_advisor">税理士</option>
-        <option value="admin">管理者</option>
+        <option value="admin">管理者（取締役）</option>
+        <option value="owner" id="optOwner" style="display:none">オーナー</option>
       </select>
       <button class="btn btn-primary" onclick="addUser()" style="margin-left:8px">追加</button>
     </div>
@@ -832,22 +871,26 @@ async function checkUserRole(user) {
 }
 
 function getRoleLabel(role) {
-  const labels = { admin: '管理者', editor: '編集者', viewer: '閲覧者（店舗）', viewer_kanribu: '閲覧者（管理部）', viewer_gakujutsu: '閲覧者（学術）', tax_advisor: '税理士' };
+  const labels = { owner: 'オーナー', admin: '管理者', editor: '編集者', viewer: '閲覧者（店舗）', viewer_kanribu: '閲覧者（管理部）', viewer_gakujutsu: '閲覧者（学術）', tax_advisor: '税理士' };
   return labels[role] || role;
 }
 function isViewerRole(role) { return role === 'viewer' || role === 'viewer_kanribu' || role === 'viewer_gakujutsu'; }
 
 function applyPermissions() {
-  const canEdit = userRole === 'admin' || userRole === 'editor';
+  const isOwner = userRole === 'owner';
+  const isAdminLevel = isOwner || userRole === 'admin';
+  const canEdit = isAdminLevel || userRole === 'editor';
   const canExport = canEdit || userRole === 'tax_advisor';
   document.getElementById('btnEditMode').style.display = canEdit ? '' : 'none';
-  document.getElementById('btnAdmin').style.display = userRole === 'admin' ? '' : 'none';
-  document.getElementById('btnExportLog').style.display = userRole === 'admin' ? '' : 'none';
+  document.getElementById('btnAdmin').style.display = isAdminLevel ? '' : 'none';
+  document.getElementById('btnExportLog').style.display = isAdminLevel ? '' : 'none';
   document.getElementById('btnExportGroup').style.display = canExport ? '' : 'none';
   // 税理士: Freee取込ボタンだけ常時表示（編集モード不要）
   document.getElementById('btnFreee').style.display = userRole === 'tax_advisor' ? '' : 'none';
-  // 中期計画タブは管理者・編集者のみ（着地予想データが荒いためスタッフに見せない）
+  // 中期計画タブは管理者・編集者のみ
   document.getElementById('tabMidterm').style.display = canEdit ? '' : 'none';
+  // 決算照合タブはオーナーのみ
+  document.getElementById('tabKessanCheck').style.display = isOwner ? '' : 'none';
   // 編集系ボタンは updateModeUI で制御
 }
 
@@ -1001,7 +1044,13 @@ function openHelpModal() {
 function closeHelpModal() { document.getElementById('helpModal').classList.remove('show'); }
 
 // ===== 権限管理 =====
-function openAdminModal() { document.getElementById('adminModal').classList.add('show'); renderUserList(); }
+function openAdminModal() {
+  document.getElementById('adminModal').classList.add('show');
+  // ownerオプションはownerのみ表示
+  const optOwner = document.getElementById('optOwner');
+  if (optOwner) optOwner.style.display = userRole === 'owner' ? '' : 'none';
+  renderUserList();
+}
 function closeAdminModal() { document.getElementById('adminModal').classList.remove('show'); }
 async function addUser() {
   const email = document.getElementById('addUserEmail').value.trim();
@@ -3162,7 +3211,7 @@ function switchTab(tab){
   currentTab=tab;
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-  const tabIdx = {budget:1, actual:2, compare:3, yoy:4, midterm:5, sales:6, labor:7}[tab] || 1;
+  const tabIdx = {budget:1, actual:2, compare:3, yoy:4, midterm:5, kessanCheck:6, sales:7, labor:8}[tab] || 1;
   document.querySelector(`.tab:nth-child(${tabIdx})`).classList.add('active');
   document.getElementById(`tab-${tab}`).classList.add('active');
   renderCurrentTab();
@@ -3173,8 +3222,96 @@ async function renderCurrentTab(){
   else if(currentTab==='compare') await renderCompareTable();
   else if(currentTab==='yoy') await renderYoyTable();
   else if(currentTab==='midterm') await renderMidtermTable();
+  else if(currentTab==='kessanCheck') await loadKessanData();
   else if(currentTab==='sales') await renderSalesTab();
   else if(currentTab==='labor') await loadLaborData();
+}
+
+// ===== 決算照合タブ =====
+function renderKessanCheck() {
+  const v = id => parseFloat(document.getElementById(id).value) || 0;
+  const uriage = v('kessan_uriage'), genka = v('kessan_genka'), sga = v('kessan_sga');
+  const eigyogaiRev = v('kessan_eigyogai_rev'), eigyogaiExp = v('kessan_eigyogai_exp');
+  const specialRev = v('kessan_special_rev'), specialExp = v('kessan_special_exp'), tax = v('kessan_tax');
+  const gross = uriage - genka;
+  const op = gross - sga;
+  const keijo = op + eigyogaiRev - eigyogaiExp;
+  const net = keijo + specialRev - specialExp - tax;
+  document.getElementById('kessan_gross').textContent = gross.toLocaleString();
+  document.getElementById('kessan_op').textContent = op.toLocaleString();
+  document.getElementById('kessan_keijo').textContent = keijo.toLocaleString();
+  document.getElementById('kessan_net').textContent = net.toLocaleString();
+
+  // Freee取込合計を計算
+  const fy = getFiscalYear();
+  let fUriage=0, fGenka=0, fSga=0;
+  DEPTS.forEach(dept => {
+    const st = allData[dept.id];
+    if (!st) return;
+    const a = st.actual;
+    fUriage += (a.gijutsu||[]).reduce((s,v)=>s+v,0) + (a.yakuzai||[]).reduce((s,v)=>s+v,0) + (a.chiryo||[]).reduce((s,v)=>s+v,0) + (a.uriage_other||[]).reduce((s,v)=>s+v,0);
+    fGenka += (a.genka_total||[]).reduce((s,v)=>s+v,0);
+    const sgaItemIds = ITEMS.filter(it => it.type==='input' && !['gijutsu','yakuzai','chiryo','uriage_other','genka_total','tsukisho_zaiko','shiire','tsukimatsu_zaiko'].includes(it.id)).map(it=>it.id);
+    sgaItemIds.forEach(id => { fSga += (a[id]||[]).reduce((s,v)=>s+v,0); });
+  });
+  const fGross = fUriage - fGenka;
+  const fOp = fGross - fSga;
+
+  const diffRow = (label, kessan, freee) => {
+    const diff = kessan - freee;
+    const color = Math.abs(diff) < 100 ? '#27ae60' : (Math.abs(diff) < 1000000 ? '#e67e22' : '#e74c3c');
+    return `<tr><td style="padding:6px;border:1px solid #ddd">${label}</td>
+      <td style="padding:6px;border:1px solid #ddd;text-align:right">${kessan.toLocaleString()}</td>
+      <td style="padding:6px;border:1px solid #ddd;text-align:right">${freee.toLocaleString()}</td>
+      <td style="padding:6px;border:1px solid #ddd;text-align:right;color:${color};font-weight:600">${diff >= 0 ? '+' : ''}${diff.toLocaleString()}</td></tr>`;
+  };
+
+  let html = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tr style="background:#873600;color:#fff"><th style="padding:6px;border:1px solid #ddd">科目</th><th style="padding:6px;border:1px solid #ddd">決算書</th><th style="padding:6px;border:1px solid #ddd">Freee取込</th><th style="padding:6px;border:1px solid #ddd">差異</th></tr>
+    ${diffRow('売上高', uriage, fUriage)}
+    ${diffRow('売上原価', genka, fGenka)}
+    ${diffRow('売上総利益', gross, fGross)}
+    ${diffRow('販管費合計', sga, fSga)}
+    ${diffRow('営業利益', op, fOp)}
+  </table>`;
+
+  if (uriage > 0) {
+    const totalDiff = Math.abs(op - fOp);
+    if (totalDiff < 100) {
+      html += '<p style="margin-top:12px;color:#27ae60;font-weight:600">✅ 営業利益が一致しています</p>';
+    } else {
+      html += `<p style="margin-top:12px;color:#e74c3c;font-weight:600">⚠ 営業利益に ${totalDiff.toLocaleString()}円 の差異があります</p>`;
+      html += '<p style="font-size:12px;color:#666">差異の原因候補：Freee CSV未取込の部門、科目マッピングのずれ、営業外項目の混入</p>';
+    }
+  }
+  document.getElementById('kessanCheckResult').innerHTML = html;
+}
+
+async function saveKessanData() {
+  const fy = getFiscalYear();
+  const data = {};
+  ['uriage','genka','sga','eigyogai_rev','eigyogai_exp','special_rev','special_exp','tax'].forEach(id => {
+    data[id] = parseFloat(document.getElementById('kessan_'+id).value) || 0;
+  });
+  data.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
+  data.updatedBy = firebase.auth().currentUser?.email || '';
+  await db.collection('kessanPL').doc('FY'+fy).set(data, { merge: true });
+  alert('FY'+fy+' 決算データを保存しました');
+}
+
+async function loadKessanData() {
+  const fy = getFiscalYear();
+  try {
+    const snap = await db.collection('kessanPL').doc('FY'+fy).get();
+    if (snap.exists) {
+      const data = snap.data();
+      ['uriage','genka','sga','eigyogai_rev','eigyogai_exp','special_rev','special_exp','tax'].forEach(id => {
+        const el = document.getElementById('kessan_'+id);
+        if (el && data[id]) el.value = data[id];
+      });
+      renderKessanCheck();
+    }
+  } catch(e) { console.log('決算データ読込エラー:', e.message); }
 }
 
 // ===== 営業分析タブ =====

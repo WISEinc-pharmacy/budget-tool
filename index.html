@@ -311,12 +311,18 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <span style="font-size:12px;color:#666">決算書PDFをアップロードしてFreee取込データと照合します</span>
   </div>
   <div style="padding:16px 24px">
-    <div id="kessanEditArea" style="margin-bottom:16px">
-      <label style="display:inline-block;padding:8px 16px;background:#873600;color:#fff;border-radius:6px;cursor:pointer;font-size:13px" id="kessanPdfLabel">
-        📄 決算書PDFをアップロード
-        <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">
-      </label>
-      <span id="kessanPdfName" style="margin-left:8px;font-size:12px;color:#666"></span>
+    <div style="margin-bottom:16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+      <div>
+        <label style="font-size:13px;font-weight:600;color:#873600">年度：</label>
+        <select id="kessanFY" style="padding:6px 12px;font-size:14px;font-weight:600;border:2px solid #873600;border-radius:6px" onchange="loadKessanData()"></select>
+      </div>
+      <div id="kessanEditArea">
+        <label style="display:inline-block;padding:8px 16px;background:#873600;color:#fff;border-radius:6px;cursor:pointer;font-size:13px" id="kessanPdfLabel">
+          📄 決算書PDFをアップロード
+          <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">
+        </label>
+        <span id="kessanPdfName" style="margin-left:8px;font-size:12px;color:#666"></span>
+      </div>
     </div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">
       <div style="flex:1;min-width:300px">
@@ -3198,6 +3204,12 @@ function switchTab(tab){
   const tabIdx = {budget:1, actual:2, compare:3, yoy:4, midterm:5, kessanCheck:6, sales:7, labor:8}[tab] || 1;
   document.querySelector(`.tab:nth-child(${tabIdx})`).classList.add('active');
   document.getElementById(`tab-${tab}`).classList.add('active');
+  // 決算照合タブではツールバー・年度ボタン・部門バーを隠す
+  const isKessan = tab === 'kessanCheck';
+  document.querySelector('.toolbar').style.display = isKessan ? 'none' : '';
+  const fyBtns = document.getElementById('fyButtons');
+  if (fyBtns) fyBtns.style.display = isKessan ? 'none' : '';
+  document.getElementById('deptBar').style.display = isKessan ? 'none' : '';
   renderCurrentTab();
 }
 async function renderCurrentTab(){
@@ -3262,6 +3274,26 @@ function onKessanEdit(field, value) {
   renderKessanPL();
 }
 
+let kessanFreeeCache = { fy: null, uriage: 0, genka: 0, sga: 0 };
+
+async function loadKessanFreeeData(fy) {
+  if (kessanFreeeCache.fy === fy) return;
+  let fUriage=0, fGenka=0, fSga=0;
+  const prefix = 'FY' + fy + '_';
+  const sgaItemIds = ITEMS.filter(it => it.type==='input' && !['gijutsu','yakuzai','chiryo','uriage_other','genka_total','tsukisho_zaiko','shiire','tsukimatsu_zaiko'].includes(it.id)).map(it=>it.id);
+  try {
+    const snap = await db.collection('budgetData').get();
+    snap.forEach(doc => {
+      if (!doc.id.startsWith(prefix)) return;
+      const a = doc.data().actual || {};
+      fUriage += (a.gijutsu||[]).reduce((s,v)=>s+v,0) + (a.yakuzai||[]).reduce((s,v)=>s+v,0) + (a.chiryo||[]).reduce((s,v)=>s+v,0) + (a.uriage_other||[]).reduce((s,v)=>s+v,0);
+      fGenka += (a.genka_total||[]).reduce((s,v)=>s+v,0);
+      sgaItemIds.forEach(id => { fSga += (a[id]||[]).reduce((s,v)=>s+v,0); });
+    });
+  } catch(e) { console.log('Freee data load error:', e.message); }
+  kessanFreeeCache = { fy, uriage: fUriage, genka: fGenka, sga: fSga };
+}
+
 function renderKessanComparison(d) {
   if (!d.uriage && !d.genka) {
     document.getElementById('kessanCheckResult').innerHTML = '<span style="color:#666">決算書データがありません。PDFアップロードまたは手入力してください。</span>';
@@ -3270,15 +3302,9 @@ function renderKessanComparison(d) {
   const gross = (d.uriage||0) - (d.genka||0);
   const op = gross - (d.sga||0);
 
-  let fUriage=0, fGenka=0, fSga=0;
-  DEPTS.forEach(dept => {
-    const st = allData[dept.id]; if (!st) return;
-    const a = st.actual;
-    fUriage += (a.gijutsu||[]).reduce((s,v)=>s+v,0) + (a.yakuzai||[]).reduce((s,v)=>s+v,0) + (a.chiryo||[]).reduce((s,v)=>s+v,0) + (a.uriage_other||[]).reduce((s,v)=>s+v,0);
-    fGenka += (a.genka_total||[]).reduce((s,v)=>s+v,0);
-    const sgaItemIds = ITEMS.filter(it => it.type==='input' && !['gijutsu','yakuzai','chiryo','uriage_other','genka_total','tsukisho_zaiko','shiire','tsukimatsu_zaiko'].includes(it.id)).map(it=>it.id);
-    sgaItemIds.forEach(id => { fSga += (a[id]||[]).reduce((s,v)=>s+v,0); });
-  });
+  const fUriage = kessanFreeeCache.uriage;
+  const fGenka = kessanFreeeCache.genka;
+  const fSga = kessanFreeeCache.sga;
   const fGross = fUriage - fGenka;
   const fOp = fGross - fSga;
 
@@ -3369,7 +3395,7 @@ JSONのみを返してください。説明不要。` }
 }
 
 async function saveKessanData() {
-  const fy = getFiscalYear();
+  const fy = getKessanFY();
   const data = { ...kessanData };
   data.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
   data.updatedBy = firebase.auth().currentUser?.email || '';
@@ -3377,8 +3403,25 @@ async function saveKessanData() {
   alert('FY'+fy+' 決算データを保存しました');
 }
 
+function getKessanFY() {
+  const sel = document.getElementById('kessanFY');
+  return sel ? sel.value : getFiscalYear();
+}
+
+function initKessanFYSelect() {
+  const sel = document.getElementById('kessanFY');
+  if (!sel) return;
+  const currentFY = parseInt(getFiscalYear());
+  let html = '';
+  for (let y = 2024; y <= currentFY; y++) {
+    html += `<option value="${y}" ${y===currentFY?'selected':''}>${y}年度</option>`;
+  }
+  sel.innerHTML = html;
+}
+
 async function loadKessanData() {
-  const fy = getFiscalYear();
+  initKessanFYSelect();
+  const fy = getKessanFY();
   // PDFアップロードラベルをリセット
   const label = document.getElementById('kessanPdfLabel');
   if (label) {
@@ -3395,6 +3438,8 @@ async function loadKessanData() {
       KESSAN_FIELDS.forEach(id => { kessanData[id] = data[id] || 0; });
     } else { kessanData = {}; }
   } catch(e) { kessanData = {}; }
+  // Freee取込データも該当年度で読み込む
+  await loadKessanFreeeData(fy);
   renderKessanPL();
 }
 

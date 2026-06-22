@@ -332,7 +332,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       </div>
       <div style="flex:1.5;min-width:400px">
         <h4 style="margin:0 0 8px;color:#873600">Freee取込合計との照合</h4>
-        <div id="kessanCheckResult" style="font-size:13px;color:#666">決算書PDFをアップロードするか、保存済みデータを読み込んでください</div>
+        <div id="kessanCheckResult" style="font-size:13px;color:#666;overflow:auto"></div>
       </div>
     </div>
   </div>
@@ -3408,15 +3408,17 @@ function getKessanFY() {
   return sel ? sel.value : getFiscalYear();
 }
 
+let kessanFYInitialized = false;
 function initKessanFYSelect() {
   const sel = document.getElementById('kessanFY');
-  if (!sel) return;
+  if (!sel || kessanFYInitialized) return;
   const currentFY = parseInt(getFiscalYear());
   let html = '';
   for (let y = 2024; y <= currentFY; y++) {
     html += `<option value="${y}" ${y===currentFY?'selected':''}>${y}年度</option>`;
   }
   sel.innerHTML = html;
+  kessanFYInitialized = true;
 }
 
 async function loadKessanData() {

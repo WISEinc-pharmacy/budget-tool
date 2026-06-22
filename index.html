@@ -3379,6 +3379,15 @@ async function saveKessanData() {
 
 async function loadKessanData() {
   const fy = getFiscalYear();
+  // PDFアップロードラベルをリセット
+  const label = document.getElementById('kessanPdfLabel');
+  if (label) {
+    label.style.background = '#873600';
+    label.style.pointerEvents = 'auto';
+    label.innerHTML = '📄 決算書PDFをアップロード <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
+  }
+  const nameEl = document.getElementById('kessanPdfName');
+  if (nameEl) nameEl.textContent = '';
   try {
     const snap = await db.collection('kessanPL').doc('FY'+fy).get();
     if (snap.exists) {

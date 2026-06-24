@@ -324,16 +324,9 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
         <span id="kessanPdfName" style="margin-left:8px;font-size:12px;color:#666"></span>
       </div>
     </div>
-    <div style="display:flex;gap:24px;flex-wrap:wrap">
-      <div style="flex:1;min-width:300px">
-        <h4 style="margin:0 0 8px;color:#873600">決算書P/L（法人全体）</h4>
-        <div id="kessanPLTable"></div>
-        <div id="kessanButtons" style="margin-top:8px;display:flex;gap:8px"></div>
-      </div>
-      <div style="flex:1.5;min-width:400px">
-        <h4 style="margin:0 0 8px;color:#873600">Freee取込合計との照合</h4>
-        <div id="kessanCheckResult" style="font-size:13px;color:#666;overflow:auto"></div>
-      </div>
+    <div>
+      <div id="kessanPLTable"></div>
+      <div id="kessanButtons" style="margin-top:8px;display:flex;gap:8px"></div>
     </div>
   </div>
 </div>
@@ -3235,38 +3228,57 @@ function renderKessanPL() {
   const keijo = op + (d.eigyogai_rev||0) - (d.eigyogai_exp||0);
   const net = keijo + (d.special_rev||0) - (d.special_exp||0) - (d.tax||0);
   const isEdit = editMode;
+  const f = kessanFreeeCache;
+  const hasFreee = f.uriage > 0 || f.genka > 0;
+  const hasKessan = (d.uriage||0) > 0 || (d.genka||0) > 0;
 
-  const cell = (val, editable, id) => {
-    if (editable && isEdit) return `<td style="padding:6px;border:1px solid #ddd"><input type="number" id="kessan_${id}" value="${val||''}" style="width:100%;text-align:right;padding:4px" onchange="onKessanEdit('${id}',this.value)"></td>`;
+  const fGross = f.uriage - f.genka;
+  const fOp = fGross - f.sga;
+
+  const inputCell = (val, id) => {
+    if (isEdit) return `<td style="padding:6px;border:1px solid #ddd;min-width:120px"><input type="number" id="kessan_${id}" value="${val||''}" style="width:100%;text-align:right;padding:4px" onchange="onKessanEdit('${id}',this.value)"></td>`;
     return `<td style="padding:6px;border:1px solid #ddd;text-align:right">${(val||0).toLocaleString()}</td>`;
   };
-  const calcCell = (val, bg) => `<td style="padding:6px;border:1px solid #ddd;text-align:right;font-weight:600;background:${bg}">${val.toLocaleString()}</td>`;
+  const numCell = (val, bg) => `<td style="padding:6px;border:1px solid #ddd;text-align:right;${bg?'font-weight:600;background:'+bg:''}">${val.toLocaleString()}</td>`;
+  const diffCell = (kessan, freee) => {
+    if (!hasKessan || !hasFreee) return '<td style="padding:6px;border:1px solid #ddd;text-align:center;color:#999">-</td>';
+    const diff = kessan - freee;
+    const color = Math.abs(diff) < 100 ? '#27ae60' : (Math.abs(diff) < 1000000 ? '#e67e22' : '#e74c3c');
+    return `<td style="padding:6px;border:1px solid #ddd;text-align:right;color:${color};font-weight:600">${diff >= 0 ? '+' : ''}${diff.toLocaleString()}</td>`;
+  };
 
-  let html = `<table style="width:100%;border-collapse:collapse;font-size:13px">
-    <tr><td style="padding:6px;border:1px solid #ddd">売上高</td>${cell(d.uriage, true, 'uriage')}</tr>
-    <tr><td style="padding:6px;border:1px solid #ddd">売上原価</td>${cell(d.genka, true, 'genka')}</tr>
-    <tr style="background:#eaf2f8"><td style="padding:6px;border:1px solid #ddd;font-weight:600">売上総利益</td>${calcCell(gross, '#eaf2f8')}</tr>
-    <tr><td style="padding:6px;border:1px solid #ddd">販管費合計</td>${cell(d.sga, true, 'sga')}</tr>
-    <tr style="background:#fff2cc"><td style="padding:6px;border:1px solid #ddd;font-weight:600">営業利益</td>${calcCell(op, '#fff2cc')}</tr>
-    <tr><td style="padding:6px;border:1px solid #ddd">営業外収益</td>${cell(d.eigyogai_rev, true, 'eigyogai_rev')}</tr>
-    <tr><td style="padding:6px;border:1px solid #ddd">営業外費用</td>${cell(d.eigyogai_exp, true, 'eigyogai_exp')}</tr>
-    <tr style="background:#eaf2f8"><td style="padding:6px;border:1px solid #ddd;font-weight:600">経常利益</td>${calcCell(keijo, '#eaf2f8')}</tr>
-    <tr><td style="padding:6px;border:1px solid #ddd">特別利益</td>${cell(d.special_rev, true, 'special_rev')}</tr>
-    <tr><td style="padding:6px;border:1px solid #ddd">特別損失</td>${cell(d.special_exp, true, 'special_exp')}</tr>
-    <tr><td style="padding:6px;border:1px solid #ddd">法人税等</td>${cell(d.tax, true, 'tax')}</tr>
-    <tr style="background:#d5f5e3"><td style="padding:6px;border:1px solid #ddd;font-weight:700">当期純利益</td>${calcCell(net, '#d5f5e3')}</tr>
+  const thStyle = 'padding:6px;border:1px solid #ddd;background:#873600;color:#fff;font-size:12px;text-align:center';
+  let html = `<table style="width:100%;max-width:700px;border-collapse:collapse;font-size:13px">
+    <tr><th style="${thStyle}">科目</th><th style="${thStyle}">決算書</th>${hasFreee?`<th style="${thStyle}">Freee取込</th><th style="${thStyle}">差異</th>`:''}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">売上高</td>${inputCell(d.uriage,'uriage')}${hasFreee?numCell(f.uriage)+diffCell(d.uriage||0, f.uriage):''}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">売上原価</td>${inputCell(d.genka,'genka')}${hasFreee?numCell(f.genka)+diffCell(d.genka||0, f.genka):''}</tr>
+    <tr style="background:#eaf2f8"><td style="padding:6px;border:1px solid #ddd;font-weight:600">売上総利益</td>${numCell(gross,'#eaf2f8')}${hasFreee?numCell(fGross,'#eaf2f8')+diffCell(gross, fGross):''}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">販管費合計</td>${inputCell(d.sga,'sga')}${hasFreee?numCell(f.sga)+diffCell(d.sga||0, f.sga):''}</tr>
+    <tr style="background:#fff2cc"><td style="padding:6px;border:1px solid #ddd;font-weight:600">営業利益</td>${numCell(op,'#fff2cc')}${hasFreee?numCell(fOp,'#fff2cc')+diffCell(op, fOp):''}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">営業外収益</td>${inputCell(d.eigyogai_rev,'eigyogai_rev')}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">営業外費用</td>${inputCell(d.eigyogai_exp,'eigyogai_exp')}</tr>
+    <tr style="background:#eaf2f8"><td style="padding:6px;border:1px solid #ddd;font-weight:600">経常利益</td>${numCell(keijo,'#eaf2f8')}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">特別利益</td>${inputCell(d.special_rev,'special_rev')}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">特別損失</td>${inputCell(d.special_exp,'special_exp')}</tr>
+    <tr><td style="padding:6px;border:1px solid #ddd">法人税等</td>${inputCell(d.tax,'tax')}</tr>
+    <tr style="background:#d5f5e3"><td style="padding:6px;border:1px solid #ddd;font-weight:700">当期純利益</td>${numCell(net,'#d5f5e3')}</tr>
   </table>`;
+
+  if (hasKessan && hasFreee) {
+    const totalDiff = Math.abs(op - fOp);
+    if (totalDiff < 100) html += '<p style="margin-top:8px;color:#27ae60;font-weight:600;font-size:13px">✅ 営業利益が一致しています</p>';
+    else html += `<p style="margin-top:8px;color:#e74c3c;font-weight:600;font-size:13px">⚠ 営業利益に ${totalDiff.toLocaleString()}円 の差異があります</p>`;
+  }
+
   document.getElementById('kessanPLTable').innerHTML = html;
 
-  // ボタン
+  // ボタン（編集モードで手入力修正後の手動保存用）
   let btns = '';
   if (isEdit) btns = '<button class="btn btn-primary" onclick="saveKessanData()">保存</button>';
   document.getElementById('kessanButtons').innerHTML = btns;
 
   // PDFアップロードは編集モードのみ
   document.getElementById('kessanEditArea').style.display = isEdit ? '' : 'none';
-
-  renderKessanComparison(d);
 }
 
 function onKessanEdit(field, value) {
@@ -3292,46 +3304,6 @@ async function loadKessanFreeeData(fy) {
     });
   } catch(e) { console.log('Freee data load error:', e.message); }
   kessanFreeeCache = { fy, uriage: fUriage, genka: fGenka, sga: fSga };
-}
-
-function renderKessanComparison(d) {
-  if (!d.uriage && !d.genka) {
-    document.getElementById('kessanCheckResult').innerHTML = '<span style="color:#666">決算書データがありません。PDFアップロードまたは手入力してください。</span>';
-    return;
-  }
-  const gross = (d.uriage||0) - (d.genka||0);
-  const op = gross - (d.sga||0);
-
-  const fUriage = kessanFreeeCache.uriage;
-  const fGenka = kessanFreeeCache.genka;
-  const fSga = kessanFreeeCache.sga;
-  const fGross = fUriage - fGenka;
-  const fOp = fGross - fSga;
-
-  const diffRow = (label, kessan, freee) => {
-    const diff = kessan - freee;
-    const color = Math.abs(diff) < 100 ? '#27ae60' : (Math.abs(diff) < 1000000 ? '#e67e22' : '#e74c3c');
-    return `<tr><td style="padding:6px;border:1px solid #ddd">${label}</td>
-      <td style="padding:6px;border:1px solid #ddd;text-align:right">${kessan.toLocaleString()}</td>
-      <td style="padding:6px;border:1px solid #ddd;text-align:right">${freee.toLocaleString()}</td>
-      <td style="padding:6px;border:1px solid #ddd;text-align:right;color:${color};font-weight:600">${diff >= 0 ? '+' : ''}${diff.toLocaleString()}</td></tr>`;
-  };
-
-  let html = `<table style="width:100%;border-collapse:collapse;font-size:13px">
-    <tr style="background:#873600;color:#fff"><th style="padding:6px;border:1px solid #ddd">科目</th><th style="padding:6px;border:1px solid #ddd">決算書</th><th style="padding:6px;border:1px solid #ddd">Freee取込</th><th style="padding:6px;border:1px solid #ddd">差異</th></tr>
-    ${diffRow('売上高', d.uriage||0, fUriage)}
-    ${diffRow('売上原価', d.genka||0, fGenka)}
-    ${diffRow('売上総利益', gross, fGross)}
-    ${diffRow('販管費合計', d.sga||0, fSga)}
-    ${diffRow('営業利益', op, fOp)}
-  </table>`;
-  const totalDiff = Math.abs(op - fOp);
-  if (totalDiff < 100) html += '<p style="margin-top:12px;color:#27ae60;font-weight:600">✅ 営業利益が一致しています</p>';
-  else {
-    html += `<p style="margin-top:12px;color:#e74c3c;font-weight:600">⚠ 営業利益に ${totalDiff.toLocaleString()}円 の差異があります</p>`;
-    html += '<p style="font-size:12px;color:#666">差異の原因候補：Freee CSV未取込の部門、科目マッピングのずれ、営業外項目の混入</p>';
-  }
-  document.getElementById('kessanCheckResult').innerHTML = html;
 }
 
 async function handleKessanPdf(input) {
@@ -3383,8 +3355,12 @@ JSONのみを返してください。説明不要。` }
     if (!jsonMatch) throw new Error('AI応答からJSONを抽出できませんでした');
     const extracted = JSON.parse(jsonMatch[0]);
     KESSAN_FIELDS.forEach(id => { kessanData[id] = parseInt(extracted[id]) || 0; });
+    // 自動保存
+    label.style.background = '#3498db';
+    label.innerHTML = '💾 保存中... <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
+    await saveKessanData(true);
     label.style.background = '#2ecc71';
-    label.innerHTML = '✅ 読み取り完了 <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
+    label.innerHTML = '✅ 保存完了 <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
   } catch(e) {
     label.style.background = '#e74c3c';
     label.innerHTML = '❌ 読み取り失敗 <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
@@ -3394,13 +3370,13 @@ JSONのみを返してください。説明不要。` }
   renderKessanPL();
 }
 
-async function saveKessanData() {
+async function saveKessanData(silent) {
   const fy = getKessanFY();
   const data = { ...kessanData };
   data.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
   data.updatedBy = firebase.auth().currentUser?.email || '';
   await db.collection('kessanPL').doc('FY'+fy).set(data, { merge: true });
-  alert('FY'+fy+' 決算データを保存しました');
+  if (!silent) alert('FY'+fy+' 決算データを保存しました');
 }
 
 function getKessanFY() {

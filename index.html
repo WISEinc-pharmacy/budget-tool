@@ -2611,15 +2611,11 @@ async function parseFreeeFiles() {
     }
   }
 
-  // 全社CSV（取込不可）を分離して除外
+  // 全社CSVは店舗部門へ混入させず、専用キーに隔離して保存する
   const allDeptCsvItems = freeeParsedData.filter(d => d.confidence === 'all_dept');
-  freeeParsedData = freeeParsedData.filter(d => d.confidence !== 'all_dept');
 
   if (freeeParsedData.length === 0) {
-    const errMsg = allDeptCsvItems.length
-      ? `<div class="import-result error">⛔ 全社CSV（部門フィルタなし）のみ検出されました。部門別CSVを使用してください。<br>検出: ${allDeptCsvItems.map(d=>d.deptName).join('、')}</div>`
-      : '<div class="import-result error">Freee形式のCSVが見つかりませんでした</div>';
-    preview.innerHTML = errMsg;
+    preview.innerHTML = '<div class="import-result error">Freee形式のCSVが見つかりませんでした</div>';
     return;
   }
 
@@ -2627,7 +2623,7 @@ async function parseFreeeFiles() {
   const fySet = new Set(freeeParsedData.map(d => d.fiscalYear).filter(Boolean));
 
   // プレビュー表示（ファイル名・年度・部門選択）
-  const deptOptions = DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('') + '<option value="">-- スキップ --</option>';
+  const deptOptions = DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('') + '<option value="company_total">法人全体（決算照合用）</option><option value="">-- スキップ --</option>';
   let html = '';
   if (fySet.size > 1) {
     html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 複数年度のCSVが混在しています: <strong>${[...fySet].sort().join('・')}年度</strong>。それぞれの年度に取り込まれます。</div>`;
@@ -2662,8 +2658,8 @@ async function parseFreeeFiles() {
     html += `<td style="padding:4px;border:1px solid #ccc;text-align:center;font-weight:bold">${fy}</td>`;
     html += `<td style="padding:4px;border:1px solid #ccc"><select id="${selId}" style="font-size:12px;width:100%" onchange="freeeParsedData[${i}].deptId=this.value;freeeParsedData[${i}].deptName=this.options[this.selectedIndex].text">`;
     html += deptOptions.replace(`value="${d.deptId}"`, `value="${d.deptId}" selected`);
-    const confLabel = {high:'✓確実', medium:'△推定', none:'?不明'}[d.confidence]||'?不明';
-    const confColor = {high:'#27ae60', medium:'#e67e22', none:'#e74c3c'}[d.confidence]||'#e74c3c';
+    const confLabel = {high:'✓確実', medium:'△推定', all_dept:'全社', none:'?不明'}[d.confidence]||'?不明';
+    const confColor = {high:'#27ae60', medium:'#e67e22', all_dept:'#8e44ad', none:'#e74c3c'}[d.confidence]||'#e74c3c';
     html += `</select><div style="color:${confColor};font-size:10px">${confLabel}: ${d.deptName}</div></td>`;
     // 検出根拠列
     const hints = (d.matchedHints || []).join(', ');
@@ -2677,8 +2673,8 @@ async function parseFreeeFiles() {
   freeeParsedData.forEach(d => { if (d.deptId) { const key = `${d.fiscalYear}_${d.deptId}`; deptFyCounts[key] = (deptFyCounts[key]||0)+1; } });
   const dupKeys = Object.entries(deptFyCounts).filter(([,c])=>c>1).map(([key])=>{ const [fy,id]=key.split('_'); const name=freeeParsedData.find(d=>d.deptId===id&&d.fiscalYear===fy)?.deptName||id; return `${name}(${fy})`; });
   if (dupKeys.length) html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⚠ 同一年度・同一部門が重複しています: ${dupKeys.join('、')}。スキップに変更してください。</div>`;
-  // 全社CSV自動除外の通知
-  if (allDeptCsvItems.length) html += `<div style="background:#fde8e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">⛔ 全社CSV（部門フィルタなし）を自動除外しました: ${allDeptCsvItems.map(d=>d.deptName).join('、')}</div>`;
+  // 全社CSV隔離の通知
+  if (allDeptCsvItems.length) html += `<div style="background:#f4ecf7;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px;color:#6c3483">🏢 全社CSVは店舗部門ではなく「法人全体（決算照合用）」として保存します: ${allDeptCsvItems.map(d=>d.deptName).join('、')}</div>`;
   // 重複ファイル自動スキップ通知
   if (skippedFiles.length) html += `<div style="background:#e8f4e8;padding:6px 10px;border-radius:4px;margin-bottom:4px;font-size:12px">✓ 重複ファイルを自動スキップしました: ${skippedFiles.map(f=>f.split('/').pop()).join('、')}</div>`;
   // 未マッピング勘定科目の一覧表示
@@ -2975,7 +2971,7 @@ function parseFreeeCSV(text) {
   const GLOBAL_DEPT_CHECK = ['柏', '足立', 'さくら台', 'ながれやま', '我孫子', 'アイ調剤', '学術研修', '総務'];
   const matchedDeptInL3 = GLOBAL_DEPT_CHECK.filter(name => l3Values.some(v => v.includes(name)));
   if (matchedDeptInL3.length >= 2) {
-    return { deptId: null, deptName: `全社CSV（${matchedDeptInL3.slice(0,3).join('/')}等が混在）`, confidence: 'all_dept', monthValues: {}, unmappedL2: [], fiscalYear: detectedFY };
+    return { deptId: 'company_total', deptName: `法人全体（${matchedDeptInL3.slice(0,3).join('/')}等が混在）`, confidence: 'all_dept', monthValues, unmappedL2: [...unmappedL2], fiscalYear: detectedFY };
   }
   // l3: 物件名等のL3固有テキスト（高確度）/ text: 店舗名等の全文検索（低確度）
   const DEPT_HINTS = [
@@ -3070,7 +3066,7 @@ async function doFreeeImport() {
   // 現在の年度のデータはメモリにも反映（画面表示用）
   const currentFY = getFiscalYear();
   for (const d of targetEntries) {
-    if (d.targetFY === currentFY) {
+    if (d.targetFY === currentFY && d.deptId !== 'company_total') {
       initDeptData(d.deptId);
       const store = allData[d.deptId].actual;
       // 実績を全リセット（CSVにない科目の残存データを消去）
@@ -3126,7 +3122,7 @@ async function doFreeeImport() {
 
   for (const [fy, entries] of Object.entries(fyGroups).sort()) {
     msg += `<div style="background:#f0f7f0;border:1px solid #c3e6c3;border-radius:4px;padding:8px;margin-bottom:6px">`;
-    msg += `<div style="font-weight:bold;margin-bottom:4px">📅 ${fy}年度（${entries.length}部門）</div>`;
+    msg += `<div style="font-weight:bold;margin-bottom:4px">📅 ${fy}年度（${entries.length}件）</div>`;
     msg += '<table style="width:100%;border-collapse:collapse;font-size:11px">';
     msg += '<tr style="background:#e8f5e8"><th style="padding:2px 4px;text-align:left;border-bottom:1px solid #c3e6c3">部門</th><th style="padding:2px 4px;text-align:right;border-bottom:1px solid #c3e6c3">売上高</th><th style="padding:2px 4px;text-align:right;border-bottom:1px solid #c3e6c3">売上原価</th><th style="padding:2px 4px;text-align:right;border-bottom:1px solid #c3e6c3">販管費</th></tr>';
     let totalSales=0, totalGenka=0, totalSga=0;
@@ -3134,7 +3130,8 @@ async function doFreeeImport() {
     entries.forEach(d => {
       const s = calcSummary(d);
       totalSales += s.sales; totalGenka += s.genka; totalSga += s.sga;
-      msg += `<tr><td style="padding:2px 4px">${d.deptName}</td><td style="padding:2px 4px;text-align:right">${s.sales.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${s.genka.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${s.sga.toLocaleString()}</td></tr>`;
+      const name = d.deptId === 'company_total' ? `${d.deptName}（店舗部門とは別保存）` : d.deptName;
+      msg += `<tr><td style="padding:2px 4px">${name}</td><td style="padding:2px 4px;text-align:right">${s.sales.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${s.genka.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${s.sga.toLocaleString()}</td></tr>`;
     });
     msg += `<tr style="font-weight:bold;border-top:1px solid #999"><td style="padding:2px 4px">合計</td><td style="padding:2px 4px;text-align:right">${totalSales.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${totalGenka.toLocaleString()}</td><td style="padding:2px 4px;text-align:right">${totalSga.toLocaleString()}</td></tr>`;
     msg += '</table></div>';
@@ -3295,13 +3292,26 @@ async function loadKessanFreeeData(fy) {
   const sgaItemIds = ITEMS.filter(it => it.type==='input' && !['gijutsu','yakuzai','chiryo','uriage_other','genka_total','tsukisho_zaiko','shiire','tsukimatsu_zaiko'].includes(it.id)).map(it=>it.id);
   try {
     const snap = await db.collection('budgetData').get();
+    let companyTotalActual = null;
     snap.forEach(doc => {
       if (!doc.id.startsWith(prefix)) return;
+      if (doc.id === prefix + 'company_total') {
+        companyTotalActual = doc.data().actual || {};
+        return;
+      }
+      if (companyTotalActual) return;
       const a = doc.data().actual || {};
       fUriage += (a.gijutsu||[]).reduce((s,v)=>s+v,0) + (a.yakuzai||[]).reduce((s,v)=>s+v,0) + (a.chiryo||[]).reduce((s,v)=>s+v,0) + (a.uriage_other||[]).reduce((s,v)=>s+v,0);
       fGenka += (a.genka_total||[]).reduce((s,v)=>s+v,0);
       sgaItemIds.forEach(id => { fSga += (a[id]||[]).reduce((s,v)=>s+v,0); });
     });
+    if (companyTotalActual) {
+      const a = companyTotalActual;
+      fUriage = (a.gijutsu||[]).reduce((s,v)=>s+v,0) + (a.yakuzai||[]).reduce((s,v)=>s+v,0) + (a.chiryo||[]).reduce((s,v)=>s+v,0) + (a.uriage_other||[]).reduce((s,v)=>s+v,0);
+      fGenka = (a.genka_total||[]).reduce((s,v)=>s+v,0);
+      fSga = 0;
+      sgaItemIds.forEach(id => { fSga += (a[id]||[]).reduce((s,v)=>s+v,0); });
+    }
   } catch(e) { console.log('Freee data load error:', e.message); }
   kessanFreeeCache = { fy, uriage: fUriage, genka: fGenka, sga: fSga };
 }
@@ -3355,12 +3365,13 @@ JSONのみを返してください。説明不要。` }
     if (!jsonMatch) throw new Error('AI応答からJSONを抽出できませんでした');
     const extracted = JSON.parse(jsonMatch[0]);
     KESSAN_FIELDS.forEach(id => { kessanData[id] = parseInt(extracted[id]) || 0; });
+    const extractedCount = KESSAN_FIELDS.filter(id => Number.isFinite(parseInt(extracted[id])) && parseInt(extracted[id]) !== 0).length;
     // 自動保存
     label.style.background = '#3498db';
     label.innerHTML = '💾 保存中... <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
     await saveKessanData(true);
     label.style.background = '#2ecc71';
-    label.innerHTML = '✅ 保存完了 <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
+    label.innerHTML = `✅ 読み取り完了（${extractedCount}件） <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">`;
   } catch(e) {
     label.style.background = '#e74c3c';
     label.innerHTML = '❌ 読み取り失敗 <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';

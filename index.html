@@ -1351,7 +1351,7 @@ function getPrevBudgetActual(prevAllData) {
 
 function isItemVisible(it) {
   if (!it.adminOnly) return true;
-  // 全閲覧者は adminOnly 科��を非表示
+  // 全閲覧者は adminOnly 科目を非表示
   if (isViewerRole(userRole)) return false;
   // 管理者・編集者でも、店舗のみ選択中は非表示（役員等の部門が含まれていなければ）
   const hasAdminDept = selectedDepts.some(id => {
@@ -2699,7 +2699,7 @@ function removeFreeeItem(idx) {
   }
   // 簡易再描画: parseFreeeFilesの表示部分を再実行
   const fySet = new Set(freeeParsedData.map(d => d.fiscalYear).filter(Boolean));
-  const deptOptions = DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('') + '<option value="">-- スキップ --</option>';
+  const deptOptions = DEPTS.map(d => `<option value="${d.id}">${d.name}</option>`).join('') + '<option value="company_total">法人全体（決算照合用）</option><option value="">-- スキップ --</option>';
   let html = '';
   if (fySet.size > 1) {
     html += `<div style="background:#fff3cd;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:12px">📅 複数年度のCSVが混在しています: <strong>${[...fySet].sort().join('・')}年度</strong></div>`;
@@ -3164,7 +3164,9 @@ async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
     startMonth: existing.startMonth || document.getElementById('startMonth').value,
     fiscalYear: fiscalYear,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    updatedBy: currentUser.email
+    updatedBy: currentUser.email,
+    deptId,
+    source: deptId === 'company_total' ? 'freee_company_total' : (existing.source || 'freee_department')
   };
   // ITEMS初期化 + 実績を全リセット（CSVにない科目の残存データを消去）
   ITEMS.forEach(it => {
@@ -3217,6 +3219,37 @@ async function renderCurrentTab(){
 const KESSAN_FIELDS = ['uriage','genka','sga','eigyogai_rev','eigyogai_exp','special_rev','special_exp','tax'];
 const KESSAN_LABELS = { uriage:'売上高', genka:'売上原価', sga:'販管費合計', eigyogai_rev:'営業外収益', eigyogai_exp:'営業外費用', special_rev:'特別利益', special_exp:'特別損失', tax:'法人税等' };
 let kessanData = {};
+
+function normalizeKessanNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (value === null || value === undefined) return 0;
+  const normalized = String(value)
+    .replace(/[,\s円]/g, '')
+    .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+  const parsed = parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeKessanData(raw) {
+  const out = {};
+  KESSAN_FIELDS.forEach(id => { out[id] = normalizeKessanNumber(raw?.[id]); });
+  return out;
+}
+
+function sumActual(actual, itemId) {
+  const values = actual?.[itemId];
+  return Array.isArray(values) ? values.reduce((sum, value) => sum + (Number(value) || 0), 0) : 0;
+}
+
+function summarizeActualForKessan(actual) {
+  const uriage = sumActual(actual, 'gijutsu') + sumActual(actual, 'yakuzai') + sumActual(actual, 'chiryo') + sumActual(actual, 'uriage_other');
+  const genka = sumActual(actual, 'genka_total');
+  const sgaItemIds = ITEMS
+    .filter(it => it.type === 'input' && !['gijutsu','yakuzai','chiryo','uriage_other','genka_total','tsukisho_zaiko','shiire','tsukimatsu_zaiko'].includes(it.id))
+    .map(it => it.id);
+  const sga = sgaItemIds.reduce((sum, id) => sum + sumActual(actual, id), 0);
+  return { uriage, genka, sga };
+}
 
 function renderKessanPL() {
   const d = kessanData;
@@ -3287,33 +3320,30 @@ let kessanFreeeCache = { fy: null, uriage: 0, genka: 0, sga: 0 };
 
 async function loadKessanFreeeData(fy) {
   if (kessanFreeeCache.fy === fy) return;
-  let fUriage=0, fGenka=0, fSga=0;
   const prefix = 'FY' + fy + '_';
-  const sgaItemIds = ITEMS.filter(it => it.type==='input' && !['gijutsu','yakuzai','chiryo','uriage_other','genka_total','tsukisho_zaiko','shiire','tsukimatsu_zaiko'].includes(it.id)).map(it=>it.id);
   try {
+    const companyDoc = await db.collection('budgetData').doc(prefix + 'company_total').get();
+    if (companyDoc.exists) {
+      kessanFreeeCache = { fy, ...summarizeActualForKessan(companyDoc.data().actual || {}) };
+      return;
+    }
+
+    let totals = { uriage: 0, genka: 0, sga: 0 };
     const snap = await db.collection('budgetData').get();
-    let companyTotalActual = null;
     snap.forEach(doc => {
       if (!doc.id.startsWith(prefix)) return;
-      if (doc.id === prefix + 'company_total') {
-        companyTotalActual = doc.data().actual || {};
-        return;
-      }
-      if (companyTotalActual) return;
-      const a = doc.data().actual || {};
-      fUriage += (a.gijutsu||[]).reduce((s,v)=>s+v,0) + (a.yakuzai||[]).reduce((s,v)=>s+v,0) + (a.chiryo||[]).reduce((s,v)=>s+v,0) + (a.uriage_other||[]).reduce((s,v)=>s+v,0);
-      fGenka += (a.genka_total||[]).reduce((s,v)=>s+v,0);
-      sgaItemIds.forEach(id => { fSga += (a[id]||[]).reduce((s,v)=>s+v,0); });
+      const data = doc.data() || {};
+      if (data.source === 'freee_company_total' || data.isCompanyTotal) return;
+      const summary = summarizeActualForKessan(data.actual || {});
+      totals.uriage += summary.uriage;
+      totals.genka += summary.genka;
+      totals.sga += summary.sga;
     });
-    if (companyTotalActual) {
-      const a = companyTotalActual;
-      fUriage = (a.gijutsu||[]).reduce((s,v)=>s+v,0) + (a.yakuzai||[]).reduce((s,v)=>s+v,0) + (a.chiryo||[]).reduce((s,v)=>s+v,0) + (a.uriage_other||[]).reduce((s,v)=>s+v,0);
-      fGenka = (a.genka_total||[]).reduce((s,v)=>s+v,0);
-      fSga = 0;
-      sgaItemIds.forEach(id => { fSga += (a[id]||[]).reduce((s,v)=>s+v,0); });
-    }
-  } catch(e) { console.log('Freee data load error:', e.message); }
-  kessanFreeeCache = { fy, uriage: fUriage, genka: fGenka, sga: fSga };
+    kessanFreeeCache = { fy, ...totals };
+  } catch(e) {
+    console.log('Freee data load error:', e.message);
+    kessanFreeeCache = { fy, uriage: 0, genka: 0, sga: 0 };
+  }
 }
 
 async function handleKessanPdf(input) {
@@ -3324,6 +3354,7 @@ async function handleKessanPdf(input) {
   label.style.background = '#f39c12';
   label.innerHTML = '⏳ AI読み取り中... <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
 
+  let extractedCount = 0;
   try {
     const arrayBuffer = await file.arrayBuffer();
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
@@ -3365,17 +3396,29 @@ JSONのみを返してください。説明不要。` }
     if (!jsonMatch) throw new Error('AI応答からJSONを抽出できませんでした');
     const extracted = JSON.parse(jsonMatch[0]);
     KESSAN_FIELDS.forEach(id => { kessanData[id] = parseInt(extracted[id]) || 0; });
-    const extractedCount = KESSAN_FIELDS.filter(id => Number.isFinite(parseInt(extracted[id])) && parseInt(extracted[id]) !== 0).length;
+    extractedCount = KESSAN_FIELDS.filter(id => Number.isFinite(parseInt(extracted[id])) && parseInt(extracted[id]) !== 0).length;
     // 自動保存
     label.style.background = '#3498db';
     label.innerHTML = '💾 保存中... <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
-    await saveKessanData(true);
-    label.style.background = '#2ecc71';
-    label.innerHTML = `✅ 読み取り完了（${extractedCount}件） <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">`;
+    try {
+      await saveKessanData(true);
+      label.style.background = '#2ecc71';
+      label.innerHTML = `✅ 読み取り完了・保存済み（${extractedCount}件） <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">`;
+    } catch (saveError) {
+      label.style.background = '#f39c12';
+      label.innerHTML = `⚠️ 読み取り完了・保存失敗（${extractedCount}件） <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">`;
+      alert('PDFは読み取れましたが保存に失敗しました: ' + saveError.message);
+    }
   } catch(e) {
-    label.style.background = '#e74c3c';
-    label.innerHTML = '❌ 読み取り失敗 <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
-    alert('PDF読み取りエラー: ' + e.message);
+    if (extractedCount > 0) {
+      label.style.background = '#f39c12';
+      label.innerHTML = `⚠️ 読み取り完了・後続処理失敗（${extractedCount}件） <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">`;
+      alert('PDFは読み取れましたが後続処理でエラーが発生しました: ' + e.message);
+    } else {
+      label.style.background = '#e74c3c';
+      label.innerHTML = '❌ 読み取り失敗 <input type="file" id="kessanPdfFile" accept=".pdf" style="display:none" onchange="handleKessanPdf(this)">';
+      alert('PDF読み取りエラー: ' + e.message);
+    }
   }
   label.style.pointerEvents = 'auto';
   renderKessanPL();
@@ -3424,7 +3467,7 @@ async function loadKessanData() {
     const snap = await db.collection('kessanPL').doc('FY'+fy).get();
     if (snap.exists) {
       const data = snap.data();
-      KESSAN_FIELDS.forEach(id => { kessanData[id] = data[id] || 0; });
+      kessanData = normalizeKessanData(data);
     } else { kessanData = {}; }
   } catch(e) { kessanData = {}; }
   // Freee取込データも該当年度で読み込む

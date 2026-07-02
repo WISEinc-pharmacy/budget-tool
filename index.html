@@ -886,10 +886,10 @@ function doPrint() {
   const to = document.getElementById('filterTo');
   const period = from.options[from.selectedIndex].text + ' 〜 ' + to.options[to.selectedIndex].text;
   const fy = document.getElementById('fiscalYear').value;
-  let meta = `タブ：${tabNames[tabId] || tabId}　｜　${deptLabel}　｜　${fy}年度　｜　期間：${period}`;
+  let meta = `タブ：${tabNames[tabId] || tabId}　｜　${deptLabel}　｜　${fyLabel(fy)} ${fyPeriod(fy)}　｜　期間：${period}`;
   if (tabId === 'yoy') {
     const cmpFY = document.getElementById('yoyYear').value;
-    meta += `　｜　比較年度：${cmpFY}年度`;
+    meta += `　｜　比較年度：${fyLabel(cmpFY)}`;
   }
   meta += `　｜　印刷日：${new Date().toLocaleDateString('ja-JP')}`;
   document.getElementById('printMeta').textContent = meta;
@@ -1254,6 +1254,17 @@ function selectBothYears() {
   renderCurrentTab();
 }
 
+// 期数・期間表記: 10期 = 2025年度（2025年2月〜2026年1月）→ 期数 = 年度 - 2015
+function fyTerm(fy) { return parseInt(fy) - 2015; }
+function fyPeriod(fy) {
+  fy = parseInt(fy);
+  const start = parseInt(document.getElementById('startMonth').value) || 2;
+  const endM = start === 1 ? 12 : start - 1;
+  const endY = start === 1 ? fy : fy + 1;
+  return `${fy}年${start}月〜${endY}年${endM}月`;
+}
+function fyLabel(fy) { return `${fy}年度（${fyTerm(fy)}期）`; }
+
 function updateFyButtons() {
   const fy = parseInt(getFiscalYear());
   const el = document.getElementById('fyButtons');
@@ -1266,12 +1277,13 @@ function updateFyButtons() {
   let html = '';
   for (let y = minY; y <= maxY; y++) {
     if (y === fy) {
-      html += `<button class="btn btn-secondary" onclick="resetFilter()" style="padding:3px 10px;font-size:11px;background:#1a5276;color:#fff">${y}年度</button>`;
+      html += `<button class="btn btn-secondary" onclick="resetFilter()" title="${fyPeriod(y)}" style="padding:3px 10px;font-size:11px;background:#1a5276;color:#fff">${y}年度(${fyTerm(y)}期)</button>`;
     } else {
-      html += `<button class="btn btn-secondary" onclick="switchFiscalYear(${y})" style="padding:3px 10px;font-size:11px">${y}年度</button>`;
+      html += `<button class="btn btn-secondary" onclick="switchFiscalYear(${y})" title="${fyPeriod(y)}" style="padding:3px 10px;font-size:11px">${y}年度(${fyTerm(y)}期)</button>`;
     }
   }
   html += `<button class="btn btn-secondary" onclick="selectBothYears()" style="padding:3px 10px;font-size:11px">全期間</button>`;
+  html += `<span style="margin-left:8px;font-size:11px;color:#555;font-weight:500">第${fyTerm(fy)}期＝${fyPeriod(fy)}</span>`;
   el.innerHTML = html;
 }
 
@@ -1510,7 +1522,7 @@ function updateYoyYearSelect() {
   el.innerHTML = '';
   for (let y = curFY - 3; y <= curFY + 1; y++) {
     if (y === curFY) continue;
-    el.innerHTML += `<option value="${y}" ${y === curFY - 1 ? 'selected' : ''}>${y}年度</option>`;
+    el.innerHTML += `<option value="${y}" ${y === curFY - 1 ? 'selected' : ''}>${fyLabel(y)}</option>`;
   }
 }
 
@@ -1815,21 +1827,21 @@ async function renderMidtermTable() {
   const closed = getClosedMonths(dataByYear[ys.base]);
   const closedCount = closed.filter(Boolean).length;
   document.getElementById('midtermInfo').textContent =
-    `${ys.base}年度着地予想 = 実績${closedCount}か月（技術料実績あり=確定月） + 予算${12 - closedCount}か月 ｜ タブを開くたびに最新の月次データから自動計算されます（保存値ではありません）`;
+    `${fyLabel(ys.base)}着地予想 = 実績${closedCount}か月（技術料実績あり=確定月） + 予算${12 - closedCount}か月 ｜ タブを開くたびに最新の月次データから自動計算されます（保存値ではありません）`;
 
   const canEdit = canEditMidterm();
 
   // 列定義（vec=科目別年間値、yoyBase=前年比の比較対象）
   const cols = [];
-  cols.push({ label: `${ys.prev}年度実績`, vec: midtermAnnualVec(dataByYear[ys.prev], 'actual'), yoyBase: null });
+  cols.push({ label: `${fyLabel(ys.prev)}実績`, vec: midtermAnnualVec(dataByYear[ys.prev], 'actual'), yoyBase: null });
   const prevActualVec = cols[0].vec;
-  cols.push({ label: `${ys.base}年度予算`, vec: midtermAnnualVec(dataByYear[ys.base], 'budget'), yoyBase: prevActualVec });
+  cols.push({ label: `${fyLabel(ys.base)}予算`, vec: midtermAnnualVec(dataByYear[ys.base], 'budget'), yoyBase: prevActualVec });
   const forecastVec = midtermAnnualVec(dataByYear[ys.base], 'forecast', closed);
-  cols.push({ label: `${ys.base}年度着地予想`, vec: forecastVec, yoyBase: prevActualVec, highlight: true });
+  cols.push({ label: `${fyLabel(ys.base)}着地予想`, vec: forecastVec, yoyBase: prevActualVec, highlight: true });
   let prevVec = forecastVec;
   ys.plans.forEach(fy => {
     const vec = midtermAnnualVec(dataByYear[fy], 'plan');
-    cols.push({ label: `${fy}年度計画`, vec, yoyBase: prevVec, planFY: fy });
+    cols.push({ label: `${fyLabel(fy)}計画`, vec, yoyBase: prevVec, planFY: fy });
     prevVec = vec;
   });
 
@@ -2037,7 +2049,7 @@ function openAssistModal(fy) {
   const ys = getMidtermYears();
   const baseLabel = fy - 1 === ys.base ? '着地予想' : (fy - 1 === ys.prev ? '実績' : '計画');
   const deptName = DEPTS.find(d => d.id === currentDeptId())?.name || '';
-  document.getElementById('assistFyLabel').textContent = `— ${deptName} ${fy}年度（ベース: ${fy - 1}年度${baseLabel}）`;
+  document.getElementById('assistFyLabel').textContent = `— ${deptName} ${fyLabel(fy)}（ベース: ${fyLabel(fy - 1)}${baseLabel}）`;
   // デフォルト値: 売上系110%、原価率・分配率はベース年の実態値
   document.getElementById('assistGijutsuPct').value = 110;
   document.getElementById('assistYakuzaiPct').value = 110;
@@ -3447,7 +3459,7 @@ function initKessanFYSelect() {
   const currentFY = parseInt(getFiscalYear());
   let html = '';
   for (let y = 2024; y <= currentFY; y++) {
-    html += `<option value="${y}" ${y===currentFY?'selected':''}>${y}年度</option>`;
+    html += `<option value="${y}" ${y===currentFY?'selected':''}>${fyLabel(y)}</option>`;
   }
   sel.innerHTML = html;
   kessanFYInitialized = true;

@@ -3202,6 +3202,8 @@ function switchTab(tab){
   const fyBtns = document.getElementById('fyButtons');
   if (fyBtns) fyBtns.style.display = isKessan ? 'none' : '';
   document.getElementById('deptBar').style.display = isKessan ? 'none' : '';
+  const deptLabel = document.querySelector('.current-dept-label');
+  if (deptLabel) deptLabel.style.display = isKessan ? 'none' : '';
   renderCurrentTab();
 }
 async function renderCurrentTab(){

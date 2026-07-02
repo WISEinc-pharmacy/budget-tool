@@ -460,13 +460,26 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <!-- Freee取込モーダル -->
 <div class="modal-overlay" id="freeeModal">
   <div class="modal" style="max-width:900px;max-height:85vh;overflow-y:auto">
-    <h2>Freee P/L CSV 一括取込</h2>
-    <p>Freee会計の「月次推移：損益計算書」CSVを部門ごとに読み込み、実績データに反映します。</p>
-    <p style="margin:8px 0;padding:8px 12px;background:#fff0f0;border:1px solid #e74c3c;border-radius:6px;color:#c0392b;font-weight:600;font-size:13px">⚠ Freee側の設定：「表示するタグ」→「品目」を選択し、<br>「部門ごとにデータを出力してください」にチェックを入れてからCSVエクスポートしてください</p>
-    <p style="margin:8px 0"><strong>CSVファイル（複数選択可）:</strong></p>
-    <input type="file" id="freeeFiles" accept=".csv" multiple style="margin-bottom:8px">
-    <div id="freeePreview" style="margin:8px 0"></div>
-    <div id="freeeResult"></div>
+    <h2>Freee取込</h2>
+    <div style="margin:12px 0;padding:12px;border:2px solid #8e44ad;border-radius:8px;background:#faf5ff">
+      <h3 style="margin:0 0 8px;color:#8e44ad">📡 freeeから月次取込（推奨）</h3>
+      <p style="margin:4px 0;font-size:13px">freee会計から選択月の部門別実績を直接取得して反映します。<strong>税理士との月次確認が終わった月</strong>を選んでください。入力途中の月は自動でブロックされます。既にデータがある月は上書き（洗い替え）します。</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <select id="freeeApiMonth" style="padding:6px 10px;font-size:14px"></select>
+        <button class="btn btn-import" id="btnFreeeApiExec" onclick="requestFreeeApiImport()">この月を取り込む</button>
+      </div>
+      <div id="freeeApiStatus" style="margin-top:10px"></div>
+    </div>
+    <hr style="margin:16px 0;border:none;border-top:1px solid #ddd">
+    <details>
+      <summary style="cursor:pointer;font-weight:600;padding:4px 0">📄 CSVファイルから取込（従来方式）</summary>
+      <p>Freee会計の「月次推移：損益計算書」CSVを部門ごとに読み込み、実績データに反映します。</p>
+      <p style="margin:8px 0;padding:8px 12px;background:#fff0f0;border:1px solid #e74c3c;border-radius:6px;color:#c0392b;font-weight:600;font-size:13px">⚠ Freee側の設定：「表示するタグ」→「品目」を選択し、<br>「部門ごとにデータを出力してください」にチェックを入れてからCSVエクスポートしてください</p>
+      <p style="margin:8px 0"><strong>CSVファイル（複数選択可）:</strong></p>
+      <input type="file" id="freeeFiles" accept=".csv" multiple style="margin-bottom:8px">
+      <div id="freeePreview" style="margin:8px 0"></div>
+      <div id="freeeResult"></div>
+    </details>
     <div class="btn-group">
       <button class="btn btn-secondary" onclick="closeFreeeModal()">閉じる</button>
       <button class="btn btn-import" onclick="doFreeeImport()" id="btnFreeeExec" disabled>取込実行</button>
@@ -2596,8 +2609,103 @@ function openFreeeModal() {
   btn.style.opacity = '';
   freeeParsedData = [];
   document.getElementById('freeeFiles').onchange = parseFreeeFiles;
+  // API取込セクションの初期化
+  populateFreeeApiMonths();
+  document.getElementById('freeeApiStatus').innerHTML = '';
+  document.getElementById('btnFreeeApiExec').disabled = false;
+  if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
 }
-function closeFreeeModal() { document.getElementById('freeeModal').classList.remove('show'); }
+function closeFreeeModal() {
+  document.getElementById('freeeModal').classList.remove('show');
+  if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
+}
+
+// === freee API月次取込 ===
+// 依頼をFirestore(freee_import_requests)に書込み、麗華基盤の常駐ワーカー
+// (AI_secretary_reika/freee_import_worker.mjs)がfreee APIから部門別×品目別P/Lを
+// 取得して budgetData の対象月を洗い替えする。結果はonSnapshotでここに反映される。
+let freeeApiUnsub = null;
+function populateFreeeApiMonths() {
+  const sel = document.getElementById('freeeApiMonth');
+  const now = new Date();
+  const opts = [];
+  for (let i = 1; i <= 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    opts.push(`<option value="${ym}">${d.getFullYear()}年${d.getMonth() + 1}月</option>`);
+  }
+  sel.innerHTML = opts.join('');
+}
+function freeeFyPosition(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return { fy: String(m >= 2 ? y : y - 1), idx: (m - 2 + 12) % 12 };
+}
+async function freeeMonthHasData(ym) {
+  const { fy, idx } = freeeFyPosition(ym);
+  for (const d of DEPTS) {
+    const snap = await db.collection('budgetData').doc(`FY${fy}_${d.id}`).get();
+    if (!snap.exists) continue;
+    const actual = snap.data().actual || {};
+    for (const arr of Object.values(actual)) {
+      if (Array.isArray(arr) && arr[idx]) return true;
+    }
+  }
+  return false;
+}
+async function requestFreeeApiImport() {
+  if (userRole !== 'admin' && userRole !== 'tax_advisor') { alert('管理者または税理士のみ使用できます'); return; }
+  const ym = document.getElementById('freeeApiMonth').value;
+  const btn = document.getElementById('btnFreeeApiExec');
+  const box = document.getElementById('freeeApiStatus');
+  btn.disabled = true;
+  try {
+    box.innerHTML = '🔍 既存データを確認中...';
+    if (await freeeMonthHasData(ym)) {
+      const [yy, mm] = ym.split('-');
+      if (!confirm(`${yy}年${Number(mm)}月には既に実績データがあります。freeeの内容で上書き（洗い替え）しますか？`)) {
+        box.innerHTML = ''; btn.disabled = false; return;
+      }
+    }
+    const ref = await db.collection('freee_import_requests').add({
+      yearMonth: ym,
+      requestedBy: (auth.currentUser && auth.currentUser.email) || 'unknown',
+      requestedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      status: 'pending',
+    });
+    if (freeeApiUnsub) freeeApiUnsub();
+    freeeApiUnsub = ref.onSnapshot((snap) => renderFreeeApiStatus(snap.data(), ym, btn, box));
+  } catch (e) {
+    box.innerHTML = `<div style="color:#c0392b">❌ 依頼の登録に失敗しました: ${e.message}</div>`;
+    btn.disabled = false;
+  }
+}
+async function renderFreeeApiStatus(data, ym, btn, box) {
+  if (!data) return;
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>');
+  if (data.status === 'pending') {
+    box.innerHTML = '⏳ 取込ワーカーの起動待ちです（最大5分）。この画面のまましばらくお待ちください...';
+  } else if (data.status === 'processing') {
+    box.innerHTML = '🔄 freeeから部門別データを取得・変換中です...';
+  } else if (data.status === 'blocked' || data.status === 'error' || data.status === 'expired') {
+    box.innerHTML = `<div style="padding:10px;background:#fff0f0;border:1px solid #e74c3c;border-radius:6px;color:#c0392b"><strong>⛔ 取込できませんでした</strong><br>${esc(data.blockReason)}</div>`;
+    btn.disabled = false;
+    if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
+  } else if (data.status === 'done') {
+    const r = data.result || {};
+    const nameOf = (id) => (DEPTS.find((d) => d.id === id) || {}).name || id;
+    const fmt = (n) => (n || 0).toLocaleString();
+    const td = 'padding:3px 8px;border:1px solid #ddd;text-align:right';
+    const rows = (r.summary || []).map((s) => `<tr><td style="padding:3px 8px;border:1px solid #ddd">${nameOf(s.deptId)}</td><td style="${td}">${fmt(s.sales)}</td><td style="${td}">${fmt(s.genka)}</td><td style="${td}">${fmt(s.sga)}</td><td style="${td}">${fmt(s.op)}</td></tr>`).join('');
+    const warn = (r.warnings || []).length ? `<div style="margin-top:6px;padding:8px;background:#fffbe6;border:1px solid #f39c12;border-radius:6px;font-size:12px">⚠ ${(r.warnings || []).map(esc).join('<br>⚠ ')}</div>` : '';
+    box.innerHTML = `<div style="padding:10px;background:#f0fff4;border:1px solid #27ae60;border-radius:6px"><strong>✅ ${ym} の取込が完了しました</strong>（全社売上 ${fmt(r.companySales)}円）<table style="margin-top:6px;font-size:12px;border-collapse:collapse"><tr><th style="${td}">部門</th><th style="${td}">売上</th><th style="${td}">原価</th><th style="${td}">販管費</th><th style="${td}">営業損益</th></tr>${rows}</table>${warn}</div>`;
+    btn.disabled = false;
+    if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
+    if (r.fiscalYear === String(currentFiscalYear)) {
+      await loadAllFromFirestore();
+      renderCurrentTab();
+    }
+  }
+}
 
 async function parseFreeeFiles() {
   const fileInput = document.getElementById('freeeFiles');

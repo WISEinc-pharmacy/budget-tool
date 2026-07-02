@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{email} {
+      allow read, write: if request.auth != null;
+    }
+    match /budgetData/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    match /budgetData/{doc}/versions/{version} {
+      allow read, write: if request.auth != null;
+    }
+    match /salesData/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    match /config/{doc} {
+      allow read: if request.auth != null;
+    }
+    match /salesDeleteQueue/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /exportLogs/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    match /kot_monthly/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    match /kot_summary/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    // freee API月次取込の依頼キュー（UI=Google認証ユーザーが作成、ワーカー=匿名認証が処理）
+    match /freee_import_requests/{doc} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

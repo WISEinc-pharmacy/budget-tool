@@ -641,7 +641,7 @@ const ITEMS = [
   { id: 'honbu', name: '本部経費（按分）', type: 'calc', level: 1, style: 'calc',
     calc: (m) => sum(m, ['honbu_yakuin','honbu_somu','naibu_ryuho']) },
   { id: 'honbu_yakuin', name: '・役員経費', type: 'input', level: 2, adminOnly: true },
-  { id: 'honbu_somu', name: '・総務経費', type: 'input', level: 2, adminOnly: true },
+  { id: 'honbu_somu', name: '・本部経費', type: 'input', level: 2, adminOnly: true },
   { id: 'naibu_ryuho', name: '・内部留保', type: 'input', level: 2, adminOnly: true },
   { id: 'sga_total', name: '販管費合計', type: 'calc', level: 0, style: 'subtotal',
     calc: (m) => val(m, 'sga_sub') + val(m, 'honbu') },
@@ -3072,14 +3072,14 @@ function parseFreeeCSV(text) {
   monthValues['kenshu'] = saiyokyoikuHasDetail ? kenshuTotal : saiyokyoikuTotal;
   monthValues['saiyo'] = saiyoTotal;
   monthValues['sga_other'] = sgaOtherAccum;
-  // 本部経費: L3で役員経費/総務経費を判定
+  // 本部経費: L3で役員経費/本部経費を判定
   const honbuL3sum = honbuYakuin.map((v,i) => v + honbuSomu[i]);
   const honbuHasDetail = honbuL3sum.some(v => v > 0);
   if (honbuHasDetail) {
     monthValues['honbu_yakuin'] = honbuYakuin;
     monthValues['honbu_somu'] = honbuSomu;
   } else {
-    // L3内訳なし → 全額をhonbu_somu（総務経費）に入れる（手動修正が必要な場合はUIで対応）
+    // L3内訳なし → 全額をhonbu_somu（本部経費）に入れる（手動修正が必要な場合はUIで対応）
     monthValues['honbu_yakuin'] = z();
     monthValues['honbu_somu'] = honbuRaw;
   }

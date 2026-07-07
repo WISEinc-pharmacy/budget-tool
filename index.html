@@ -393,6 +393,9 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <span id="salesFileName" style="color:#666;font-size:12px;"></span>
       <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
     </div>
+    <div style="margin-top:10px;padding:8px 12px;background:#fdedec;border:1px solid #e74c3c;border-radius:4px;color:#c0392b;font-size:13px;font-weight:600;">
+      ⚠️ PDFアップ後は、必ず目視で数値に間違いがないか確認してください（AIの読み取りは完全ではありません。給与・経営数値に反映されます）
+    </div>
   </div>
   <div style="display:flex;align-items:flex-start;min-height:400px;border-bottom:1px solid #e0e0e0;">
     <!-- 左カラム: 抽出結果（flex:1で半分） -->
@@ -972,7 +975,20 @@ function openHelpModal() {
       <li><strong>予実比較タブ</strong>：予算と実績を並べて表示し、<span style="color:#e74c3c">差異</span>（実績−予算）を確認できます。</li>
       <li><strong>年度比較タブ</strong>：当年度と過去年度の実績を比較します。上部のプルダウンで比較年度を選択してください。</li>
       <li><strong>中期計画タブ</strong>：前年度実績・当年度予算・当年度着地予想・3年先までの計画を年間単位で表示します。着地予想は「技術料実績が入った月（確定月）＝実績、未確定月＝予算」で自動計算されます。${canEdit ? '編集モードで計画値の入力、前年比%の一括適用、予算アシスト（技術料前年比・売上原価率・労働分配率などから全科目のたたき台を自動生成）、月次予算への展開ができます。' : ''}</li>
+      <li><strong>営業報告タブ</strong>：店舗の営業帳票PDFをアップロードし、AIが読み取った数値を確認・修正して提出します（下の「営業報告（PDF取込）の使い方」を参照）。</li>
     </ul></div>`;
+
+  // 4.5 営業報告（PDF取込）
+  if (canEdit) {
+    h += `<div class="help-section"><h3>営業報告（PDF取込）の使い方 <span class="help-tag editor-only">編集者以上</span></h3>
+      <ul>
+        <li>「<strong>営業報告</strong>」タブで、対象の<strong>月</strong>と<strong>店舗</strong>を選びます。</li>
+        <li>「<strong>PDF選択</strong>」から営業帳票PDFを選ぶと、AIが数値を自動で読み取ります。</li>
+        <li>右側にPDFプレビュー、左側にAIの抽出結果が並びます。<strong>PDF原本と抽出結果を必ず見比べ</strong>、間違いがあればセルをクリックして手で修正してください。</li>
+        <li>数値が正しいことを確認したら「<strong>提出する</strong>」を押します。データはGoogle Driveに保管され、経営報告の数値として取り込まれます。</li>
+      </ul>
+      <div class="help-tip" style="color:#c0392b;border-color:#e74c3c;background:#fdedec"><strong>⚠️ 提出前に必ず目視でダブルチェック</strong><br>AIの読み取りは完全ではありません。給与・経営判断に直結する数値のため、提出前に人の目で必ず確認してください。</div></div>`;
+  }
 
   // 5. 編集モード（editor/admin のみ）
   if (canEdit) {
@@ -3318,12 +3334,15 @@ function switchTab(tab){
   document.getElementById(`tab-${tab}`).classList.add('active');
   // 決算照合タブではツールバー・年度ボタン・部門バーを隠す
   const isKessan = tab === 'kessanCheck';
-  document.querySelector('.toolbar').style.display = isKessan ? 'none' : '';
+  // 営業報告タブは専用の月・店舗セレクタを使うため、共通ツールバー（表示期間）は非表示
+  document.querySelector('.toolbar').style.display = (isKessan || tab === 'sales') ? 'none' : '';
   const fyBtns = document.getElementById('fyButtons');
   if (fyBtns) fyBtns.style.display = isKessan ? 'none' : '';
-  document.getElementById('deptBar').style.display = isKessan ? 'none' : '';
+  // 営業報告タブも専用の店舗セレクタを使うため、共通の部門バーは非表示
+  const hideDept = isKessan || tab === 'sales';
+  document.getElementById('deptBar').style.display = hideDept ? 'none' : '';
   const deptLabel = document.querySelector('.current-dept-label');
-  if (deptLabel) deptLabel.style.display = isKessan ? 'none' : '';
+  if (deptLabel) deptLabel.style.display = hideDept ? 'none' : '';
   renderCurrentTab();
 }
 async function renderCurrentTab(){

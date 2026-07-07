@@ -390,6 +390,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <label class="btn btn-import" id="salesPdfLabel" style="cursor:pointer;">
         📄 PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">
       </label>
+      <a class="btn btn-secondary" href="https://wiseinc-pharmacy.github.io/pdf-merger/" target="_blank" rel="noopener" title="複数ページの結合・並べ替え・不要ページ削除ができます（別タブで開きます）">✂️ PDFを編集</a>
       <span id="salesFileName" style="color:#666;font-size:12px;"></span>
       <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
     </div>
@@ -986,6 +987,7 @@ function openHelpModal() {
         <li>「<strong>PDF選択</strong>」から営業帳票PDFを選ぶと、AIが数値を自動で読み取ります。</li>
         <li>右側にPDFプレビュー、左側にAIの抽出結果が並びます。<strong>PDF原本と抽出結果を必ず見比べ</strong>、間違いがあればセルをクリックして手で修正してください。</li>
         <li>数値が正しいことを確認したら「<strong>提出する</strong>」を押します。データはGoogle Driveに保管され、経営報告の数値として取り込まれます。</li>
+        <li>営業報告と詳細資料など<strong>複数枚のPDFがある場合</strong>は、「<strong>✂️ PDFを編集</strong>」ボタンでPDF編集ツールを開き、<strong>営業報告を1ページ目にして1つのPDFに結合</strong>してからアップロードしてください（結合したPDF全体がDriveに保管されます）。</li>
       </ul>
       <div class="help-tip" style="color:#c0392b;border-color:#e74c3c;background:#fdedec"><strong>⚠️ 提出前に必ず目視でダブルチェック</strong><br>AIの読み取りは完全ではありません。給与・経営判断に直結する数値のため、提出前に人の目で必ず確認してください。</div></div>`;
   }

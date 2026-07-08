@@ -1893,7 +1893,7 @@ async function renderMidtermTable() {
   cols.forEach(col => {
     const thCls = col.highlight ? 'mid-th mid-th-forecast' : (col.planFY ? 'mid-th mid-th-plan' : 'mid-th');
     let extra = '';
-    if (col.planFY && canEdit && !allMode) {
+    if (col.planFY && canEdit) {
       extra = `<div class="mid-th-tools">
         <button class="btn btn-secondary" onclick="openAssistModal(${col.planFY})">🧮 アシスト</button>
         前年比 <input type="number" id="bulkPct${col.planFY}" placeholder="120">%
@@ -2006,6 +2006,30 @@ async function saveMidtermDept(fy, deptId, includeBudget) {
 }
 
 // 前年比%を全科目に一括適用（基準: 翌年度は当年度着地予想、それ以降は前年計画）
+// 一括%/アシストの基準年間値。全体モード('all')は会社ベース（当年度=全部門着地予想・前年度=全部門実績・前年が計画年=全体自身の計画をチェーン）
+function midtermBaseAnnual(prevFY, itemId) {
+  const ys = getMidtermYears();
+  const deptId = currentDeptId();
+  const yd = midtermCache[prevFY];
+  if (!yd) return 0;
+  if (deptId === 'all') {
+    if (prevFY === ys.base || prevFY === ys.prev) {
+      let v = 0;
+      DEPTS.forEach(d => {
+        const st = yd[d.id]; if (!st) return;
+        v += (prevFY === ys.base) ? deptForecastAnnual(st, itemId) : sumMonths(st.actual[itemId]);
+      });
+      return v;
+    }
+    const allSt = yd['all'];
+    return allSt ? planAnnualOf(allSt, itemId) : 0;
+  }
+  const st = yd[deptId]; if (!st) return 0;
+  if (prevFY === ys.base) return deptForecastAnnual(st, itemId);
+  if (prevFY === ys.prev) return sumMonths(st.actual[itemId]);
+  return planAnnualOf(st, itemId);
+}
+
 function applyBulkPct(fy) {
   if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
   const pct = parseFloat(document.getElementById(`bulkPct${fy}`).value);
@@ -2014,14 +2038,11 @@ function applyBulkPct(fy) {
   const ys = getMidtermYears();
   const deptId = currentDeptId();
   const prevFY = fy - 1;
-  const prevData = midtermCache[prevFY];
-  const baseData = midtermCache[ys.base];
-  if (!prevData || !prevData[deptId] || !baseData) { alert('データ読込前です。少し待って再実行してください'); return; }
-  const prevSt = prevData[deptId];
+  if (!midtermCache[prevFY] || !midtermCache[ys.base]) { alert('データ読込前です。少し待って再実行してください'); return; }
   ITEMS.forEach(it => {
     if (it.type !== 'input' || it.actualOnly || !it.name) return;
-    // 基準値: 翌年度は当年度着地予想（部門ごと確定月）、それ以降は前年計画
-    const baseVal = (prevFY === ys.base) ? deptForecastAnnual(prevSt, it.id) : planAnnualOf(prevSt, it.id);
+    // 基準値: 翌年度は当年度着地予想（全体モードは全部門合計）、それ以降は前年計画
+    const baseVal = midtermBaseAnnual(prevFY, it.id);
     midtermCache[fy][deptId].annualInputs[it.id] = Math.round(baseVal * pct / 100);
   });
   scheduleMidtermSave(fy, deptId);
@@ -2033,7 +2054,7 @@ async function expandPlanToMonthly(fy) {
   if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
   const ys = getMidtermYears();
   const deptId = currentDeptId();
-  const deptName = DEPTS.find(d => d.id === deptId)?.name || deptId;
+  const deptName = deptId === 'all' ? '全体' : (DEPTS.find(d => d.id === deptId)?.name || deptId);
   if (!confirm(`「${deptName}」の${fy}年度計画を月次予算に展開しますか？\n配分パターンは${ys.base}年度予算の設定を引き継ぎます。\n（${fy}年度の既存の月次予算は上書きされます）`)) return;
   const st = midtermCache[fy] && midtermCache[fy][deptId];
   const baseSt = midtermCache[ys.base] && midtermCache[ys.base][deptId];
@@ -2073,20 +2094,10 @@ const ASSIST_LABOR_IDS = ['kyuryo','shoyo','hotei','gaicyu_fl']; // 分配率で
 
 // アシストのベース年間値: 前年が当年度なら着地予想、前年度なら実績、それ以外は計画値
 function getAssistBaseVec(fy) {
-  const ys = getMidtermYears();
-  const deptId = currentDeptId();
   const prevFY = fy - 1;
-  const yearData = midtermCache[prevFY];
-  if (!yearData || !yearData[deptId]) return null;
-  const st = yearData[deptId];
+  if (!midtermCache[prevFY]) return null;
   const v = {};
-  if (prevFY === ys.base) {
-    ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = deptForecastAnnual(st, it.id); }); // 部門ごと確定月の着地予想
-  } else if (prevFY === ys.prev) {
-    ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = sumMonths(st.actual[it.id]); });
-  } else {
-    ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = planAnnualOf(st, it.id); });
-  }
+  ITEMS.forEach(it => { if (it.type === 'input') v[it.id] = midtermBaseAnnual(prevFY, it.id); }); // 全体モードは会社ベース（全部門合計）
   ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) v[it.id] = it.calc(v); });
   return v;
 }
@@ -2098,7 +2109,7 @@ function openAssistModal(fy) {
   assistFY = fy;
   const ys = getMidtermYears();
   const baseLabel = fy - 1 === ys.base ? '着地予想' : (fy - 1 === ys.prev ? '実績' : '計画');
-  const deptName = DEPTS.find(d => d.id === currentDeptId())?.name || '';
+  const deptName = currentDeptId() === 'all' ? '全体' : (DEPTS.find(d => d.id === currentDeptId())?.name || '');
   document.getElementById('assistFyLabel').textContent = `— ${deptName} ${fyLabel(fy)}（ベース: ${fyLabel(fy - 1)}${baseLabel}）`;
   // デフォルト値: 売上系110%、原価率・分配率はベース年の実態値
   document.getElementById('assistGijutsuPct').value = 110;

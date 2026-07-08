@@ -1113,6 +1113,11 @@ function renderDeptBar() {
       const sel = d.id === curId;
       html += `<label class="${sel ? 'checked' : ''}"><input type="radio" name="deptRadio" ${sel ? 'checked' : ''} onchange="selectSingleDept('${d.id}')"> ${d.name}</label>`;
     });
+    // 中期計画タブのみ「全体」入力先を選べる（全部門合計と突き合わせて差分を0に調整）
+    if (currentTab === 'midterm') {
+      const selAll = curId === 'all';
+      html += `<label class="${selAll ? 'checked' : ''}" style="margin-left:8px;border-left:2px solid #6c3483;padding-left:10px"><input type="radio" name="deptRadio" ${selAll ? 'checked' : ''} onchange="selectSingleDept('all')"> 🌐 全体</label>`;
+    }
   } else {
     // 閲覧モード: チェックボックス（複数選択可）
     visibleDepts.forEach(d => {
@@ -1122,7 +1127,7 @@ function renderDeptBar() {
   }
 
   const count = selectedDepts.length;
-  const selectedNames = selectedDepts.map(id => DEPTS.find(d => d.id === id)?.name).filter(Boolean);
+  const selectedNames = selectedDepts.map(id => id === 'all' ? '全体' : DEPTS.find(d => d.id === id)?.name).filter(Boolean);
   let deptLabel;
   if (count === 1) {
     deptLabel = '部門：' + selectedNames[0];
@@ -1709,7 +1714,8 @@ function sumMonths(arr) { return (arr || []).reduce((s, v) => s + (v || 0), 0); 
 async function loadMidtermYear(fy) {
   if (midtermCache[fy]) return midtermCache[fy];
   const result = {};
-  await Promise.all(DEPTS.map(async d => {
+  // DEPTS に加えて「全体」(id:'all') も読み込む。全体=会社の中期計画をトップダウン入力する先（FY{年}_all）
+  await Promise.all([...DEPTS, { id: 'all' }].map(async d => {
     const store = { budget: {}, actual: {}, annualInputs: {}, distMethod: {} };
     ITEMS.forEach(it => {
       store.budget[it.id] = new Array(12).fill(0);
@@ -1790,12 +1796,13 @@ function planAnnualOf(st, itemId) {
 }
 
 // 選択部門合計の年間値ベクトル。mode: 'actual'|'budget'|'forecast'|'plan'
-function midtermAnnualVec(yearData, mode, closed) {
+function midtermAnnualVec(yearData, mode, closed, deptIds) {
+  const ids = deptIds || selectedDepts;
   const vec = {};
   ITEMS.forEach(it => {
     if (it.type !== 'input') return;
     let v = 0;
-    selectedDepts.forEach(deptId => {
+    ids.forEach(deptId => {
       const st = yearData[deptId];
       if (!st) return;
       if (mode === 'actual') v += sumMonths(st.actual[it.id]);
@@ -1861,18 +1868,24 @@ async function renderMidtermTable() {
     `${fyLabel(ys.base)}着地予想 = 実績${closedCount}か月（技術料実績あり=確定月） + 予算${12 - closedCount}か月 ｜ タブを開くたびに最新の月次データから自動計算されます（保存値ではありません）`;
 
   const canEdit = canEditMidterm();
+  // 「全体」モード: 全体入力(FY{年}_all)を各部門の積み上げ合計と突き合わせ、差分列を表示（2026-07-08 山内さん指示）
+  const allMode = currentDeptId() === 'all';
+  const allDeptIds = DEPTS.map(d => d.id);
+  const histIds = allMode ? allDeptIds : undefined; // 全体モードの実績/予算/着地予想は全部門合計を表示
 
   // 列定義（vec=科目別年間値、yoyBase=前年比の比較対象）
   const cols = [];
-  cols.push({ label: `${fyLabel(ys.prev)}実績`, vec: midtermAnnualVec(dataByYear[ys.prev], 'actual'), yoyBase: null });
+  cols.push({ label: `${fyLabel(ys.prev)}実績`, vec: midtermAnnualVec(dataByYear[ys.prev], 'actual', null, histIds), yoyBase: null });
   const prevActualVec = cols[0].vec;
-  cols.push({ label: `${fyLabel(ys.base)}予算`, vec: midtermAnnualVec(dataByYear[ys.base], 'budget'), yoyBase: prevActualVec });
-  const forecastVec = midtermAnnualVec(dataByYear[ys.base], 'forecast', closed);
+  cols.push({ label: `${fyLabel(ys.base)}予算`, vec: midtermAnnualVec(dataByYear[ys.base], 'budget', null, histIds), yoyBase: prevActualVec });
+  const forecastVec = midtermAnnualVec(dataByYear[ys.base], 'forecast', closed, histIds);
   cols.push({ label: `${fyLabel(ys.base)}着地予想`, vec: forecastVec, yoyBase: prevActualVec, highlight: true });
   let prevVec = forecastVec;
   ys.plans.forEach(fy => {
-    const vec = midtermAnnualVec(dataByYear[fy], 'plan');
-    cols.push({ label: `${fyLabel(fy)}計画`, vec, yoyBase: prevVec, planFY: fy });
+    const vec = midtermAnnualVec(dataByYear[fy], 'plan', null, allMode ? ['all'] : undefined);
+    const col = { label: `${fyLabel(fy)}計画`, vec, yoyBase: prevVec, planFY: fy };
+    if (allMode) col.sumVec = midtermAnnualVec(dataByYear[fy], 'plan', null, allDeptIds); // 各部門の積み上げ合計
+    cols.push(col);
     prevVec = vec;
   });
 
@@ -1880,7 +1893,7 @@ async function renderMidtermTable() {
   cols.forEach(col => {
     const thCls = col.highlight ? 'mid-th mid-th-forecast' : (col.planFY ? 'mid-th mid-th-plan' : 'mid-th');
     let extra = '';
-    if (col.planFY && canEdit) {
+    if (col.planFY && canEdit && !allMode) {
       extra = `<div class="mid-th-tools">
         <button class="btn btn-secondary" onclick="openAssistModal(${col.planFY})">🧮 アシスト</button>
         前年比 <input type="number" id="bulkPct${col.planFY}" placeholder="120">%
@@ -1890,6 +1903,7 @@ async function renderMidtermTable() {
     }
     html += `<th class="${thCls}" style="min-width:130px">${col.label}${extra}</th>`;
     if (col.yoyBase) html += `<th class="mid-th mid-th-yoy">前年比</th>`;
+    if (col.sumVec) html += `<th class="mid-th" style="background:#6c3483;min-width:96px">差分<br><span style="font-size:9px;font-weight:400">各店舗計−全体</span></th>`;
   });
   html += '</tr></thead><tbody>';
 
@@ -1900,7 +1914,7 @@ async function renderMidtermTable() {
     const tdCls = col => col.highlight ? 'mid-td-forecast' : (col.planFY ? 'mid-td-plan' : '');
     if (it.type === 'header') {
       html += `<tr class="${getRowClass(it)}"><td>${it.name}</td>`;
-      cols.forEach(col => { html += `<td class="${tdCls(col)}"></td>`; if (col.yoyBase) html += '<td class="mid-td-yoy"></td>'; });
+      cols.forEach(col => { html += `<td class="${tdCls(col)}"></td>`; if (col.yoyBase) html += '<td class="mid-td-yoy"></td>'; if (col.sumVec) html += '<td></td>'; });
       html += '</tr>';
       return;
     }
@@ -1909,6 +1923,7 @@ async function renderMidtermTable() {
       cols.forEach(col => {
         html += `<td class="${tdCls(col)}" style="text-align:right">${fmtPct(it.numerator(col.vec), it.denominator(col.vec))}</td>`;
         if (col.yoyBase) html += '<td class="mid-td-yoy"></td>';
+        if (col.sumVec) html += '<td></td>';
       });
       html += '</tr>';
       return;
@@ -1927,6 +1942,10 @@ async function renderMidtermTable() {
       if (col.yoyBase) {
         const p = col.yoyBase[it.id] || 0;
         html += `<td class="mid-td-yoy" style="text-align:right">${fmtYoy(v, p)}</td>`;
+      }
+      if (col.sumVec) {
+        const diff = (col.sumVec[it.id] || 0) - (col.vec[it.id] || 0);
+        html += `<td style="text-align:right;font-weight:600;color:${diff === 0 ? '#1e8449' : '#c0392b'}">${diff === 0 ? '0' : fmt(diff, isCalc)}</td>`;
       }
     });
     html += '</tr>';
@@ -3345,6 +3364,9 @@ function switchTab(tab){
   document.getElementById('deptBar').style.display = hideDept ? 'none' : '';
   const deptLabel = document.querySelector('.current-dept-label');
   if (deptLabel) deptLabel.style.display = hideDept ? 'none' : '';
+  // 「全体」は中期計画タブ専用。他タブへ移るときは実部門へ戻す（budget/actualに全体データは無い）
+  if (tab !== 'midterm' && selectedDepts[0] === 'all') selectedDepts = [getVisibleDepts()[0].id];
+  renderDeptBar();
   renderCurrentTab();
 }
 async function renderCurrentTab(){

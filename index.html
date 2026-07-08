@@ -3624,6 +3624,8 @@ const SALES_ITEMS = [
   { id: 'visitCount', name: '受付回数', unit: '回' },
   { id: 'totalInsurance', name: '保険合計', unit: '円' },
   { id: 'techFee', name: '技術料合計', unit: '円' },
+  { id: 'dispensingTechFee', name: '調剤技術料', unit: '円', affectsTech: true },
+  { id: 'pharmacyMgmtFee', name: '薬学管理料', unit: '円', affectsTech: true },
   { id: 'drugFee', name: '薬剤料', unit: '円' },
   { id: 'basicFee', name: '調剤基本料', unit: '点' },
   { id: 'genericCount', name: '後発薬使用回数', unit: '回' },
@@ -3722,7 +3724,9 @@ async function handleSalesPdf(input) {
   "rxCount": レセプト件数（件、整数）,
   "visitCount": 受付回数（回、整数）,
   "totalInsurance": 保険合計（円単位のフル整数。例: 26,061,200円なら26061200）,
-  "techFee": 技術料合計（円単位のフル整数。「技術料」「技術料合計」欄の金額）,
+  "techFee": 技術料合計（円単位のフル整数。「技術料」「技術料合計」欄の金額。※足立店のように「技術料」欄が無いPDFではnull。その場合はシステムが調剤技術料+薬学管理料で自動計算する）,
+  "dispensingTechFee": 調剤技術料（円単位のフル整数。「調剤技術料」欄の金額。欄が無ければnull）,
+  "pharmacyMgmtFee": 薬学管理料（円単位のフル整数。「薬学管理料」欄の金額。欄が無ければnull）,
   "drugFee": 薬剤料合計（円単位のフル整数。「薬剤料」「薬剤料合計」欄の金額）,
   "basicFee": 調剤基本料（点数単位の整数。例: 7,500点なら7500）,
   "genericCount": 後発薬使用回数（回、整数）,
@@ -3770,6 +3774,8 @@ JSONのみを返してください。説明不要。` }
       if (val !== null && val !== undefined) salesExtractedData[key] = parseInt(val);
     }
 
+    // 技術料の自動演算（足立店など「技術料」欄が無いPDF: 調剤技術料+薬学管理料）
+    computeTechFee(salesExtractedData);
     // 技術料/回を計算
     if (salesExtractedData.techFee && salesExtractedData.visitCount) {
       salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
@@ -3850,6 +3856,16 @@ function extractSalesValues(text) {
     /技[術衍]料\s*\n?\s*([0-9,.]+)/
   );
 
+  // 調剤技術料・薬学管理料（足立店など「技術料」欄が無いPDF用）
+  salesExtractedData.dispensingTechFee = num(
+    /調[剤劑]技[術衍]料\s+([0-9,.]+)\s*[円内PIF]\s*[\d.]+\s*%/,
+    /調[剤劑]技[術衍]料\s*\n?\s*([0-9,.]+)/
+  );
+  salesExtractedData.pharmacyMgmtFee = num(
+    /薬学管理料\s+([0-9,.]+)\s*[円内PIF]\s*[\d.]+\s*%/,
+    /薬学管理料\s*\n?\s*([0-9,.]+)/
+  );
+
   // 薬剤料（OCRで「葉剤/萊剤/藥剤」になることも）
   salesExtractedData.drugFee = num(
     /[薬葉萊藥][剤劑]料\s+([0-9,.]+)\s*[円内PIF]\s*[\d.]+\s*%/,
@@ -3867,6 +3883,8 @@ function extractSalesValues(text) {
     /医療機関[数敷]\s*([0-9,]+)/
   );
 
+  // 技術料の自動演算（足立店など）
+  computeTechFee(salesExtractedData);
   // 技術料/回を計算
   if (salesExtractedData.techFee && salesExtractedData.visitCount) {
     salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
@@ -3874,6 +3892,41 @@ function extractSalesValues(text) {
 
   const hasAny = Object.values(salesExtractedData).some(v => v !== null && v !== undefined);
   renderSalesExtracted(hasAny);
+}
+
+// 技術料の自動演算: 調剤技術料と薬学管理料が両方あれば 技術料 = その合計（足立店対応）
+// 他店は技術料を直接読み取り、調剤技術料・薬学管理料は空欄のまま → techFeeは変更しない
+function computeTechFee(data) {
+  const d = data.dispensingTechFee, p = data.pharmacyMgmtFee;
+  if (d != null && d !== '' && p != null && p !== '') {
+    data.techFee = parseInt(d) + parseInt(p);
+  }
+  return data;
+}
+
+// 表の編集時: 調剤技術料/薬学管理料を編集したら技術料を再計算して反映
+function recalcSalesTech() {
+  const get = id => {
+    const el = document.getElementById('sales_' + id);
+    if (!el) return null;
+    const raw = (el.dataset.raw || el.value || '').replace(/,/g, '');
+    return raw ? parseInt(raw) : null;
+  };
+  const d = get('dispensingTechFee'), p = get('pharmacyMgmtFee');
+  const techEl = document.getElementById('sales_techFee');
+  if (d != null && p != null && techEl) {
+    const sum = d + p;
+    techEl.dataset.raw = String(sum);
+    techEl.value = sum.toLocaleString();
+  }
+  // 技術料/回も再計算
+  const visit = get('visitCount'), techNow = get('techFee');
+  const tpvEl = document.getElementById('sales_techPerVisit');
+  if (tpvEl && techNow && visit) {
+    const tpv = Math.round(techNow / visit);
+    tpvEl.dataset.raw = String(tpv);
+    tpvEl.value = tpv.toLocaleString();
+  }
 }
 
 function renderSalesExtracted(hasValues) {
@@ -3891,7 +3944,7 @@ function renderSalesExtracted(hasValues) {
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     html += `<tr style="background:${bgColor}">
       <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${item.name} <span style="color:#999;font-size:17px;">${item.unit}</span></td>
-      <td style="padding:4px 6px;"><input type="text" id="sales_${item.id}" value="${val!=null?val.toLocaleString():''}" data-raw="${val||''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''} onfocus="this.value=this.dataset.raw" onblur="this.dataset.raw=this.value.replace(/,/g,'');this.value=this.dataset.raw?parseInt(this.dataset.raw).toLocaleString():''"></td>
+      <td style="padding:4px 6px;"><input type="text" id="sales_${item.id}" value="${val!=null?val.toLocaleString():''}" data-raw="${val||''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''} onfocus="this.value=this.dataset.raw" onblur="this.dataset.raw=this.value.replace(/,/g,'');this.value=this.dataset.raw?parseInt(this.dataset.raw).toLocaleString():''${item.affectsTech?';recalcSalesTech()':''}"></td>
     </tr>`;
   });
 
@@ -3919,6 +3972,8 @@ async function submitSalesData() {
     if (rawVal) values[item.id] = parseInt(rawVal);
   });
 
+  // 技術料の自動演算（足立店など）: 調剤技術料+薬学管理料が揃えば技術料を確定
+  computeTechFee(values);
   if (values.techFee && values.visitCount) {
     values.techPerVisit = Math.round(values.techFee / values.visitCount);
   }

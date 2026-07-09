@@ -1998,7 +1998,7 @@ async function renderMidtermTable() {
     if (col.planFY && canEdit) {
       extra = `<div class="mid-th-tools">
         <button class="btn btn-secondary" onclick="openAssistModal(${col.planFY})">🧮 アシスト</button>
-        前年比 <input type="number" id="bulkPct${col.planFY}" placeholder="120">%
+        前年比 <input type="number" id="bulkPct${col.planFY}" value="120" placeholder="120">%
         <button class="btn btn-secondary" onclick="applyBulkPct(${col.planFY})">一括</button>
         <button class="btn btn-primary" onclick="expandPlanToMonthly(${col.planFY})">月次へ展開</button>
       </div>`;

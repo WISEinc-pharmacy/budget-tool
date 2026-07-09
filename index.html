@@ -3773,6 +3773,135 @@ const SALES_ITEMS = [
   { id: 'techPerVisit', name: '技術料/回', unit: '円', calc: true },
 ];
 
+// ===== P1: レセコン別抽出プロファイル =====
+// 設計書: design_sales_rececon_profiles_2026-07-08.md §2.2
+// fields の key = 統一キー(canonical), label = そのレセコンの帳票名称
+// derive: 他キーから計算するフィールド(抽出不要・computeTechFeeで処理)
+// group: 'main'=主要指標, 'santeisuu'=算定件数(コンクール用)
+const RECEIPT_PROFILES = {
+  elysia: {
+    id: 'elysia',
+    name: 'シグマ エリシア',
+    reportType: '調剤報酬統計表(縦版)',
+    fields: {
+      // --- main metrics ---
+      techFee:            { label: '技術料合計', unit: '円', group: 'main', derive: 'dispensingTechFee + pharmacyMgmtFee' },
+      dispensingTechFee:  { label: '調剤技術料', unit: '円', group: 'main', affectsTech: true },
+      pharmacyMgmtFee:    { label: '薬学管理料', unit: '円', group: 'main', affectsTech: true },
+      totalInsurance:     { label: '総保険合計', unit: '円', group: 'main' },
+      visitCount:         { label: '処方箋受付回数', unit: '回', group: 'main' },
+      rxCount:            { label: '処方箋受付枚数', unit: '枚', group: 'main' },
+      basicFee:           { label: '調剤基本料', unit: '点', group: 'main' },
+      genericCount:       { label: '後発薬使用回数（件数換算）', unit: '回', group: 'main', note: '後発調剤率%のみ記載の場合は別途換算' },
+      drugFee:            { label: '薬剤料', unit: '円', group: 'main' },
+      medicalInstitutions:{ label: '医療機関数（別途確認要）', unit: '件', group: 'main', note: '帳票未掲載・別途確認' },
+      techPerVisit:       { label: '技術料/回', unit: '円', group: 'main', calc: true },
+      // --- 算定件数（コンクール用・単位=件） ---
+      san_zaitaku_houmon_tanitsu: { label: '在宅患者訪問薬剤管理指導料(単一１人)', unit: '件', group: 'santeisuu' },
+      san_zaitaku_houmon_ihoka:   { label: '在宅患者訪問薬剤管理指導料(１人以外)', unit: '件', group: 'santeisuu' },
+      san_kinkyu_houmon1:         { label: '在宅患者緊急訪問薬剤管理指導料1', unit: '件', group: 'santeisuu' },
+      san_kinkyu_houmon2:         { label: '在宅患者緊急訪問薬剤管理指導料2', unit: '件', group: 'santeisuu' },
+      san_kinkyu_kyodo:           { label: '在宅患者緊急時等共同服薬指導料', unit: '件', group: 'santeisuu' },
+      san_zaitaku_online:         { label: '在宅患者オンライン薬剤管理指導料', unit: '件', group: 'santeisuu' },
+      san_kinkyu_online:          { label: '在宅患者緊急オンライン薬剤管理指導料', unit: '件', group: 'santeisuu' },
+      san_kyotaku_tanitsu:        { label: '居宅療養管理指導費(単一1人)', unit: '件', group: 'santeisuu' },
+      san_kyotaku_ihoka:          { label: '居宅療養管理指導費(1人以外)', unit: '件', group: 'santeisuu' },
+      san_kyotaku_online:         { label: '居宅療養管理指導費(オンライン)', unit: '件', group: 'santeisuu' },
+      san_shoni_tokutei:          { label: '小児特定加算(在宅)', unit: '件', group: 'santeisuu' },
+      san_mayaku_jizoku:          { label: '在宅患者医療用麻薬持続注射療法加算', unit: '件', group: 'santeisuu' },
+      san_chushin_joumyaku:       { label: '在宅中心静脈栄養法加算', unit: '件', group: 'santeisuu' },
+      san_boushi_kanri:           { label: '在宅患者防止管理料', unit: '件', group: 'santeisuu' },
+      san_taiin_kyodo:            { label: '退院時共同指導料', unit: '件', group: 'santeisuu' },
+      san_ikou_shoki:             { label: '在宅移行初期管理料', unit: '件', group: 'santeisuu' },
+      san_gairaifukuyaku2:        { label: '外来服薬支援料2', unit: '件', group: 'santeisuu' },
+      san_fukuyakuchousei1:       { label: '服用薬剤調整支援料1', unit: '件', group: 'santeisuu' },
+      san_keikan_toyaku:          { label: '経管投薬支援料', unit: '件', group: 'santeisuu' },
+    }
+  },
+  pharmy: {
+    id: 'pharmy',
+    name: 'モイネット ファーミー',
+    reportType: '日計表（調剤種別合計）',
+    fields: {
+      // --- main metrics (全項目 Gemini 抽出済み・正常稼働確認済み) ---
+      rxCount:            { label: 'レセプト件数', unit: '件', group: 'main' },
+      visitCount:         { label: '受付回数', unit: '回', group: 'main' },
+      totalInsurance:     { label: '保険合計', unit: '円', group: 'main' },
+      techFee:            { label: '技術料', unit: '円', group: 'main', note: '直接行あり・計算不要' },
+      dispensingTechFee:  { label: '調剤技術料', unit: '円', group: 'main', affectsTech: false, note: 'pharmy: techFee直接読取のため合算不要' },
+      pharmacyMgmtFee:    { label: '薬学管理料', unit: '円', group: 'main', affectsTech: false },
+      drugFee:            { label: '薬剤料', unit: '円', group: 'main' },
+      basicFee:           { label: '調剤基本料', unit: '点', group: 'main' },
+      genericCount:       { label: '後発薬使用回数', unit: '回', group: 'main' },
+      medicalInstitutions:{ label: '医療機関数', unit: '件', group: 'main' },
+      techPerVisit:       { label: '技術料/回', unit: '円', group: 'main', calc: true },
+      // --- 算定件数（コンクール用）--- ⚠️ 日計表は金額のみ・件数取得不可
+      // pharmy の日計表には件数列が無い。金額として格納する（キー末尾_kin）
+      san_zaitaku_houmon_A_kin: { label: '在宅(介護)訪問管理指導Ａ', unit: '円', group: 'santeisuu', kinOnly: true },
+      san_zaitaku_houmon_B_kin: { label: '在宅(介護)訪問管理指導Ｂ', unit: '円', group: 'santeisuu', kinOnly: true },
+      san_zaitaku_houmon_C_kin: { label: '在宅(介護)訪問管理指導Ｃ', unit: '円', group: 'santeisuu', kinOnly: true },
+      san_kinkyu_houmon1_kin:   { label: '在宅患者緊急訪問管理指導料１', unit: '円', group: 'santeisuu', kinOnly: true },
+      san_kinkyu_houmon2_kin:   { label: '在宅患者緊急訪問管理指導料２', unit: '円', group: 'santeisuu', kinOnly: true },
+      san_kinkyu_kyodo_kin:     { label: '在宅患者緊急時等共同指導料', unit: '円', group: 'santeisuu', kinOnly: true },
+      san_taiin_kyodo_kin:      { label: '退院時共同指導料', unit: '円', group: 'santeisuu', kinOnly: true },
+      san_ikou_shoki_kin:       { label: '在宅移行初期管理料', unit: '円', group: 'santeisuu', kinOnly: true },
+    }
+  },
+  pharnes: {
+    // TODO: ウィーメックス pharnes V-EX (ながれやま) 帳票PDF入手後に実装
+    // 現状スタブ: STORE_PROFILEのマッピングのみ・fieldsは空
+    id: 'pharnes',
+    name: 'ウィーメックス pharnes V-EX',
+    reportType: '(帳票種別未確定)',
+    fields: {}  // TODO: PDF入手後に §2.2 形式で追記
+  },
+  pharmaseed: {
+    // TODO: ウィーメックス pharma-Seed EX-LSA (アイ調剤) 帳票PDF入手後に実装
+    // 現状スタブ: STORE_PROFILEのマッピングのみ・fieldsは空
+    id: 'pharmaseed',
+    name: 'ウィーメックス pharma-Seed EX-LSA',
+    reportType: '(帳票種別未確定)',
+    fields: {}  // TODO: PDF入手後に §2.2 形式で追記
+  }
+};
+
+// deptId → profileId マッピング (§1 レセコンマスタ)
+// 未登録のdeptId(越谷koshigaya・清瀬kiyose等)はnullを返す → 汎用フォールバック
+const STORE_PROFILE = {
+  adachi:     'elysia',
+  kashiwa:    'pharmy',
+  sakuradai:  'pharmy',
+  abiko:      'pharmy',
+  nagareyama: 'pharnes',
+  ai_chozai:  'pharmaseed',
+  // koshigaya・kiyose: レセコン未定のため意図的に未登録（汎用フォールバック）
+};
+
+/** deptIdからprofileを返す。未登録またはfieldsが空ならnull（汎用フォールバック） */
+function getProfileForDept(deptId) {
+  const profileId = STORE_PROFILE[deptId];
+  if (!profileId) return null;
+  const profile = RECEIPT_PROFILES[profileId];
+  if (!profile || Object.keys(profile.fields).length === 0) return null;
+  return profile;
+}
+
+/** profileのmainグループのfield一覧を返す（統一キー: elysia=調剤技術料+薬学管理料, pharmy=技術料直接） */
+function getMainFields(profile) {
+  if (!profile) return null;
+  return Object.entries(profile.fields)
+    .filter(([, f]) => f.group === 'main')
+    .map(([key, f]) => ({ id: key, ...f }));
+}
+
+/** profileのsanteisuuグループのfield一覧を返す */
+function getSanteiFields(profile) {
+  if (!profile) return null;
+  return Object.entries(profile.fields)
+    .filter(([, f]) => f.group === 'santeisuu')
+    .map(([key, f]) => ({ id: key, ...f }));
+}
+
 let salesExtractedData = {};
 let salesPdfArrayBuffer = null; // PDF読み取り時に保持
 let _salesPdfViewerReady = false;  // pdfviewer.html のロード完了フラグ
@@ -3821,6 +3950,79 @@ function getGeminiUrl(key, model) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 }
 
+/**
+ * P2: プロファイル駆動Geminiプロンプトを生成する。
+ * profile が null の場合は従来の汎用プロンプトを返す（フォールバック）。
+ */
+function buildGeminiPrompt(profile) {
+  if (!profile || Object.keys(profile.fields).length === 0) {
+    // 汎用フォールバック: 従来と同じプロンプト
+    return `この調剤薬局の保険合計PDFから、以下の数値を正確に抽出してJSON形式で返してください。
+
+【重要ルール】
+- 数値のみ（カンマなし整数）で返してください
+- 金額（円）は必ず「円単位のフル金額」で返してください。PDFに「万円」表記がある場合は×10000して円に変換してください（例: 2,606万円 → 26060000、26,061,200円 → 26061200）
+- 調剤基本料のみ「点」単位の整数で返してください（円換算不要）
+- 「小計」ではなく「合計」行の値を取ること
+- PDFの表のヘッダー行と対応する数値セルを正確に対応させること
+- 見つからない場合はnullにしてください
+
+{
+  "rxCount": レセプト件数（件、整数）,
+  "visitCount": 受付回数（回、整数）,
+  "totalInsurance": 保険合計（円単位のフル整数。例: 26,061,200円なら26061200）,
+  "techFee": 技術料合計（円単位のフル整数。「技術料」「技術料合計」欄の金額。※足立店のように「技術料」欄が無いPDFではnull。その場合はシステムが調剤技術料+薬学管理料で自動計算する）,
+  "dispensingTechFee": 調剤技術料（円単位のフル整数。「調剤技術料」欄の金額。欄が無ければnull）,
+  "pharmacyMgmtFee": 薬学管理料（円単位のフル整数。「薬学管理料」欄の金額。欄が無ければnull）,
+  "drugFee": 薬剤料合計（円単位のフル整数。「薬剤料」「薬剤料合計」欄の金額）,
+  "basicFee": 調剤基本料（点数単位の整数。例: 7,500点なら7500）,
+  "genericCount": 後発薬使用回数（回、整数）,
+  "medicalInstitutions": 医療機関数（件、整数）
+}
+
+JSONのみを返してください。説明不要。`;
+  }
+
+  // プロファイル駆動プロンプト: fieldsのlabelを帳票名称として指示する
+  const mainFields = getMainFields(profile).filter(f => !f.calc && !f.derive);
+  const santeiFields = getSanteiFields(profile);
+
+  let fieldDesc = '';
+  mainFields.forEach(f => {
+    const unitNote = f.unit === '点' ? '点数単位の整数' : '円単位のフル整数';
+    const note = f.note ? ` (${f.note})` : '';
+    fieldDesc += `  "${f.id}": 「${f.label}」の値（${unitNote}${note}。見つからなければnull）,\n`;
+  });
+
+  let santeiDesc = '';
+  if (santeiFields && santeiFields.length > 0) {
+    const allKinOnly = santeiFields.every(f => f.kinOnly);
+    const unitNote = allKinOnly ? '円単位のフル整数（件数欄なし・金額欄のみ）' : '整数（件）';
+    santeiFields.forEach(f => {
+      santeiDesc += `  "${f.id}": 「${f.label}」の${unitNote}。見つからなければnull,\n`;
+    });
+  }
+
+  const santeiSection = santeiDesc
+    ? `\n// 算定件数（コンクール用）\n${santeiDesc}`
+    : '';
+
+  return `この調剤薬局のPDF（${profile.name}・${profile.reportType}）から、以下の数値を正確に抽出してJSON形式で返してください。
+
+【重要ルール】
+- 数値のみ（カンマなし整数）で返してください
+- 金額（円）は必ず「円単位のフル金額」で返してください。「万円」表記は×10000して円に変換（例: 2,606万円 → 26060000）
+- 調剤基本料は「点」単位の整数で返してください（円換算不要）
+- 「小計」ではなく「合計」行の値を取ること
+- 帳票ラベルを正確に照合し、対応する数値セルを返してください
+- 見つからない場合はnullにしてください
+
+{
+${fieldDesc}${santeiSection}}
+
+JSONのみを返してください。説明不要。`;
+}
+
 async function handleSalesPdf(input) {
   const file = input.files[0];
   if (!file) return;
@@ -3844,36 +4046,18 @@ async function handleSalesPdf(input) {
     const pdfData = new Uint8Array(arrayBuffer);
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
 
+    // P2: 選択中の部門からプロファイルを取得（未登録なら null → 汎用フォールバック）
+    const deptId = document.getElementById('salesDept').value;
+    const profile = getProfileForDept(deptId);
+    const promptText = buildGeminiPrompt(profile);
+
     // Gemini Flash APIに送信（503ならフォールバック）
     const geminiKey = await getGeminiKey();
     const requestBody = JSON.stringify({
       contents: [{
         parts: [
           { inlineData: { mimeType: 'application/pdf', data: base64 } },
-          { text: `この調剤薬局の保険合計PDFから、以下の数値を正確に抽出してJSON形式で返してください。
-
-【重要ルール】
-- 数値のみ（カンマなし整数）で返してください
-- 金額（円）は必ず「円単位のフル金額」で返してください。PDFに「万円」表記がある場合は×10000して円に変換してください（例: 2,606万円 → 26060000、26,061,200円 → 26061200）
-- 調剤基本料のみ「点」単位の整数で返してください（円換算不要）
-- 「小計」ではなく「合計」行の値を取ること
-- PDFの表のヘッダー行と対応する数値セルを正確に対応させること
-- 見つからない場合はnullにしてください
-
-{
-  "rxCount": レセプト件数（件、整数）,
-  "visitCount": 受付回数（回、整数）,
-  "totalInsurance": 保険合計（円単位のフル整数。例: 26,061,200円なら26061200）,
-  "techFee": 技術料合計（円単位のフル整数。「技術料」「技術料合計」欄の金額。※足立店のように「技術料」欄が無いPDFではnull。その場合はシステムが調剤技術料+薬学管理料で自動計算する）,
-  "dispensingTechFee": 調剤技術料（円単位のフル整数。「調剤技術料」欄の金額。欄が無ければnull）,
-  "pharmacyMgmtFee": 薬学管理料（円単位のフル整数。「薬学管理料」欄の金額。欄が無ければnull）,
-  "drugFee": 薬剤料合計（円単位のフル整数。「薬剤料」「薬剤料合計」欄の金額）,
-  "basicFee": 調剤基本料（点数単位の整数。例: 7,500点なら7500）,
-  "genericCount": 後発薬使用回数（回、整数）,
-  "medicalInstitutions": 医療機関数（件、整数）
-}
-
-JSONのみを返してください。説明不要。` }
+          { text: promptText }
         ]
       }],
       generationConfig: {
@@ -3901,7 +4085,7 @@ JSONのみを返してください。説明不要。` }
       throw new Error(`Gemini APIエラー: ${data.error.message} (${data.error.code})`);
     }
     if (data.error) throw new Error(`Gemini APIエラー: 全モデルで失敗。${data.error.message} (${data.error.code})`);
-    console.log(`使用モデル: ${usedModel}`);
+    console.log(`使用モデル: ${usedModel}、プロファイル: ${profile ? profile.id : '汎用フォールバック'}`);
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     // JSONを抽出（```json ... ``` で囲まれてる場合も対応）
@@ -3914,8 +4098,8 @@ JSONのみを返してください。説明不要。` }
       if (val !== null && val !== undefined) salesExtractedData[key] = parseInt(val);
     }
 
-    // 技術料の自動演算（足立店など「技術料」欄が無いPDF: 調剤技術料+薬学管理料）
-    computeTechFee(salesExtractedData);
+    // P2: 技術料の自動演算（プロファイル駆動・elysia=調剤技術料+薬学管理料 / 汎用も同様）
+    computeTechFee(salesExtractedData, profile);
     // 技術料/回を計算
     if (salesExtractedData.techFee && salesExtractedData.visitCount) {
       salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
@@ -3925,7 +4109,7 @@ JSONのみを返してください。説明不要。` }
     label.style.background = '#2ecc71';
     label.innerHTML = '✅ 読み取り完了 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
     label.style.pointerEvents = 'auto';
-    renderSalesExtracted(hasAny);
+    renderSalesExtracted(hasAny, profile);
     // PDFプレビュー送信：
     // salesPdfAreaは常に表示済みなのでiframeのclientWidthは確定している。
     // _salesPdfViewerReadyがtrueであれば即送信（念のため100ms待機）。
@@ -4023,20 +4207,38 @@ function extractSalesValues(text) {
     /医療機関[数敷]\s*([0-9,]+)/
   );
 
-  // 技術料の自動演算（足立店など）
-  computeTechFee(salesExtractedData);
+  // P2: 技術料の自動演算（プロファイル駆動: elysia=合算 / pharmy=直接 / 汎用フォールバック=従来動作）
+  const deptIdFallback = document.getElementById('salesDept').value;
+  const profileFallback = getProfileForDept(deptIdFallback);
+  computeTechFee(salesExtractedData, profileFallback);
   // 技術料/回を計算
   if (salesExtractedData.techFee && salesExtractedData.visitCount) {
     salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
   }
 
   const hasAny = Object.values(salesExtractedData).some(v => v !== null && v !== undefined);
-  renderSalesExtracted(hasAny);
+  renderSalesExtracted(hasAny, profileFallback);
 }
 
-// 技術料の自動演算: 調剤技術料と薬学管理料が両方あれば 技術料 = その合計（足立店対応）
-// 他店は技術料を直接読み取り、調剤技術料・薬学管理料は空欄のまま → techFeeは変更しない
-function computeTechFee(data) {
+// P2: 技術料の自動演算（プロファイル駆動）
+// - elysia: techFee の derive = dispensingTechFee + pharmacyMgmtFee（帳票に技術料合計欄なし）
+// - pharmy: techFee を直接読み取る（dispensingTechFee/pharmacyMgmtFee は affectsTech:false）
+// - 汎用フォールバック/未プロファイル: 従来ロジック（両方揃えば合算、なければ直接）
+// ⚠️ 挙動は既存と完全同一: elysia=合算・pharmy/汎用=直接。プロファイル明示で意図を表現。
+function computeTechFee(data, profile) {
+  // プロファイルがelysiaの場合は必ず合算（derive定義に従う）
+  if (profile && profile.id === 'elysia') {
+    const d = data.dispensingTechFee, p = data.pharmacyMgmtFee;
+    if (d != null && d !== '' && p != null && p !== '') {
+      data.techFee = parseInt(d) + parseInt(p);
+    }
+    return data;
+  }
+  // pharmyは techFee を直接読み取り済み → 合算しない（affectsTech:false）
+  if (profile && profile.id === 'pharmy') {
+    return data; // techFeeはGeminiが直接抽出済み
+  }
+  // 汎用フォールバック: 従来ロジック（両方揃えば合算）
   const d = data.dispensingTechFee, p = data.pharmacyMgmtFee;
   if (d != null && d !== '' && p != null && p !== '') {
     data.techFee = parseInt(d) + parseInt(p);
@@ -4044,7 +4246,9 @@ function computeTechFee(data) {
   return data;
 }
 
-// 表の編集時: 調剤技術料/薬学管理料を編集したら技術料を再計算して反映
+// P2: 表の編集時: 調剤技術料/薬学管理料を編集したら技術料を再計算して反映
+// elysia: dispensingTechFee + pharmacyMgmtFee → techFee
+// pharmy/汎用: techFee は直接読取済み → 合算しない（affectsTech:false なので本関数は呼ばれない）
 function recalcSalesTech() {
   const get = id => {
     const el = document.getElementById('sales_' + id);
@@ -4052,12 +4256,17 @@ function recalcSalesTech() {
     const raw = (el.dataset.raw || el.value || '').replace(/,/g, '');
     return raw ? parseInt(raw) : null;
   };
-  const d = get('dispensingTechFee'), p = get('pharmacyMgmtFee');
-  const techEl = document.getElementById('sales_techFee');
-  if (d != null && p != null && techEl) {
-    const sum = d + p;
-    techEl.dataset.raw = String(sum);
-    techEl.value = sum.toLocaleString();
+  const deptId = document.getElementById('salesDept').value;
+  const profile = getProfileForDept(deptId);
+  // elysia のみ合算（pharmyはaffectsTech:falseなのでここには来ない。汎用も従来動作で合算）
+  if (!profile || profile.id === 'elysia' || !profile.id) {
+    const d = get('dispensingTechFee'), p = get('pharmacyMgmtFee');
+    const techEl = document.getElementById('sales_techFee');
+    if (d != null && p != null && techEl) {
+      const sum = d + p;
+      techEl.dataset.raw = String(sum);
+      techEl.value = sum.toLocaleString();
+    }
   }
   // 技術料/回も再計算
   const visit = get('visitCount'), techNow = get('techFee');
@@ -4069,24 +4278,63 @@ function recalcSalesTech() {
   }
 }
 
-function renderSalesExtracted(hasValues) {
+/**
+ * P2+P3: 抽出結果レビューUIを描画する。
+ * profile が null の場合は従来の SALES_ITEMS ベースの汎用表示にフォールバック。
+ * profile がある場合は:
+ *   - main グループをプロファイルのlabelで表示（統一キーで編集・保存）
+ *   - santeisuu グループを「算定件数」ヘッダー付きで別グループ表示
+ *   - pharmy の場合は santeisuu に「件数取得不可（金額のみ）」注記を追加
+ */
+function renderSalesExtracted(hasValues, profile) {
   const container = document.getElementById('salesExtracted');
   const table = document.getElementById('salesTable');
   container.style.display = 'block';
   const noExt = document.getElementById('salesNoExtracted');
   if (noExt) noExt.style.display = 'none';
 
-  let html = '<colgroup><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">数値</th></tr></thead><tbody>';
-
-  SALES_ITEMS.forEach(item => {
-    const val = salesExtractedData[item.id];
+  /** 1行分のHTML（統一キーid, ラベル, 単位, affectsTech, calc） */
+  function rowHtml(id, label, unit, affectsTech, calcFlag, isDerive) {
+    const val = salesExtractedData[id];
     const borderColor = val !== null && val !== undefined ? '#2ecc71' : '#e74c3c';
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
-    html += `<tr style="background:${bgColor}">
-      <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${item.name} <span style="color:#999;font-size:17px;">${item.unit}</span></td>
-      <td style="padding:4px 6px;"><input type="text" id="sales_${item.id}" value="${val!=null?val.toLocaleString():''}" data-raw="${val||''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${item.calc?'disabled':''} onfocus="this.value=this.dataset.raw" onblur="this.dataset.raw=this.value.replace(/,/g,'');this.value=this.dataset.raw?parseInt(this.dataset.raw).toLocaleString():''${item.affectsTech?';recalcSalesTech()':''}"></td>
+    const disabledAttr = (calcFlag || isDerive) ? 'disabled' : '';
+    const onblurExtra = affectsTech ? ';recalcSalesTech()' : '';
+    return `<tr style="background:${bgColor}">
+      <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${label} <span style="color:#999;font-size:17px;">${unit}</span></td>
+      <td style="padding:4px 6px;"><input type="text" id="sales_${id}" value="${val!=null?val.toLocaleString():''}" data-raw="${val!=null?val:''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${disabledAttr} onfocus="this.value=this.dataset.raw" onblur="this.dataset.raw=this.value.replace(/,/g,'');this.value=this.dataset.raw?parseInt(this.dataset.raw).toLocaleString():''${onblurExtra}"></td>
     </tr>`;
-  });
+  }
+
+  let html = '<colgroup><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">数値</th></tr></thead><tbody>';
+
+  if (!profile || Object.keys(profile.fields).length === 0) {
+    // 汎用フォールバック: 従来の SALES_ITEMS で描画
+    SALES_ITEMS.forEach(item => {
+      html += rowHtml(item.id, item.name, item.unit, item.affectsTech || false, item.calc || false, false);
+    });
+  } else {
+    // P2: プロファイル駆動: main グループをプロファイルのlabelで表示
+    const mainFields = getMainFields(profile);
+    mainFields.forEach(f => {
+      const isDerive = !!f.derive;
+      const isAffect = f.affectsTech === true;
+      html += rowHtml(f.id, f.label, f.unit, isAffect, f.calc || false, isDerive);
+    });
+
+    // P3: 算定件数グループ
+    const santeiFields = getSanteiFields(profile);
+    if (santeiFields && santeiFields.length > 0) {
+      const isPharmyKin = profile.id === 'pharmy';
+      const santeiHeaderNote = isPharmyKin
+        ? ' <span style="font-size:12px;font-weight:400;color:#e67e22;">⚠ このレセコン（ファーミー日計表）では件数は取得不可（金額のみ）</span>'
+        : '';
+      html += `<tr><td colspan="2" style="padding:8px 8px 4px;font-size:14px;font-weight:700;color:#1a5276;background:#eaf2f8;border-top:2px solid #3498db;">算定件数（コンクール用）${santeiHeaderNote}</td></tr>`;
+      santeiFields.forEach(f => {
+        html += rowHtml(f.id, f.label, f.unit, false, false, false);
+      });
+    }
+  }
 
   html += '</tbody>';
   table.innerHTML = html;
@@ -4105,15 +4353,29 @@ async function submitSalesData() {
 
   if (!month || !deptId) { alert('月と部門を選択してください'); return; }
 
-  const values = {};
-  SALES_ITEMS.forEach(item => {
-    const input = document.getElementById(`sales_${item.id}`);
-    const rawVal = input?.dataset?.raw || input?.value?.replace(/,/g, '') || '';
-    if (rawVal) values[item.id] = parseInt(rawVal);
-  });
+  // P2: プロファイル取得（値の収集に使用）
+  const profile = getProfileForDept(deptId);
 
-  // 技術料の自動演算（足立店など）: 調剤技術料+薬学管理料が揃えば技術料を確定
-  computeTechFee(values);
+  // P2: プロファイルがある場合は全fieldsのキーから収集、ない場合は SALES_ITEMS から収集
+  const values = {};
+  if (profile && Object.keys(profile.fields).length > 0) {
+    // プロファイルに定義された全フィールド（main + santeisuu）を収集
+    Object.keys(profile.fields).forEach(fieldId => {
+      const input = document.getElementById(`sales_${fieldId}`);
+      const rawVal = input?.dataset?.raw || input?.value?.replace(/,/g, '') || '';
+      if (rawVal) values[fieldId] = parseInt(rawVal);
+    });
+  } else {
+    // 汎用フォールバック: 従来通り SALES_ITEMS から収集
+    SALES_ITEMS.forEach(item => {
+      const input = document.getElementById(`sales_${item.id}`);
+      const rawVal = input?.dataset?.raw || input?.value?.replace(/,/g, '') || '';
+      if (rawVal) values[item.id] = parseInt(rawVal);
+    });
+  }
+
+  // P2: 技術料の自動演算（プロファイル駆動・elysia=合算 / pharmy=直接 / 汎用フォールバック）
+  computeTechFee(values, profile);
   if (values.techFee && values.visitCount) {
     values.techPerVisit = Math.round(values.techFee / values.visitCount);
   }
@@ -4143,8 +4405,14 @@ async function submitSalesData() {
       pdfBase64 = btoa(new Uint8Array(salesPdfArrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
     }
 
+    // P5: profileId と receiptSystem を格納（統一キーはvaluesに入り分析は統一キーで集計）
+    const profileId = profile ? profile.id : null;
+    const receiptSystem = profile ? profile.name : null;
+
     await db.collection('salesData').doc(docId).set({
       month, deptId, deptName, values,
+      profileId,         // P5: レセコンプロファイルID (elysia/pharmy/pharnes/pharmaseed/null)
+      receiptSystem,     // P5: レセコン名称 (例: "モイネット ファーミー")
       submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
       submittedBy: currentUser?.email || 'unknown',
       fileName: renamedFileName,
@@ -4193,13 +4461,15 @@ async function renderSalesHistory() {
     const snap = await db.collection('salesData').orderBy('month', 'desc').limit(30).get({source: 'server'});
     if (snap.empty) { table.innerHTML = '<tr><td style="padding:12px;color:#999;">まだデータがありません</td></tr>'; return; }
 
-    let html = '<thead><tr><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">月</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">部門</th>';
+    let html = '<thead><tr><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">月</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">部門</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">レセコン</th>';
     SALES_ITEMS.forEach(item => { html += `<th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:right;">${item.name}</th>`; });
     html += '<th style="padding:6px 10px;background:#1a5276;color:#fff;">PDF</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出者</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出日</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">操作</th></tr></thead><tbody>';
 
     snap.forEach(doc => {
       const d = doc.data();
-      html += `<tr><td style="padding:4px 10px;">${d.month}</td><td style="padding:4px 10px;">${d.deptName||d.deptId}</td>`;
+      // P5: receiptSystem表示（旧データはprofileIdからも補完）
+      const receiptSysLabel = d.receiptSystem || (d.profileId ? (RECEIPT_PROFILES[d.profileId]?.name || d.profileId) : '—');
+      html += `<tr><td style="padding:4px 10px;">${d.month}</td><td style="padding:4px 10px;">${d.deptName||d.deptId}</td><td style="padding:4px 10px;font-size:11px;color:#555;">${receiptSysLabel}</td>`;
       SALES_ITEMS.forEach(item => {
         const v = d.values?.[item.id];
         html += `<td style="padding:4px 10px;text-align:right;">${v != null ? v.toLocaleString() : '—'}</td>`;

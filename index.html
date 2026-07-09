@@ -707,6 +707,7 @@ function initDeptData(deptId) {
   });
 }
 DEPTS.forEach(d => initDeptData(d.id));
+initDeptData('all'); // 全体（独立入力）: FY{年度}_all を予算タブ全体モードで扱う
 
 function isSingleDept() { return selectedDepts.length === 1; }
 function currentDeptId() { return selectedDepts[0]; }
@@ -743,6 +744,25 @@ function getTotalData() {
   return total;
 }
 
+// 全体モード用: 全部門（管理部門含む）の月次積み上げ合計（当年度budgetのみ）
+function getAllDeptsRollup() {
+  const total = {};
+  ITEMS.forEach(it => { total[it.id] = new Array(12).fill(0); });
+  DEPTS.forEach(dep => {
+    const d = allData[dep.id];
+    if (!d) return;
+    recalcDept(dep.id);
+    ITEMS.forEach(it => { for (let m = 0; m < 12; m++) total[it.id][m] += (d.budget[it.id][m] || 0); });
+  });
+  // 計算項目は積み上げ後に再計算
+  for (let m = 0; m < 12; m++) {
+    const bv = {};
+    ITEMS.forEach(it => { if (it.type === 'input') bv[it.id] = total[it.id][m]; });
+    ITEMS.forEach(it => { if (it.type === 'calc' && it.calc) { bv[it.id] = it.calc(bv); total[it.id][m] = bv[it.id]; } });
+  }
+  return total;
+}
+
 // ===== Firestore =====
 let saveTimer = null;
 function getFiscalYear() { return document.getElementById('fiscalYear').value; }
@@ -751,6 +771,7 @@ function showSaveStatus(s, t) { const el = document.getElementById('saveStatus')
 
 async function saveToFirestore() {
   if (isViewerRole(userRole) || userRole === 'tax_advisor') return;
+  if (currentDeptId() === 'all') { await saveAllBudgetToFirestore(); return; } // 全体はbudgetのみmerge保存（中期計画のannualInputsを壊さない）
   showSaveStatus('saving', '保存中...');
   try {
     await saveDeptToFirestore(currentDeptId());
@@ -779,6 +800,19 @@ async function saveDeptToFirestore(deptId) {
   await db.collection('budgetData').doc(did).set(data);
 }
 
+// 全体（予算タブ）保存: FY{年度}_all に budget のみ merge（中期計画のannualInputs/distMethodを保持）
+async function saveAllBudgetToFirestore() {
+  showSaveStatus('saving', '保存中...');
+  try {
+    recalcDept('all');
+    const payload = { budget: {}, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: currentUser.email };
+    ITEMS.forEach(it => { if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return; payload.budget[it.id] = allData['all'].budget[it.id]; });
+    await db.collection('budgetData').doc(`FY${getFiscalYear()}_all`).set(payload, { merge: true });
+    delete midtermCache[getFiscalYear()];
+    showSaveStatus('saved', '保存しました');
+  } catch(e) { showSaveStatus('error', '保存エラー: ' + e.message); }
+}
+
 let versionTimer = null;
 let lastVersionSave = 0;
 function scheduleVersionSave() {
@@ -802,6 +836,14 @@ async function loadAllFromFirestore() {
       allData[d.id].annualInputs[it.id] = 0;
       allData[d.id].distMethod[it.id] = 'even';
     });
+  });
+  // 全体（独立入力）も初期化し、FY{年度}_all を読み込む（下のループが deptId==='all' を allData['all'] へ格納）
+  allData['all'] = { budget: {}, actual: {}, annualInputs: {}, distMethod: {} };
+  ITEMS.forEach(it => {
+    allData['all'].budget[it.id] = new Array(12).fill(0);
+    allData['all'].actual[it.id] = new Array(12).fill(0);
+    allData['all'].annualInputs[it.id] = 0;
+    allData['all'].distMethod[it.id] = 'even';
   });
   try {
     const fy = getFiscalYear();
@@ -1113,8 +1155,8 @@ function renderDeptBar() {
       const sel = d.id === curId;
       html += `<label class="${sel ? 'checked' : ''}"><input type="radio" name="deptRadio" ${sel ? 'checked' : ''} onchange="selectSingleDept('${d.id}')"> ${d.name}</label>`;
     });
-    // 中期計画タブのみ「全体」入力先を選べる（全部門合計と突き合わせて差分を0に調整）
-    if (currentTab === 'midterm') {
+    // 中期計画・予算タブで「全体」入力先を選べる（全部門合計と突き合わせて差分を0に調整）
+    if (currentTab === 'midterm' || currentTab === 'budget') {
       const selAll = curId === 'all';
       html += `<label class="${selAll ? 'checked' : ''}" style="margin-left:8px;border-left:2px solid #6c3483;padding-left:10px"><input type="radio" name="deptRadio" ${selAll ? 'checked' : ''} onchange="selectSingleDept('all')"> 🌐 全体</label>`;
     }
@@ -1401,6 +1443,8 @@ function isItemVisible(it) {
   if (!it.adminOnly) return true;
   // 全閲覧者は adminOnly 科目を非表示
   if (isViewerRole(userRole)) return false;
+  // 全体モードは会社合計なので管理部門科目も含める
+  if (currentDeptId() === 'all') return true;
   // 管理者・編集者でも、店舗のみ選択中は非表示（役員等の部門が含まれていなければ）
   const hasAdminDept = selectedDepts.some(id => {
     const dept = DEPTS.find(d => d.id === id);
@@ -1411,6 +1455,7 @@ function isItemVisible(it) {
 }
 
 async function renderBudgetTable() {
+  if (currentDeptId() === 'all') return renderBudgetAllTable();
   const data = getBudgetActual();
   const vm = getVisibleMonths();
   const needsPrev = vm.some(i => i < 0);
@@ -1463,6 +1508,63 @@ async function renderBudgetTable() {
     html += '</tr>';
   });
   document.getElementById('budgetTable').innerHTML = html + '</tbody>';
+}
+
+// 予算タブ・全体モード: 全体（独立入力）／積み上げ（各部門合計）／差分 の3行表示。差分0でダブルチェック成立
+function renderBudgetAllTable() {
+  recalcDept('all');
+  const allInput = allData['all'].budget;
+  const rollup = getAllDeptsRollup();
+  const vm = getVisibleMonths().filter(m => m >= 0); // 全体は当年度（計画）のみ対象
+  const canEdit = editMode && (userRole === 'admin' || userRole === 'editor');
+  const ro = canEdit ? '' : 'readonly';
+  let html = '<thead><tr><th>科目</th><th>区分</th><th class="col-total">期間合計</th>';
+  vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
+  html += '</tr></thead><tbody>';
+  ITEMS.forEach(it => {
+    if (!isItemVisible(it)) return;
+    if (it.actualOnly) return;
+    if (it.type === 'header') {
+      html += `<tr class="${getRowClass(it)}"><td>${it.name}</td><td></td><td></td>`;
+      vm.forEach(() => html += '<td></td>');
+      html += '</tr>'; return;
+    }
+    if (it.type === 'ratio') {
+      let num = 0, den = 0;
+      vm.forEach(m => { const mv = {}; ITEMS.forEach(x => { if (x.type === 'input') mv[x.id] = rollup[x.id][m]; }); num += it.numerator(mv); den += it.denominator(mv); });
+      html += `<tr class="${getRowClass(it)}"><td>${it.name}</td><td>積み上げ</td><td class="calc-value col-total">${fmtPct(num, den)}</td>`;
+      vm.forEach(m => { const mv = {}; ITEMS.forEach(x => { if (x.type === 'input') mv[x.id] = rollup[x.id][m]; }); html += `<td class="calc-value">${fmtPct(it.numerator(mv), it.denominator(mv))}</td>`; });
+      html += '</tr>'; return;
+    }
+    const isCalc = it.type === 'calc';
+    // 全体（独立入力）
+    const inpTotal = vm.reduce((s, m) => s + (allInput[it.id][m] || 0), 0);
+    html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>全体</td><td class="col-total">${fmt(inpTotal, isCalc)}</td>`;
+    vm.forEach(m => {
+      if (isCalc) html += `<td class="calc-value">${fmt(allInput[it.id][m] || 0, true)}</td>`;
+      else html += `<td><input class="cell-input" type="number" value="${allInput[it.id][m] || ''}" onchange="onAllBudgetCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
+    });
+    html += '</tr>';
+    // 積み上げ（各部門合計）
+    const rollTotal = vm.reduce((s, m) => s + (rollup[it.id][m] || 0), 0);
+    html += `<tr><td>積み上げ</td><td class="calc-value col-total">${fmt(rollTotal, isCalc)}</td>`;
+    vm.forEach(m => html += `<td class="calc-value">${fmt(rollup[it.id][m] || 0, isCalc)}</td>`);
+    html += '</tr>';
+    // 差分（積み上げ − 全体）: 0で緑・不一致で赤
+    const diffTotal = rollTotal - inpTotal;
+    html += `<tr style="background:#fff7e6"><td>差分</td><td class="col-total" style="color:${diffTotal === 0 ? '#1e8449' : '#c0392b'};font-weight:600">${diffTotal === 0 ? '0' : fmt(diffTotal, true)}</td>`;
+    vm.forEach(m => { const d = (rollup[it.id][m] || 0) - (allInput[it.id][m] || 0); html += `<td style="color:${d === 0 ? '#1e8449' : '#c0392b'};font-weight:600">${d === 0 ? '0' : fmt(d, true)}</td>`; });
+    html += '</tr>';
+  });
+  document.getElementById('budgetTable').innerHTML = html + '</tbody>';
+}
+
+function onAllBudgetCellChange(id, m, v) {
+  takeSnapshot();
+  allData['all'].budget[id][m] = parseInt(v) || 0;
+  recalcDept('all');
+  renderBudgetTable();
+  scheduleSave();
 }
 
 async function renderActualTable() {
@@ -3375,8 +3477,8 @@ function switchTab(tab){
   document.getElementById('deptBar').style.display = hideDept ? 'none' : '';
   const deptLabel = document.querySelector('.current-dept-label');
   if (deptLabel) deptLabel.style.display = hideDept ? 'none' : '';
-  // 「全体」は中期計画タブ専用。他タブへ移るときは実部門へ戻す（budget/actualに全体データは無い）
-  if (tab !== 'midterm' && selectedDepts[0] === 'all') selectedDepts = [getVisibleDepts()[0].id];
+  // 「全体」は中期計画・予算タブ専用。他タブへ移るときは実部門へ戻す
+  if (tab !== 'midterm' && tab !== 'budget' && selectedDepts[0] === 'all') selectedDepts = [getVisibleDepts()[0].id];
   renderDeptBar();
   renderCurrentTab();
 }

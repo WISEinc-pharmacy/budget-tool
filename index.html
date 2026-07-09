@@ -2529,8 +2529,7 @@ async function updateHeaders() {
         document.getElementById('fiscalYear').value = currentFiscalYear;
         return;
       }
-      editMode = false;
-      updateModeUI();
+      // 年度切替後も編集モードを維持する（旧: editMode=false で表示モードへ強制復帰していた／山内さん指摘 2026-07-09）
     }
     currentFiscalYear = newFY;
     showSaveStatus('saving', '年度データ読込中...');

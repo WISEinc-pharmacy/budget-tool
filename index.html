@@ -570,6 +570,8 @@ const DEPTS = [
   { id: 'ai_chozai', name: 'アイ調剤' },
   { id: 'abiko', name: '我孫子' },
   { id: 'sakuradai', name: 'さくら台' },
+  { id: 'koshigaya', name: '越谷' },
+  { id: 'kiyose', name: '清瀬' },
   { id: 'yakuin', name: '役員', adminOnly: true },
   { id: 'kanribu', name: '管理部・本部', adminOnly: true },
   { id: 'gakujutsu', name: '学術研修企画運営室', adminOnly: true },
@@ -1219,7 +1221,7 @@ function selectAllDepts() {
 }
 
 function selectStoresOnly() {
-  selectedDepts = ['kashiwa', 'adachi', 'nagareyama', 'ai_chozai', 'abiko', 'sakuradai'];
+  selectedDepts = ['kashiwa', 'adachi', 'nagareyama', 'ai_chozai', 'abiko', 'sakuradai', 'koshigaya', 'kiyose'];
   renderDeptBar();
   renderCurrentTab();
 }
@@ -2705,6 +2707,7 @@ function doImport() {
 const FREEE_DEPT_MAP = {
   '足立': 'adachi', '柏': 'kashiwa', 'ながれやま': 'nagareyama',
   'アイ調剤薬局': 'ai_chozai', '我孫子': 'abiko', 'さくら台': 'sakuradai',
+  '越谷': 'koshigaya', '清瀬': 'kiyose',
   '役員': 'yakuin', '学術研修': 'gakujutsu',
 };
 
@@ -3251,6 +3254,8 @@ function parseFreeeCSV(text) {
     { name: 'さくら台',     id: 'sakuradai',   l3: ['オカモトフミコ', 'オカモト フミコ'],             text: ['さくら台'] },
     { name: '我孫子',       id: 'abiko',       l3: ['千修ビル', '鹿山駐車場', '鹿山'],              text: ['我孫子', 'あびこ'] },
     { name: 'アイ調剤薬局', id: 'ai_chozai',   l3: ['幸楽土地', '㈱幸楽'],                         text: ['アイ調剤'] },
+    { name: '越谷',         id: 'koshigaya',   l3: [], text: ['越谷'] },
+    { name: '清瀬',         id: 'kiyose',      l3: [], text: ['清瀬'] },
   ];
   let deptConfidence = 'none';
   let matchedHints = []; // 判定根拠（検出したテナント名・物件名等）
@@ -4265,6 +4270,7 @@ async function renderSalesTab() {
 const DEPT_TO_KOT = {
   kashiwa: '柏', adachi: '足立', nagareyama: 'ながれやま',
   ai_chozai: 'アイ調剤', abiko: '我孫子', sakuradai: 'さくら台',
+  koshigaya: '越谷', kiyose: '清瀬',
 };
 
 /** budget-toolの月インデックス(0=期首月)をyyyy-MMに変換 */

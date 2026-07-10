@@ -1920,10 +1920,11 @@ function getClosedMonths(yearData) {
   return closed;
 }
 
-// 計画年の科目年間値（annualInputs優先、未入力なら展開済み月次予算の合計）
+// 計画年の科目年間値（annualInputs優先、未入力(undefined/null/'')なら展開済み月次予算の合計）
+// 0 は有効な入力値として扱い、予算へのフォールバックは行わない
 function planAnnualOf(st, itemId) {
-  const ai = st.annualInputs[itemId] || 0;
-  return ai !== 0 ? ai : sumMonths(st.budget[itemId]);
+  const ai = st.annualInputs[itemId];
+  return (ai === undefined || ai === null || ai === '') ? sumMonths(st.budget[itemId]) : ai;
 }
 
 // 選択部門合計の年間値ベクトル。mode: 'actual'|'budget'|'forecast'|'plan'
@@ -2065,8 +2066,10 @@ async function renderMidtermTable() {
       const v = col.vec[it.id] || 0;
       if (col.planFY && canEdit && it.type === 'input') {
         const st = midtermCache[col.planFY][currentDeptId()];
+        const hasInput = st.annualInputs[it.id] !== undefined && st.annualInputs[it.id] !== null && st.annualInputs[it.id] !== '';
         const editVal = planAnnualOf(st, it.id);
-        html += `<td class="${tdCls(col)}"><input type="text" inputmode="numeric" value="${editVal ? fmtComma(editVal) : ''}" onfocus="onCellInputFocus(this)" onblur="onCellInputBlur(this)" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
+        // hasInput=true なら 0 を含む入力値をそのまま表示、false なら予算由来の値を表示（従来動作）
+        html += `<td class="${tdCls(col)}"><input type="text" inputmode="numeric" value="${hasInput ? fmtComma(editVal) : (editVal ? fmtComma(editVal) : '')}" onfocus="onCellInputFocus(this)" onblur="onCellInputBlur(this)" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
       } else {
         html += `<td style="text-align:right" class="${tdCls(col)} ${v < 0 ? 'negative' : ''}">${fmt(v, isCalc)}</td>`;
       }
@@ -2089,7 +2092,14 @@ function onMidtermPlanChange(fy, itemId, v) {
   const deptId = currentDeptId();
   const st = midtermCache[fy] && midtermCache[fy][deptId];
   if (!st) return;
-  st.annualInputs[itemId] = parseComma(v) || 0;
+  const trimmed = String(v).trim();
+  if (trimmed === '') {
+    // 空欄 = 未入力: キーを削除して予算フォールバックへ戻す
+    delete st.annualInputs[itemId];
+  } else {
+    // 数値入力(0 を含む): そのまま保持（|| 0 を使わない）
+    st.annualInputs[itemId] = parseComma(v);
+  }
   scheduleMidtermSave(fy, deptId);
   renderMidtermTable();
 }
@@ -2116,7 +2126,9 @@ async function saveMidtermDept(fy, deptId, includeBudget) {
     if (includeBudget) payload.budget = {};
     ITEMS.forEach(it => {
       if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
-      payload.annualInputs[it.id] = st.annualInputs[it.id] || 0;
+      // 未入力(undefined)は 0 に正規化して保存（Firestore は undefined を受け付けない）
+      const ai = st.annualInputs[it.id];
+      payload.annualInputs[it.id] = (ai === undefined || ai === null || ai === '') ? 0 : ai;
       payload.distMethod[it.id] = st.distMethod[it.id] || 'even';
       if (includeBudget) payload.budget[it.id] = st.budget[it.id];
     });
@@ -2126,7 +2138,8 @@ async function saveMidtermDept(fy, deptId, includeBudget) {
     if (String(fy) === getFiscalYear() && allData[deptId]) {
       ITEMS.forEach(it => {
         if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
-        allData[deptId].annualInputs[it.id] = st.annualInputs[it.id] || 0;
+        const ai2 = st.annualInputs[it.id];
+        allData[deptId].annualInputs[it.id] = (ai2 === undefined || ai2 === null || ai2 === '') ? 0 : ai2;
         allData[deptId].distMethod[it.id] = st.distMethod[it.id] || 'even';
         if (includeBudget) allData[deptId].budget[it.id] = [...st.budget[it.id]];
       });

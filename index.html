@@ -1564,10 +1564,10 @@ function renderBudgetAllTable() {
     html += `<tr><td>積み上げ</td><td class="calc-value col-total">${fmt(rollTotal, isCalc)}</td>`;
     vm.forEach(m => html += `<td class="calc-value">${fmt(rollup[it.id][m] || 0, isCalc)}</td>`);
     html += '</tr>';
-    // 差分（積み上げ − 全体）: 0で緑・不一致で赤
+    // 差分（積み上げ − 全体）: 0=緑・マイナス=赤・プラス=黒
     const diffTotal = rollTotal - inpTotal;
-    html += `<tr style="background:#fff7e6"><td>差分</td><td class="col-total" style="color:${diffTotal === 0 ? '#1e8449' : '#c0392b'};font-weight:600">${diffTotal === 0 ? '0' : fmt(diffTotal, true)}</td>`;
-    vm.forEach(m => { const d = (rollup[it.id][m] || 0) - (allInput[it.id][m] || 0); html += `<td style="color:${d === 0 ? '#1e8449' : '#c0392b'};font-weight:600">${d === 0 ? '0' : fmt(d, true)}</td>`; });
+    html += `<tr style="background:#fff7e6"><td>差分</td><td class="col-total" style="color:${diffTotal === 0 ? '#1e8449' : (diffTotal < 0 ? '#c0392b' : '#333')};font-weight:600">${diffTotal === 0 ? '0' : fmt(diffTotal, true)}</td>`;
+    vm.forEach(m => { const d = (rollup[it.id][m] || 0) - (allInput[it.id][m] || 0); html += `<td style="color:${d === 0 ? '#1e8449' : (d < 0 ? '#c0392b' : '#333')};font-weight:600">${d === 0 ? '0' : fmt(d, true)}</td>`; });
     html += '</tr>';
   });
   document.getElementById('budgetTable').innerHTML = html + '</tbody>';

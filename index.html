@@ -1454,7 +1454,10 @@ function isItemVisible(it) {
   if (isViewerRole(userRole)) return false;
   // 全体モードは会社合計なので管理部門科目も含める
   if (currentDeptId() === 'all') return true;
-  // 管理者・編集者でも、店舗のみ選択中は非表示（役員等の部門が含まれていなければ）
+  // 本部経費（按分）とその内訳3行: admin/editorには部門によらず表示
+  const HONBU_IDS = ['honbu', 'honbu_yakuin', 'honbu_somu', 'naibu_ryuho'];
+  if (HONBU_IDS.includes(it.id) && (userRole === 'admin' || userRole === 'editor')) return true;
+  // それ以外のadminOnly科目: 管理部門（adminOnly部門）が選択中の場合のみ表示
   const hasAdminDept = selectedDepts.some(id => {
     const dept = DEPTS.find(d => d.id === id);
     return dept && dept.adminOnly;

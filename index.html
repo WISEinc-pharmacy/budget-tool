@@ -79,8 +79,8 @@ td.col-total.negative { color: #e74c3c !important; }
 #midtermTable tr.header-row td.mid-td-forecast,
 #midtermTable tr.header-row td.mid-td-plan,
 #midtermTable tr.header-row td.mid-td-yoy { background: inherit; }
-#midtermTable input[type=number] { width: 100%; min-width: 0; box-sizing: border-box; text-align: right; padding: 4px 6px; border: 1px solid #aed6f1; border-radius: 4px; background: #fffff0; }
-#midtermTable input[type=number]:focus-visible { outline: 2px solid #1a5276; outline-offset: 1px; }
+#midtermTable input[type=text] { width: 100%; min-width: 0; box-sizing: border-box; text-align: right; padding: 4px 6px; border: 1px solid #aed6f1; border-radius: 4px; background: #fffff0; }
+#midtermTable input[type=text]:focus-visible { outline: 2px solid #1a5276; outline-offset: 1px; }
 .mid-th-tools { margin-top: 6px; font-weight: 400; font-size: 10px; display: flex; gap: 4px; align-items: center; justify-content: center; flex-wrap: wrap; }
 #midtermTable .mid-th-tools input[type=number] { width: 48px; min-width: 0; box-sizing: border-box; font-size: 10px; padding: 2px 3px; border: none; border-radius: 3px; background: #fff; }
 .mid-th-tools .btn { padding: 2px 8px; font-size: 10px; }
@@ -1489,7 +1489,8 @@ async function renderBudgetTable() {
         vm.forEach(m => {
           if (m < 0) { html += `<td class="calc-value">${fmt(extBudget(data,prevData,it.id,m),true)}</td>`; return; }
           const cls = (m===0 && dm!=='flat') ? 'cell-input month1' : 'cell-input';
-          html += `<td><input class="${cls}" type="number" value="${data.budget[it.id][m]||''}" onchange="onBudgetCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
+          const bv = data.budget[it.id][m] || 0;
+          html += `<td><input class="${cls}" type="text" inputmode="numeric" value="${bv ? fmtComma(bv) : ''}" onfocus="onCellInputFocus(this)" onblur="onCellInputBlur(this)" onchange="onBudgetCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
         });
       } else {
         const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
@@ -1544,7 +1545,7 @@ function renderBudgetAllTable() {
     html += `<tr class="${getRowClass(it)}"><td rowspan="3">${it.name}</td><td>全体</td><td class="col-total">${fmt(inpTotal, isCalc)}</td>`;
     vm.forEach(m => {
       if (isCalc) html += `<td class="calc-value">${fmt(allInput[it.id][m] || 0, true)}</td>`;
-      else html += `<td><input class="cell-input" type="number" value="${allInput[it.id][m] || ''}" onchange="onAllBudgetCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`;
+      else { const av = allInput[it.id][m] || 0; html += `<td><input class="cell-input" type="text" inputmode="numeric" value="${av ? fmtComma(av) : ''}" onfocus="onCellInputFocus(this)" onblur="onCellInputBlur(this)" onchange="onAllBudgetCellChange('${it.id}',${m},this.value)" placeholder="0" ${ro}></td>`; }
     });
     html += '</tr>';
     // 積み上げ（各部門合計）
@@ -1563,7 +1564,7 @@ function renderBudgetAllTable() {
 
 function onAllBudgetCellChange(id, m, v) {
   takeSnapshot();
-  allData['all'].budget[id][m] = parseInt(v) || 0;
+  allData['all'].budget[id][m] = parseComma(v) || 0;
   recalcDept('all');
   renderBudgetTable();
   scheduleSave();
@@ -2039,7 +2040,7 @@ async function renderMidtermTable() {
       if (col.planFY && canEdit && it.type === 'input') {
         const st = midtermCache[col.planFY][currentDeptId()];
         const editVal = planAnnualOf(st, it.id);
-        html += `<td class="${tdCls(col)}"><input type="number" value="${editVal || ''}" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
+        html += `<td class="${tdCls(col)}"><input type="text" inputmode="numeric" value="${editVal ? fmtComma(editVal) : ''}" onfocus="onCellInputFocus(this)" onblur="onCellInputBlur(this)" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
       } else {
         html += `<td style="text-align:right" class="${tdCls(col)} ${v < 0 ? 'negative' : ''}">${fmt(v, isCalc)}</td>`;
       }
@@ -2062,7 +2063,7 @@ function onMidtermPlanChange(fy, itemId, v) {
   const deptId = currentDeptId();
   const st = midtermCache[fy] && midtermCache[fy][deptId];
   if (!st) return;
-  st.annualInputs[itemId] = parseInt(v) || 0;
+  st.annualInputs[itemId] = parseComma(v) || 0;
   scheduleMidtermSave(fy, deptId);
   renderMidtermTable();
 }
@@ -2516,10 +2517,10 @@ function onStartMonthChange() {
 }
 
 // ===== イベントハンドラ =====
-function onAnnualChange(id,v) { takeSnapshot(); D().annualInputs[id]=parseInt(v)||0; distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
+function onAnnualChange(id,v) { takeSnapshot(); D().annualInputs[id]=parseComma(v)||0; distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onDistChange(id,v) { takeSnapshot(); D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
-function onBudgetCellChange(id,m,v) { takeSnapshot(); D().budget[id][m]=parseInt(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
-function onActualCellChange(id,m,v) { takeSnapshot(); D().actual[id][m]=parseInt(v)||0; renderActualTable(); scheduleSave(); }
+function onBudgetCellChange(id,m,v) { takeSnapshot(); D().budget[id][m]=parseComma(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
+function onActualCellChange(id,m,v) { takeSnapshot(); D().actual[id][m]=parseComma(v)||0; renderActualTable(); scheduleSave(); }
 let currentFiscalYear = '2026';
 async function updateHeaders() {
   const newFY = getFiscalYear();
@@ -2555,6 +2556,28 @@ function getRowClass(it) {
 }
 function fmt(n,isCalc) { if(isNaN(n)) return '-'; if(n===0) return isCalc?'0':'-'; return n.toLocaleString('ja-JP'); }
 function fmtPct(num, den) { if (!den || den === 0) return '-'; return (num / den * 100).toFixed(1) + '%'; }
+
+// ===== カンマ区切り入力ユーティリティ =====
+// 文字列→数値（カンマ・全角数字・マイナス対応）
+function parseComma(s) {
+  if (s === null || s === undefined || s === '') return 0;
+  const n = parseInt(String(s).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/[^\d\-]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+// 数値→カンマ文字列（0は空文字）
+function fmtComma(v) { return v ? v.toLocaleString('ja-JP') : ''; }
+// focus: カンマを外して素の数値に
+function onCellInputFocus(el) {
+  const v = parseComma(el.value);
+  el.value = v || '';
+  el.removeAttribute('data-comma');
+}
+// blur: カンマ整形
+function onCellInputBlur(el) {
+  const v = parseComma(el.value);
+  el.value = fmtComma(v);
+  el.setAttribute('data-comma', '1');
+}
 
 function getMonthVals(store, m) {
   const mv = {};

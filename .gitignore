@@ -5,7 +5,7 @@ token.json
 node_modules/
 .DS_Store
 # 印刷テスト用ファイル
-print_test.html
-print_test_runner.mjs
-print_test_output.pdf
+print_test*.html
+print_test*.mjs
+print_test*.pdf
 *.bak-*

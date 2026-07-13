@@ -172,12 +172,16 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   #tab-compare th:nth-child(2), #tab-yoy th:nth-child(2) { width: 35px !important; }
 }
 /* ===== 中期計画タブ: A4縦1枚印刷 ===== */
+/* font-size縮小はここでは行わない。transform scaleのみで1枚に収める（二重縮小防止） */
 @media print {
   body.print-midterm { }
   body.print-midterm #tab-midterm { display: block !important; }
   body.print-midterm #tab-midterm table { page-break-inside: avoid; }
-  body.print-midterm #tab-midterm #midtermTable { width: 100% !important; font-size: 7px !important; }
-  body.print-midterm #tab-midterm #midtermTable input[type=text] { border: none !important; background: transparent !important; padding: 0 !important; font-size: 7px !important; width: 100% !important; text-align: right; }
+  /* font-size を @media print で変えない → beforeprint の計測値と印刷実体が一致する */
+  body.print-midterm #tab-midterm #midtermTable { width: max-content !important; }
+  body.print-midterm #tab-midterm #midtermTable th,
+  body.print-midterm #tab-midterm #midtermTable td { padding: 1px 2px !important; line-height: 1.2 !important; }
+  body.print-midterm #tab-midterm #midtermTable input[type=text] { border: none !important; background: transparent !important; padding: 0 !important; width: 100% !important; text-align: right; }
   body.print-midterm #tab-midterm #midtermTable .mid-th-tools input[type=number] { display: none !important; }
   body.print-midterm #tab-midterm #midtermTable button { display: none !important; }
   body.print-midterm #tab-midterm > div:first-child button { display: none !important; }
@@ -981,14 +985,14 @@ function applyPermissions() {
 
   window.addEventListener('beforeprint', function() {
     if (!_isMidtermActive()) return;
-    // bodyクラス付与
+    // bodyクラス付与（@media print用 padding縮小・ボタン非表示が適用される）
     document.body.classList.add('print-midterm');
     // @page A4 portrait を動的スタイルタグで挿入
     _midtermPrintStyle = document.createElement('style');
     _midtermPrintStyle.id = '__midterm_print_page_style';
     _midtermPrintStyle.textContent = '@page { size: A4 portrait; margin: 10mm; }';
     document.head.appendChild(_midtermPrintStyle);
-    // コンテナ取得してスケール適用
+    // コンテナ取得
     const container = document.getElementById('tab-midterm');
     if (!container) return;
     _midtermPrintContainer = container;
@@ -996,15 +1000,21 @@ function applyPermissions() {
     // A4縦の印字可能領域: 190mm×277mm = 719px×1050px (96dpi換算)
     const availW = 719;
     const availH = 1050;
-    const cw = container.scrollWidth || container.offsetWidth || availW;
+    // クラス付与後のリフロー待ち（padding縮小後の実寸を計測するため）
+    void container.offsetHeight;
+    const table = container.querySelector('#midtermTable');
+    // 幅: テーブルの実際の内容幅を使う
+    const cw = table ? (table.scrollWidth || table.offsetWidth) : (container.scrollWidth || container.offsetWidth || availW);
+    // 高さ: コンテナ全体の高さ（ヘッダー行含む）
     const ch = container.scrollHeight || container.offsetHeight || availH;
     const scaleX = availW / cw;
     const scaleY = availH / ch;
     const scale = Math.min(scaleX, scaleY, 1);
     container.dataset.printScale = scale;
-    container.style.transform = `scale(${scale})`;
-    container.style.transformOrigin = 'top left';
-    container.style.width = (cw * scale) + 'px';
+    // zoom を使う: transform と違いコンテンツの実サイズを変えるため印刷時にも1枚に収まる
+    container.style.zoom = scale;
+    // デバッグ用: コンソールに計測値を出力
+    console.log('[midterm-print] cw=' + cw + ' ch=' + ch + ' scale=' + scale.toFixed(4) + ' finalW=' + Math.round(cw * scale));
   });
 
   window.addEventListener('afterprint', function() {
@@ -1015,8 +1025,9 @@ function applyPermissions() {
       _midtermPrintStyle.parentNode.removeChild(_midtermPrintStyle);
     }
     _midtermPrintStyle = null;
-    // スケールを元に戻す
+    // zoom を元に戻す
     if (_midtermPrintContainer) {
+      _midtermPrintContainer.style.zoom = '';
       _midtermPrintContainer.style.transform = _midtermPrintTransform;
       _midtermPrintContainer.style.transformOrigin = '';
       _midtermPrintContainer.style.width = '';

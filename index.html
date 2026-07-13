@@ -1571,15 +1571,19 @@ async function renderBudgetTable() {
   const data = getBudgetActual();
   const vm = getVisibleMonths();
   const needsPrev = vm.some(i => i < 0);
-  const prevData = needsPrev ? getPrevBudgetActual(await ensurePrevYearData()) : null;
+  // m===0の引継ボタン表示判定のため、前年度データが存在するかも確認する
+  const hasPrevCheck = vm.includes(0); // 年度最初の月が表示範囲に含まれるか
+  const prevAllData = (needsPrev || hasPrevCheck) ? await ensurePrevYearData() : null;
+  const prevData = (needsPrev || hasPrevCheck) ? getPrevBudgetActual(prevAllData) : null;
   const canEdit = editMode && isSingleDept() && (userRole === 'admin' || userRole === 'editor');
   const ro = canEdit ? '' : 'readonly';
   const dis = canEdit ? '' : 'disabled';
   const showDist = canEdit;
   let html = '<thead><tr><th>科目</th>' + (showDist ? '<th>配分</th>' : '') + '<th class="col-total">期間合計</th>';
   vm.forEach(m => {
-    const inheritBtn = (canEdit && m > 0)
-      ? `<br><button class="btn btn-secondary" style="font-size:10px;padding:1px 5px;margin-top:2px;" onclick="copyPrevMonthBudget(${m})">←引継</button>`
+    // 引継ボタンは年度最初の月（m===0）にのみ表示。前年度データが読み込めている場合に限定
+    const inheritBtn = (canEdit && m === 0 && prevData)
+      ? `<br><button class="btn btn-secondary" style="font-size:10px;padding:1px 5px;margin-top:2px;" onclick="copyPrevMonthBudget(0)">←引継</button>`
       : '';
     html += `<th>${getMonthLabel(m)}${inheritBtn}</th>`;
   });
@@ -2666,17 +2670,22 @@ function onAnnualChange(id,v) { takeSnapshot(); D().annualInputs[id]=parseComma(
 function onDistChange(id,v) { takeSnapshot(); D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onBudgetCellChange(id,m,v) { takeSnapshot(); D().budget[id][m]=parseComma(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onActualCellChange(id,m,v) { takeSnapshot(); D().actual[id][m]=parseComma(v)||0; renderActualTable(); scheduleSave(); }
-function copyPrevMonthBudget(m) {
+async function copyPrevMonthBudget(m) {
   if (!editMode || !isSingleDept() || (userRole !== 'admin' && userRole !== 'editor')) { alert('編集権限がありません'); return; }
-  if (m <= 0) return;
-  const prevLabel = getMonthLabel(m - 1);
-  const curLabel = getMonthLabel(m);
-  if (!confirm(`${prevLabel}の手入力値を ${curLabel} へ引き継ぎます（${curLabel}の手入力値は上書きされます）。よろしいですか？`)) return;
+  // 引継は年度最初の月（m===0）のみ対応。複写元=前年度最終月（budget配列 index 11）
+  if (m !== 0) return;
+  const prevAllData = await ensurePrevYearData();
+  const prevData = getPrevBudgetActual(prevAllData);
+  if (!prevData) { alert('前年度データが読み込めませんでした'); return; }
+  const prevLabel = getMonthLabel(-1); // 前年度最終月ラベル（例: 2026/1月）
+  const curLabel = getMonthLabel(0);   // 年度最初の月ラベル（例: 2026/2月）
+  if (!confirm(`${prevLabel}（前年度）の手入力値を ${curLabel} へ引き継ぎます。\n${curLabel}の手入力値は上書きされます。よろしいですか？`)) return;
   takeSnapshot();
   let count = 0;
   ITEMS.forEach(it => {
     if (it.type === 'input' && !it.actualOnly && isItemVisible(it)) {
-      D().budget[it.id][m] = D().budget[it.id][m - 1] || 0;
+      // 前年度最終月 = prevData.budget[id][11]（extIdx=-1 → m+12=11）
+      D().budget[it.id][0] = prevData.budget[it.id][11] || 0;
       count++;
     }
   });

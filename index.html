@@ -148,6 +148,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 
 /* 印刷用スタイル */
 @media print {
+  /* 中期計画印刷時は @page を JS 動的スタイルで A4 portrait に上書きするため landscape はデフォルト扱い */
   @page { size: landscape; margin: 6mm; }
   body { font-size: 10px; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   #loginScreen, .header, .user-bar, .dept-bar, .tab-bar, .toolbar, .legend, .modal-overlay, .mode-indicator { display: none !important; }
@@ -189,13 +190,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 @media print and (min-width: 0px) {
   body.print-midterm { }
 }
-@page :first {
-  size: A4 portrait;
-}
-body.print-midterm {
-  /* @page 上書き用クラス: JSからbeforeprintで付与 */
-}
 /* @page size はJSのbeforeprintで動的スタイルタグを挿入して制御 */
+/* @page :first は使わない（2枚目が landscape のままになるため） */
 #printHeader { display: none; }
 
 /* ヘルプモーダル */
@@ -987,7 +983,8 @@ function applyPermissions() {
     if (!_isMidtermActive()) return;
     // bodyクラス付与（@media print用 padding縮小・ボタン非表示が適用される）
     document.body.classList.add('print-midterm');
-    // @page A4 portrait を動的スタイルタグで挿入
+    // @page A4 portrait を動的スタイルタグで挿入（全ページに適用するため :first は使わない）
+    // CSS @page の詳細度は同一なので、後から挿入したスタイルタグが landscape より優先される
     _midtermPrintStyle = document.createElement('style');
     _midtermPrintStyle.id = '__midterm_print_page_style';
     _midtermPrintStyle.textContent = '@page { size: A4 portrait; margin: 10mm; }';
@@ -1003,18 +1000,19 @@ function applyPermissions() {
     // クラス付与後のリフロー待ち（padding縮小後の実寸を計測するため）
     void container.offsetHeight;
     const table = container.querySelector('#midtermTable');
-    // 幅: テーブルの実際の内容幅を使う
+    // 【基準統一】幅・高さとも #midtermTable 基準で計測する
+    // コンテナ基準（scrollHeight）はtoolbar等の不要な高さを含む可能性があるため廃止
     const cw = table ? (table.scrollWidth || table.offsetWidth) : (container.scrollWidth || container.offsetWidth || availW);
-    // 高さ: コンテナ全体の高さ（ヘッダー行含む）
-    const ch = container.scrollHeight || container.offsetHeight || availH;
+    const ch = table ? (table.scrollHeight || table.offsetHeight) : (container.scrollHeight || container.offsetHeight || availH);
     const scaleX = availW / cw;
     const scaleY = availH / ch;
-    const scale = Math.min(scaleX, scaleY, 1);
+    // 上限1を撤廃（拡大許可）・丸め誤差によるスライバーページ根絶のため安全係数0.995を乗算
+    const scale = Math.min(scaleX, scaleY) * 0.995;
     container.dataset.printScale = scale;
     // zoom を使う: transform と違いコンテンツの実サイズを変えるため印刷時にも1枚に収まる
     container.style.zoom = scale;
     // デバッグ用: コンソールに計測値を出力
-    console.log('[midterm-print] cw=' + cw + ' ch=' + ch + ' scale=' + scale.toFixed(4) + ' finalW=' + Math.round(cw * scale));
+    console.log('[midterm-print] cw=' + cw + ' ch=' + ch + ' scaleX=' + scaleX.toFixed(4) + ' scaleY=' + scaleY.toFixed(4) + ' scale=' + scale.toFixed(4) + ' finalW=' + Math.round(cw * scale) + ' finalH=' + Math.round(ch * scale) + ' fillH%=' + (ch * scale / availH * 100).toFixed(1));
   });
 
   window.addEventListener('afterprint', function() {

@@ -2156,8 +2156,9 @@ async function renderMidtermTable() {
         const st = midtermCache[col.planFY][currentDeptId()];
         const hasInput = st.annualInputs[it.id] !== undefined && st.annualInputs[it.id] !== null && st.annualInputs[it.id] !== '';
         const editVal = planAnnualOf(st, it.id);
-        // hasInput=true なら 0 を含む入力値をそのまま表示、false なら予算由来の値を表示（従来動作）
-        html += `<td class="${tdCls(col)}"><input type="text" inputmode="numeric" value="${hasInput ? fmtComma(editVal) : (editVal ? fmtComma(editVal) : '')}" onfocus="onCellInputFocus(this)" onblur="onCellInputBlur(this)" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
+        // hasInput=true なら 0 を含む入力値をそのまま表示（0は"0"）、false なら予算由来の値を表示（従来動作）
+        const dispVal = (v) => (v === 0 ? '0' : (v ? fmtComma(v) : ''));
+        html += `<td class="${tdCls(col)}"><input type="text" inputmode="numeric" value="${hasInput ? dispVal(editVal) : (editVal ? fmtComma(editVal) : '')}" onfocus="onCellInputFocus(this)" onblur="onCellInputBlur(this)" onchange="onMidtermPlanChange(${col.planFY},'${it.id}',this.value)"></td>`;
       } else {
         html += `<td style="text-align:right" class="${tdCls(col)} ${v < 0 ? 'negative' : ''}">${fmt(v, isCalc)}</td>`;
       }

@@ -1576,7 +1576,12 @@ async function renderBudgetTable() {
   const dis = canEdit ? '' : 'disabled';
   const showDist = canEdit;
   let html = '<thead><tr><th>科目</th>' + (showDist ? '<th>配分</th>' : '') + '<th class="col-total">期間合計</th>';
-  vm.forEach(m => html += `<th>${getMonthLabel(m)}</th>`);
+  vm.forEach(m => {
+    const inheritBtn = (canEdit && m > 0)
+      ? `<br><button class="btn btn-secondary" style="font-size:10px;padding:1px 5px;margin-top:2px;" onclick="copyPrevMonthBudget(${m})">←引継</button>`
+      : '';
+    html += `<th>${getMonthLabel(m)}${inheritBtn}</th>`;
+  });
   html += '</tr></thead><tbody>';
 
   ITEMS.forEach(it => {
@@ -2660,6 +2665,24 @@ function onAnnualChange(id,v) { takeSnapshot(); D().annualInputs[id]=parseComma(
 function onDistChange(id,v) { takeSnapshot(); D().distMethod[id]=v; if(D().annualInputs[id]) distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onBudgetCellChange(id,m,v) { takeSnapshot(); D().budget[id][m]=parseComma(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onActualCellChange(id,m,v) { takeSnapshot(); D().actual[id][m]=parseComma(v)||0; renderActualTable(); scheduleSave(); }
+function copyPrevMonthBudget(m) {
+  if (!editMode || !isSingleDept() || (userRole !== 'admin' && userRole !== 'editor')) { alert('編集権限がありません'); return; }
+  if (m <= 0) return;
+  const prevLabel = getMonthLabel(m - 1);
+  const curLabel = getMonthLabel(m);
+  if (!confirm(`${prevLabel}の手入力値を ${curLabel} へ引き継ぎます（${curLabel}の手入力値は上書きされます）。よろしいですか？`)) return;
+  takeSnapshot();
+  let count = 0;
+  ITEMS.forEach(it => {
+    if (it.type === 'input' && !it.actualOnly && isItemVisible(it)) {
+      D().budget[it.id][m] = D().budget[it.id][m - 1] || 0;
+      count++;
+    }
+  });
+  renderBudgetTable();
+  scheduleSave();
+  alert(`${count}項目を引き継ぎました`);
+}
 let currentFiscalYear = '2026';
 async function updateHeaders() {
   const newFY = getFiscalYear();

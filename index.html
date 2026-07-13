@@ -1368,6 +1368,7 @@ function distributeMonths(deptId, itemId) {
   const annual = d.annualInputs[itemId];
   if (method === 'flat') { const p = Math.round(annual / 12); for (let m = 0; m < 12; m++) d.budget[itemId][m] = p; }
   else if (method === 'growth') { const dd = (annual - 12 * m1) / 66; for (let m = 0; m < 12; m++) d.budget[itemId][m] = Math.round(m1 + m * dd); }
+  else if (method === 'bonus') { const start = parseInt(document.getElementById('startMonth').value); const mJul = (7 - start + 12) % 12; const mJan = (13 - start) % 12; for (let m = 0; m < 12; m++) d.budget[itemId][m] = 0; d.budget[itemId][mJul] = Math.round(annual / 3); d.budget[itemId][mJan] = annual - Math.round(annual / 3); }
   else { const r = annual - m1; for (let m = 1; m < 12; m++) d.budget[itemId][m] = Math.round(r / 11); }
   const t = d.budget[itemId].reduce((s, v) => s + v, 0);
   d.budget[itemId][11] += annual - t;
@@ -1602,7 +1603,8 @@ async function renderBudgetTable() {
         html += `<td><select class="dist-select" onchange="onDistChange('${it.id}',this.value)" ${dis}>
           <option value="even" ${dm==='even'?'selected':''}>均等割り</option>
           <option value="growth" ${dm==='growth'?'selected':''}>均等増減</option>
-          <option value="flat" ${dm==='flat'?'selected':''}>全月同額</option></select></td>`;
+          <option value="flat" ${dm==='flat'?'selected':''}>全月同額</option>
+          <option value="bonus" ${dm==='bonus'?'selected':''}>賞与配分</option></select></td>`;
         const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
         html += `<td class="calc-value col-total">${fmt(periodTotal, true)}</td>`;
         vm.forEach(m => {

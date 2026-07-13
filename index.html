@@ -171,6 +171,27 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   #tab-compare table, #tab-yoy table, #tab-sales table { font-size: 7px; }
   #tab-compare th:nth-child(2), #tab-yoy th:nth-child(2) { width: 35px !important; }
 }
+/* ===== 中期計画タブ: A4縦1枚印刷 ===== */
+@media print {
+  body.print-midterm { }
+  body.print-midterm #tab-midterm { display: block !important; }
+  body.print-midterm #tab-midterm table { page-break-inside: avoid; }
+  body.print-midterm #tab-midterm #midtermTable { width: 100% !important; font-size: 7px !important; }
+  body.print-midterm #tab-midterm #midtermTable input[type=text] { border: none !important; background: transparent !important; padding: 0 !important; font-size: 7px !important; width: 100% !important; text-align: right; }
+  body.print-midterm #tab-midterm #midtermTable .mid-th-tools input[type=number] { display: none !important; }
+  body.print-midterm #tab-midterm #midtermTable button { display: none !important; }
+  body.print-midterm #tab-midterm > div:first-child button { display: none !important; }
+}
+@media print and (min-width: 0px) {
+  body.print-midterm { }
+}
+@page :first {
+  size: A4 portrait;
+}
+body.print-midterm {
+  /* @page 上書き用クラス: JSからbeforeprintで付与 */
+}
+/* @page size はJSのbeforeprintで動的スタイルタグを挿入して制御 */
 #printHeader { display: none; }
 
 /* ヘルプモーダル */
@@ -945,6 +966,66 @@ function applyPermissions() {
 }
 
 // ===== 印刷 =====
+// --- 中期計画タブA4縦印刷: beforeprint/afterprintハンドラ ---
+(function() {
+  let _midtermPrintStyle = null;
+  let _midtermPrintTransform = '';
+  let _midtermPrintContainer = null;
+
+  function _isMidtermActive() {
+    const activeTab = document.querySelector('.tab.active');
+    if (!activeTab) return false;
+    const m = activeTab.getAttribute('onclick') && activeTab.getAttribute('onclick').match(/'(\w+)'/);
+    return m && m[1] === 'midterm';
+  }
+
+  window.addEventListener('beforeprint', function() {
+    if (!_isMidtermActive()) return;
+    // bodyクラス付与
+    document.body.classList.add('print-midterm');
+    // @page A4 portrait を動的スタイルタグで挿入
+    _midtermPrintStyle = document.createElement('style');
+    _midtermPrintStyle.id = '__midterm_print_page_style';
+    _midtermPrintStyle.textContent = '@page { size: A4 portrait; margin: 10mm; }';
+    document.head.appendChild(_midtermPrintStyle);
+    // コンテナ取得してスケール適用
+    const container = document.getElementById('tab-midterm');
+    if (!container) return;
+    _midtermPrintContainer = container;
+    _midtermPrintTransform = container.style.transform || '';
+    // A4縦の印字可能領域: 190mm×277mm = 719px×1050px (96dpi換算)
+    const availW = 719;
+    const availH = 1050;
+    const cw = container.scrollWidth || container.offsetWidth || availW;
+    const ch = container.scrollHeight || container.offsetHeight || availH;
+    const scaleX = availW / cw;
+    const scaleY = availH / ch;
+    const scale = Math.min(scaleX, scaleY, 1);
+    container.dataset.printScale = scale;
+    container.style.transform = `scale(${scale})`;
+    container.style.transformOrigin = 'top left';
+    container.style.width = (cw * scale) + 'px';
+  });
+
+  window.addEventListener('afterprint', function() {
+    // bodyクラス除去
+    document.body.classList.remove('print-midterm');
+    // 動的スタイルタグ除去
+    if (_midtermPrintStyle && _midtermPrintStyle.parentNode) {
+      _midtermPrintStyle.parentNode.removeChild(_midtermPrintStyle);
+    }
+    _midtermPrintStyle = null;
+    // スケールを元に戻す
+    if (_midtermPrintContainer) {
+      _midtermPrintContainer.style.transform = _midtermPrintTransform;
+      _midtermPrintContainer.style.transformOrigin = '';
+      _midtermPrintContainer.style.width = '';
+      delete _midtermPrintContainer.dataset.printScale;
+      _midtermPrintContainer = null;
+    }
+  });
+})();
+
 function doPrint() {
   const tabNames = { budget: '予算', actual: '実績', compare: '予実比較', yoy: '年度比較', midterm: '中期計画' };
   const activeTab = document.querySelector('.tab.active');

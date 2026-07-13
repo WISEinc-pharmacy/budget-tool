@@ -1237,6 +1237,31 @@ async function renderUserList() {
   document.getElementById('userList').innerHTML = html + '</table>';
 }
 
+// ===== ドキュメントタイトル更新 =====
+function updateDocTitle() {
+  const visibleDepts = getVisibleDepts();
+  const names = selectedDepts.map(id => {
+    if (id === 'all') return '全体';
+    const d = DEPTS.find(d => d.id === id);
+    return d ? d.name : null;
+  }).filter(Boolean);
+
+  let suffix;
+  if (selectedDepts.includes('all')) {
+    suffix = '全体';
+  } else if (names.length === 0) {
+    suffix = null;
+  } else if (names.length === visibleDepts.length) {
+    suffix = '全店';
+  } else if (names.length <= 3) {
+    suffix = names.join('・');
+  } else {
+    suffix = names[0] + 'ほか' + (names.length - 1) + '店';
+  }
+
+  document.title = suffix ? '予実管理ダッシュボード（' + suffix + '）' : '予実管理ダッシュボード';
+}
+
 // ===== 部門チェックボックス =====
 function getVisibleDepts() {
   if (userRole === 'admin' || userRole === 'editor' || userRole === 'tax_advisor') return DEPTS;
@@ -1293,6 +1318,7 @@ function renderDeptBar() {
   }
 
   document.getElementById('deptBar').innerHTML = html;
+  updateDocTitle();
 }
 
 function selectSingleDept(deptId) {

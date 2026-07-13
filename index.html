@@ -2144,7 +2144,13 @@ async function renderMidtermTable() {
     }
     html += `<th class="${thCls}" style="min-width:130px">${col.label}${extra}</th>`;
     if (col.yoyBase) html += `<th class="mid-th mid-th-yoy">前年比</th>`;
-    if (col.sumVec) html += `<th class="mid-th" style="background:#6c3483;min-width:96px">差分<br><span style="font-size:9px;font-weight:400">各店舗計−全体</span></th>`;
+    if (col.sumVec) {
+      const canElim = editMode && (userRole === 'admin' || userRole === 'editor');
+      const elimBtn = canElim
+        ? `<br><button class="btn btn-secondary" style="font-size:10px;padding:2px 6px;margin-top:4px" onclick="eliminateMidtermDiff(${col.planFY})">差分をなくす</button>`
+        : '';
+      html += `<th class="mid-th" style="background:#6c3483;min-width:96px"><span style="font-size:9px;font-weight:400;display:block">※各店舗の計画合計と<br>全体入力の差</span>差分${elimBtn}</th>`;
+    }
   });
   html += '</tr></thead><tbody>';
 
@@ -2301,6 +2307,32 @@ function applyBulkPct(fy) {
   });
   scheduleMidtermSave(fy, deptId);
   renderMidtermTable();
+}
+
+// 差分をなくす: 全体モードの全体入力値を各部門の積み上げ合計で上書き（差分=0に）
+function eliminateMidtermDiff(fy) {
+  if (currentDeptId() !== 'all') { alert('全体モードでのみ使用できます'); return; }
+  if (!editMode || (userRole !== 'admin' && userRole !== 'editor')) { alert('編集権限がありません'); return; }
+  const fyLabel2 = `FY${fy}`;
+  if (!confirm(`${fyLabel2}の全体計画を各店舗計の値で上書きし、差分を0にします。よろしいですか？`)) return;
+  const allDeptIds = DEPTS.map(d => d.id);
+  const yd = midtermCache[fy];
+  if (!yd || !yd['all']) { alert('データ読込前です。少し待って再実行してください'); return; }
+  let count = 0;
+  ITEMS.forEach(it => {
+    if (it.type !== 'input' || it.actualOnly || !it.name) return; // calc/小計/利益行・ratio等は除外
+    // sumVec相当: 各部門積み上げ合計
+    let sumVal = 0;
+    allDeptIds.forEach(dId => {
+      const st = yd[dId]; if (!st) return;
+      sumVal += planAnnualOf(st, it.id);
+    });
+    yd['all'].annualInputs[it.id] = sumVal;
+    count++;
+  });
+  scheduleMidtermSave(fy, 'all');
+  renderMidtermTable();
+  alert(`${count}項目を更新しました。差分が0になりました。`);
 }
 
 // 計画年の年間額を月次予算へ展開（配分パターン・初月比率は当年度予算の設定を引き継ぐ）

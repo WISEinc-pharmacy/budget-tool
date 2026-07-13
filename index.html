@@ -1095,9 +1095,9 @@ function openHelpModal() {
       <ul>
         <li><strong>閲覧モード</strong>：チェックボックスで<strong>複数の部門を同時に選択</strong>でき、合計値が表示されます。</li>
         ${canEdit ? '<li><strong>編集モード</strong>：ラジオボタンで<strong>1部門ずつ</strong>選択して編集します。</li>' : ''}
-        <li>右側の「<strong>全選択 / 全解除 / 全店舗 / 東葛 / 城北</strong>」ボタンでまとめて切り替えできます。</li>
+        <li>右側の「<strong>全選択 / 全解除 / 全店舗 / 東葛 / 城北 / 外来</strong>」ボタンでまとめて切り替えできます。</li>
       </ul>
-      <div class="help-tip">東葛＝柏・さくら台・我孫子・ながれやま ／ 城北＝足立・アイ調剤</div></div>`;
+      <div class="help-tip">東葛＝柏・さくら台・我孫子・ながれやま ／ 城北＝足立・アイ調剤 ／ 外来＝越谷・清瀬</div></div>`;
   }
 
   // 4. 各タブの説明
@@ -1275,6 +1275,7 @@ function renderDeptBar() {
     html += `<button onclick="selectStoresOnly()">全店舗</button>`;
     html += `<button onclick="selectTokatsu()">東葛</button>`;
     html += `<button onclick="selectJohoku()">城北</button>`;
+    html += `<button onclick="selectGairai()">外来</button>`;
     html += `<button onclick="selectOther()">その他</button>`;
     html += `</div>`;
   }
@@ -1322,6 +1323,12 @@ function selectTokatsu() {
 
 function selectJohoku() {
   selectedDepts = ['adachi', 'ai_chozai'];
+  renderDeptBar();
+  renderCurrentTab();
+}
+
+function selectGairai() {
+  selectedDepts = ['koshigaya', 'kiyose'];
   renderDeptBar();
   renderCurrentTab();
 }

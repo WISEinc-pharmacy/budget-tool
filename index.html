@@ -171,6 +171,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   /* 予実比較・年度比較は行数が多いので更に縮小 */
   #tab-compare table, #tab-yoy table, #tab-sales table { font-size: 7px; }
   #tab-compare th:nth-child(2), #tab-yoy th:nth-child(2) { width: 35px !important; }
+  /* 期間合計列: 印刷時は通常セルに合わせて縮小（font-size:13pxのままだと文字がつぶれる） */
+  th.col-total, td.col-total { font-size: 8px !important; min-width: 45px !important; }
 }
 /* ===== 中期計画タブ: A4縦1枚印刷 ===== */
 /* font-size縮小はここでは行わない。transform scaleのみで1枚に収める（二重縮小防止） */

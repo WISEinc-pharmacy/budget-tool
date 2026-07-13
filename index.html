@@ -152,6 +152,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   @page { size: landscape; margin: 6mm; }
   body { font-size: 10px; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   #loginScreen, .header, .user-bar, .dept-bar, .tab-bar, .toolbar, .legend, .modal-overlay, .mode-indicator { display: none !important; }
+  button { display: none !important; } /* 表内ボタン（←引継等）の印刷映り込み防止 */
   #mainApp { display: block !important; }
   .tab-content { display: none !important; }
   .tab-content.active { display: block !important; }

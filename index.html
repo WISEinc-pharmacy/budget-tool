@@ -409,12 +409,13 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <h3 style="margin:0;color:#1a5276;font-size:15px;">📊 営業報告 — PDF取込</h3>
       <select id="salesMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
       <select id="salesDept" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
+      <a class="btn btn-secondary" href="https://wiseinc-pharmacy.github.io/pdf-merger/" target="_blank" rel="noopener" title="複数ページの結合・並べ替え・不要ページ削除ができます（別タブで開きます）">✂️ PDFを編集</a>
+      <span style="color:#e74c3c;font-size:12px;font-weight:600;">提出するPDFが複数になる場合は、編集で複数枚１部に結合して提出してください</span>
     </div>
     <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
       <label class="btn btn-import" id="salesPdfLabel" style="cursor:pointer;">
         📄 PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">
       </label>
-      <a class="btn btn-secondary" href="https://wiseinc-pharmacy.github.io/pdf-merger/" target="_blank" rel="noopener" title="複数ページの結合・並べ替え・不要ページ削除ができます（別タブで開きます）">✂️ PDFを編集</a>
       <span id="salesFileName" style="color:#666;font-size:12px;"></span>
       <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
     </div>

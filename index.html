@@ -4136,13 +4136,41 @@ const RECEIPT_PROFILES = {
     }
   },
   pharmaseed: {
-    // TODO: メディコム (アイ調剤薬局) 帳票PDF入手後に実装
-    // ⚠️ 2026-07-14 訂正: 旧「ウィーメックス pharma-Seed EX-LSA」は誤記。正しくはメディコム。
-    // 現状スタブ: STORE_PROFILEのマッピングのみ・fieldsは空。汎用フォールバックで動作中。
+    // メディコム (アイ調剤薬局)
+    // 帳票名: 点数区分別月計表 (1.67.72.16)
+    // 2026-07-14 PDF実物より実装
+    // 特記: 帳票の数値は「点数」単位。円換算 = 点数 × 10。
+    // 技術料 = 調剤基本料 + 調製料 + 調剤加算 + 薬学管理料（4項目合算・×10で円換算）
+    // 帳票左上に「技術料 109,487点」として合算値が記載されているが、
+    // 内訳4項目を個別取得して合算する（pharnes方式と同様のderive）
     id: 'pharmaseed',
     name: 'メディコム',
-    reportType: '(帳票種別未確定)',
-    fields: {}  // TODO: アイ調剤のPDF入手後に §2.2 形式で追記
+    reportType: '点数区分別月計表',
+    fields: {
+      // --- main metrics ---
+      rxCount:             { label: '処方せん枚数', unit: '枚', group: 'main' },
+      visitCount:          { label: '受付回数', unit: '回', group: 'main' },
+      medicalInstitutions: { label: '取扱い医療機関数', unit: '軒', group: 'main' },
+      totalInsurance:      { label: '保険合計金額', unit: '円', group: 'main', note: '帳票左下: 保険合計金額（円）' },
+      // 技術料合計: 帳票に「技術料 109,487点」と合計点数あり → 円換算×10で取得
+      // 内訳4項目も個別取得してderive検証に使う
+      techFee:             { label: '技術料合計', unit: '円', group: 'main', derive: '(basicDispensingFee + dispensingTechFee + additionTotal + pharmacyMgmtFee) * 10',
+                             note: '帳票: 技術料＝点数×10円。内訳4項目合算で算出' },
+      basicDispensingFee:  { label: '調剤基本料（点）', unit: '点', group: 'main', affectsTech: true, note: '帳票: 調剤基本料の点数（例:32,814点）' },
+      dispensingTechFee:   { label: '調製料（点）', unit: '点', group: 'main', affectsTech: true, note: '帳票: 調製料の点数' },
+      additionTotal:       { label: '調剤加算（点）', unit: '点', group: 'main', affectsTech: true, note: '帳票: 調剤加算の点数' },
+      pharmacyMgmtFee:     { label: '薬学管理料（点）', unit: '点', group: 'main', affectsTech: true, note: '帳票: 薬学管理料の点数' },
+      drugFee:             { label: '薬剤料（点）', unit: '点', group: 'main', note: '帳票: 薬剤料の点数（×10で円換算）' },
+      techPerVisit:        { label: '技術料/回', unit: '円', group: 'main', calc: true },
+      // --- 算定件数（コンクール用）--- 帳票p.2 薬学管理料の内訳（詳細）から
+      san_chozai_kanri1:        { label: '調剤管理料1', unit: '件', group: 'santeisuu' },
+      san_chozai_kanri2:        { label: '調剤管理料2', unit: '件', group: 'santeisuu' },
+      san_fukuyaku_kanri_3m_ari:{ label: '服薬管理指導料（3月内手有り）', unit: '件', group: 'santeisuu' },
+      san_fukuyaku_kanri_3m_nasi:{ label: '服薬管理指導料（3月内手無し）', unit: '件', group: 'santeisuu' },
+      san_fukuyaku_kanri_3m_shin:{ label: '服薬管理指導料（3月超・新患）', unit: '件', group: 'santeisuu' },
+      san_gairaifukuyaku2:      { label: '外来服薬支援料2', unit: '件', group: 'santeisuu' },
+      san_iryojoho_shutoku:     { label: '医療情報取得加算', unit: '件', group: 'santeisuu' },
+    }
   }
 };
 
@@ -4287,6 +4315,24 @@ JSONのみを返してください。説明不要。`;
   const santeiSection = santeiDesc
     ? `\n// 算定件数（コンクール用）\n${santeiDesc}`
     : '';
+
+  // pharmaseed（メディコム）専用プロンプト: 全数値が「点数」単位
+  if (profile.id === 'pharmaseed') {
+    return `この調剤薬局のPDF（${profile.name}・${profile.reportType}）から、以下の数値を正確に抽出してJSON形式で返してください。
+
+【重要ルール】
+- 数値のみ（カンマなし整数）で返してください
+- この帳票の「調剤報酬点数」欄はすべて「点数」単位です。円換算不要・点数のまま返してください
+- ただし「保険合計金額」「保険 合計金額」は帳票左下に「円」で記載されています→円単位のフル整数で返してください
+- 「処方せん枚数」「受付回数」「取扱い医療機関数」は件数（整数）で返してください
+- 帳票ラベルを正確に照合し、対応する数値セルを返してください
+- 見つからない場合はnullにしてください
+
+{
+${fieldDesc}${santeiSection}}
+
+JSONのみを返してください。説明不要。`;
+  }
 
   return `この調剤薬局のPDF（${profile.name}・${profile.reportType}）から、以下の数値を正確に抽出してJSON形式で返してください。
 
@@ -4519,16 +4565,28 @@ function computeTechFee(data, profile) {
   if (profile && profile.id === 'pharmy') {
     return data;
   }
-  // pharnesは 調剤基本料 + 薬剤調製料合計 + 加算合計 + 薬学管理料合計 の4項目合算
+  // pharnesは 調剤基本料 + 薬剤調製料合計 + 加算合計 + 薬学管理料合計 の4項目合算（円単位）
   if (profile && profile.id === 'pharnes') {
     const b = toInt(data.basicDispensingFee);
     const d = toInt(data.dispensingTechFee);
     const a = toInt(data.additionTotal);
     const p = toInt(data.pharmacyMgmtFee);
-    // 1項目でも取得できていれば合算（取得できていない項目は0扱い）
     const hasAny = [b, d, a, p].some(v => v != null);
     if (hasAny) {
       data.techFee = (b || 0) + (d || 0) + (a || 0) + (p || 0);
+    }
+    return data;
+  }
+  // pharmaseedは 4項目（点数単位）× 10 で円換算して合算
+  // 調剤基本料（点）+ 調製料（点）+ 調剤加算（点）+ 薬学管理料（点）→ ×10 = 技術料（円）
+  if (profile && profile.id === 'pharmaseed') {
+    const b = toInt(data.basicDispensingFee);
+    const d = toInt(data.dispensingTechFee);
+    const a = toInt(data.additionTotal);
+    const p = toInt(data.pharmacyMgmtFee);
+    const hasAny = [b, d, a, p].some(v => v != null);
+    if (hasAny) {
+      data.techFee = ((b || 0) + (d || 0) + (a || 0) + (p || 0)) * 10;
     }
     return data;
   }
@@ -4558,12 +4616,20 @@ function recalcSalesTech() {
   const techEl = document.getElementById('sales_techFee');
 
   if (profile && profile.id === 'pharnes') {
-    // pharnes: 4項目合算
+    // pharnes: 4項目合算（円単位）
     const b = get('basicDispensingFee') || 0;
     const d = get('dispensingTechFee') || 0;
     const a = get('additionTotal') || 0;
     const p = get('pharmacyMgmtFee') || 0;
     const sum = b + d + a + p;
+    if (techEl) { techEl.dataset.raw = String(sum); techEl.value = sum.toLocaleString(); }
+  } else if (profile && profile.id === 'pharmaseed') {
+    // pharmaseed: 4項目合算（点数）× 10 = 円
+    const b = get('basicDispensingFee') || 0;
+    const d = get('dispensingTechFee') || 0;
+    const a = get('additionTotal') || 0;
+    const p = get('pharmacyMgmtFee') || 0;
+    const sum = (b + d + a + p) * 10;
     if (techEl) { techEl.dataset.raw = String(sum); techEl.value = sum.toLocaleString(); }
   } else if (!profile || profile.id === 'elysia') {
     // elysia / 汎用: dispensingTechFee + pharmacyMgmtFee

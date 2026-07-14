@@ -4652,21 +4652,35 @@ async function submitSalesData() {
   btn.disabled = true; btn.textContent = '送信中...';
 
   try {
-    // 保持済みのPDF arrayBufferからBase64に変換
+    // 保持済みのPDF arrayBufferをBase64に変換し、チャンク分割してサブコレクションに保存
+    // Firestoreドキュメント上限（約1MB）を回避するため、250KB単位に分割する
+    // 各チャンクは salesData/{docId}/pdfChunks/{seq} に保存
     const renamedFileName = `${month}_保険合計_${deptName}.pdf`;
-    let pdfBase64 = null;
-    let pdfSkipped = false;
-    // Firestoreドキュメント上限（約1MB）を考慮し、Base64換算で900KB超はスキップ
-    // Base64サイズ = バイナリ × 4/3 ≒ 1.33倍。900KB Base64 ≒ 675KB PDF が安全上限
-    const PDF_B64_LIMIT = 900 * 1024; // 900KB
+    let pdfChunkCount = 0;
+    const PDF_CHUNK_SIZE = 250 * 1024; // 250KB（Base64文字数）
+
     if (salesPdfArrayBuffer) {
       const b64 = btoa(new Uint8Array(salesPdfArrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
-      if (b64.length <= PDF_B64_LIMIT) {
-        pdfBase64 = b64;
-      } else {
-        pdfSkipped = true;
-        console.warn(`PDFが大きすぎるためFirestoreへの保存をスキップ（${(b64.length / 1024).toFixed(0)}KB > ${PDF_B64_LIMIT / 1024}KB）`);
+      const totalChunks = Math.ceil(b64.length / PDF_CHUNK_SIZE);
+      console.log(`PDF チャンク分割: ${(b64.length / 1024).toFixed(0)}KB → ${totalChunks}チャンク`);
+
+      const chunkRef = db.collection('salesData').doc(docId).collection('pdfChunks');
+      // 既存チャンクを削除（上書き提出時の残滓除去）
+      const existingChunks = await chunkRef.get();
+      const delBatch = db.batch();
+      existingChunks.forEach(d => delBatch.delete(d.ref));
+      if (!existingChunks.empty) await delBatch.commit();
+
+      // チャンクを順番に書き込む（batch: 最大500件だが250KB×チャンク数は通常10件未満）
+      const writeBatch = db.batch();
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = b64.slice(i * PDF_CHUNK_SIZE, (i + 1) * PDF_CHUNK_SIZE);
+        const seq = String(i).padStart(4, '0');
+        writeBatch.set(chunkRef.doc(seq), { seq: i, data: chunk });
       }
+      await writeBatch.commit();
+      pdfChunkCount = totalChunks;
+      console.log(`PDF チャンク保存完了: ${pdfChunkCount}チャンク`);
     }
 
     // P5: profileId と receiptSystem を格納（統一キーはvaluesに入り分析は統一キーで集計）
@@ -4681,9 +4695,10 @@ async function submitSalesData() {
       submittedBy: currentUser?.email || 'unknown',
       fileName: renamedFileName,
       originalFileName: document.getElementById('salesFileName').textContent,
-      pdfBase64: pdfBase64 || null,
-      pdfSkipped: pdfSkipped,
-      backupStatus: pdfSkipped ? 'skipped_too_large' : 'pending',
+      pdfBase64: null,           // 旧方式（1MB制限で廃止）→ サブコレクション方式に移行
+      pdfChunkCount: salesPdfArrayBuffer ? pdfChunkCount : 0, // チャンク数（0=PDF未添付）
+      pdfSkipped: false,
+      backupStatus: salesPdfArrayBuffer ? 'pending' : 'no_pdf',
     }, { merge: true });
 
     // サーバーへの書き込みを確認（キャッシュ保存のみでサーバー拒否されていないかチェック）
@@ -4700,11 +4715,7 @@ async function submitSalesData() {
       }
     }
 
-    if (pdfSkipped) {
-      alert('提出完了！\n\n⚠ PDFファイルが大きすぎるため、数値データのみ保存しました。\nPDFの保存はスキップされています（元ファイルはお手元に残っています）。');
-    } else {
-      alert('提出完了！');
-    }
+    alert('提出完了！');
     document.getElementById('salesExtracted').style.display = 'none';
     btn.style.display = 'none';
     document.getElementById('salesFileName').textContent = '';
@@ -4745,7 +4756,9 @@ async function renderSalesHistory() {
       });
       const ts = d.submittedAt?.toDate ? d.submittedAt.toDate().toLocaleDateString('ja-JP') : '—';
       const pdfLabel = d.fileName || '閲覧';
-      const pdfLink = d.pdfBase64 ? `<a href="#" onclick="viewSalesPdf('${doc.id}');return false;" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : (d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : '—');
+      // PDF表示リンク: 新方式(pdfChunkCount>0) / 旧方式(pdfBase64) / pdfUrl の順に判定
+      const hasPdf = (d.pdfChunkCount > 0) || d.pdfBase64 || d.pdfUrl;
+      const pdfLink = hasPdf ? `<a href="#" onclick="viewSalesPdf('${doc.id}');return false;" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : '—';
       const delBtn = `<button onclick="deleteSalesData('${doc.id}','${d.deptName||d.deptId}','${d.month}')" style="padding:2px 8px;font-size:11px;background:#e74c3c;color:#fff;border:none;border-radius:3px;cursor:pointer;">削除</button>`;
       html += `<td style="padding:4px 10px;text-align:center;">${pdfLink}</td><td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td><td style="padding:4px 10px;text-align:center;">${delBtn}</td></tr>`;
     });
@@ -4765,8 +4778,24 @@ async function viewSalesPdf(docId) {
   try {
     const doc = await db.collection('salesData').doc(docId).get();
     const data = doc.data();
-    if (!data?.pdfBase64) { alert('PDFデータがありません'); return; }
-    const binary = atob(data.pdfBase64);
+
+    let b64 = null;
+
+    // 新方式: サブコレクション pdfChunks からチャンクを結合
+    if (data?.pdfChunkCount > 0) {
+      const chunksSnap = await db.collection('salesData').doc(docId).collection('pdfChunks')
+        .orderBy('seq').get();
+      if (chunksSnap.empty) { alert('PDFデータがありません（チャンク欠損）'); return; }
+      b64 = chunksSnap.docs.map(d => d.data().data).join('');
+    }
+    // 旧方式（後方互換）: pdfBase64 フィールド直接
+    else if (data?.pdfBase64) {
+      b64 = data.pdfBase64;
+    }
+
+    if (!b64) { alert('PDFデータがありません'); return; }
+
+    const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     const blob = new Blob([bytes], { type: 'application/pdf' });
@@ -4790,6 +4819,13 @@ async function deleteSalesData(docId, deptName, month) {
         requestedAt: firebase.firestore.FieldValue.serverTimestamp(),
         requestedBy: currentUser?.email || 'unknown',
       });
+    }
+    // pdfChunks サブコレクションも削除（Firestoreは親削除でもサブコレクションは残る）
+    if (data?.pdfChunkCount > 0) {
+      const chunksSnap = await db.collection('salesData').doc(docId).collection('pdfChunks').get();
+      const chunkBatch = db.batch();
+      chunksSnap.forEach(d => chunkBatch.delete(d.ref));
+      if (!chunksSnap.empty) await chunkBatch.commit();
     }
     await db.collection('salesData').doc(docId).delete();
     alert('削除しました' + (data?.driveFileId ? '\nDriveのPDFは数分以内に自動削除されます。' : ''));

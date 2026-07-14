@@ -567,8 +567,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-<!-- Firebase Storage不使用（PDFはFirestoreにBase64保存） -->
 
 <script>
 // ===== Firebase =====
@@ -582,7 +582,7 @@ firebase.initializeApp({
 });
 const auth = firebase.auth();
 const db = firebase.firestore();
-// Firebase Storage不使用（PDFはFirestoreにBase64保存）
+const storage = firebase.storage();
 let currentUser = null;
 let userRole = 'viewer';
 
@@ -4652,41 +4652,58 @@ async function submitSalesData() {
   btn.disabled = true; btn.textContent = '送信中...';
 
   try {
-    // 保持済みのPDF arrayBufferからBase64に変換
     const renamedFileName = `${month}_保険合計_${deptName}.pdf`;
-    let pdfBase64 = null;
-    let pdfSkipped = false;
-    // Firestoreドキュメント上限（約1MB）を考慮し、Base64換算で900KB超はスキップ
-    // Base64サイズ = バイナリ × 4/3 ≒ 1.33倍。900KB Base64 ≒ 675KB PDF が安全上限
-    const PDF_B64_LIMIT = 900 * 1024; // 900KB
-    if (salesPdfArrayBuffer) {
-      const b64 = btoa(new Uint8Array(salesPdfArrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
-      if (b64.length <= PDF_B64_LIMIT) {
-        pdfBase64 = b64;
-      } else {
-        pdfSkipped = true;
-        console.warn(`PDFが大きすぎるためFirestoreへの保存をスキップ（${(b64.length / 1024).toFixed(0)}KB > ${PDF_B64_LIMIT / 1024}KB）`);
-      }
-    }
 
-    // P5: profileId と receiptSystem を格納（統一キーはvaluesに入り分析は統一キーで集計）
+    // P5: profileId と receiptSystem を格納
     const profileId = profile ? profile.id : null;
     const receiptSystem = profile ? profile.name : null;
 
+    // ---- Firebase Storage に PDF をアップロード ----
+    // pdfBase64 は廃止。Storage に直接バイナリを送ることで Firestore 1MB 制限を回避。
+    let pdfStoragePath = null;
+    let pdfUrl = null;
+    if (salesPdfArrayBuffer) {
+      btn.textContent = 'PDF保存中...';
+      const storagePath = `salesData/${docId}/${renamedFileName}`;
+      const storageRef = storage.ref(storagePath);
+      const uploadTask = storageRef.put(new Blob([salesPdfArrayBuffer], { type: 'application/pdf' }), {
+        contentType: 'application/pdf',
+        customMetadata: { deptId, month, uploadedBy: currentUser?.email || 'unknown' }
+      });
+
+      // アップロード進捗をボタンに表示
+      await new Promise((resolve, reject) => {
+        uploadTask.on('state_changed',
+          (snapshot) => {
+            const pct = Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100);
+            btn.textContent = `PDF保存中... ${pct}%`;
+          },
+          reject,
+          resolve
+        );
+      });
+
+      pdfStoragePath = storagePath;
+      pdfUrl = await storageRef.getDownloadURL();
+      btn.textContent = 'データ保存中...';
+    }
+
+    // ---- Firestore に数値データ + Storage パスを保存（pdfBase64 は使わない）----
     await db.collection('salesData').doc(docId).set({
       month, deptId, deptName, values,
-      profileId,         // P5: レセコンプロファイルID (elysia/pharmy/pharnes/pharmaseed/null)
-      receiptSystem,     // P5: レセコン名称 (例: "モイネット ファーミー")
+      profileId,
+      receiptSystem,
       submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
       submittedBy: currentUser?.email || 'unknown',
       fileName: renamedFileName,
       originalFileName: document.getElementById('salesFileName').textContent,
-      pdfBase64: pdfBase64 || null,
-      pdfSkipped: pdfSkipped,
-      backupStatus: pdfSkipped ? 'skipped_too_large' : 'pending',
+      pdfStoragePath: pdfStoragePath || null,
+      pdfUrl: pdfUrl || null,
+      pdfBase64: null,           // 旧フィールドは明示的に null（既存データとの互換性）
+      backupStatus: pdfStoragePath ? 'pending' : 'no_pdf',
     }, { merge: true });
 
-    // サーバーへの書き込みを確認（キャッシュ保存のみでサーバー拒否されていないかチェック）
+    // サーバー書き込み確認
     try {
       const verify = await db.collection('salesData').doc(docId).get({source: 'server'});
       if (!verify.exists) {
@@ -4694,17 +4711,13 @@ async function submitSalesData() {
       }
     } catch (verifyErr) {
       if (verifyErr.code === 'permission-denied') {
-        alert('⚠ Firestoreセキュリティルールエラー: salesData への書き込みが拒否されました。\n\nリロード後にデータが消えます。Firebase コンソール → Firestore → ルール で salesData の read/write を許可してください。');
+        alert('⚠ Firestoreセキュリティルールエラー: salesData への書き込みが拒否されました。\n\nFirebase コンソール → Firestore → ルール で salesData の read/write を許可してください。');
       } else {
         console.warn('書き込み確認エラー:', verifyErr.message);
       }
     }
 
-    if (pdfSkipped) {
-      alert('提出完了！\n\n⚠ PDFファイルが大きすぎるため、数値データのみ保存しました。\nPDFの保存はスキップされています（元ファイルはお手元に残っています）。');
-    } else {
-      alert('提出完了！');
-    }
+    alert('提出完了！' + (pdfStoragePath ? '\nPDFはGoogle Driveに自動保存されます（30分以内）。' : ''));
     document.getElementById('salesExtracted').style.display = 'none';
     btn.style.display = 'none';
     document.getElementById('salesFileName').textContent = '';
@@ -4765,12 +4778,26 @@ async function viewSalesPdf(docId) {
   try {
     const doc = await db.collection('salesData').doc(docId).get();
     const data = doc.data();
-    if (!data?.pdfBase64) { alert('PDFデータがありません'); return; }
-    const binary = atob(data.pdfBase64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: 'application/pdf' });
-    window.open(URL.createObjectURL(blob), '_blank');
+
+    // 新方式: Storage URL または Drive URL で開く
+    if (data?.pdfUrl) {
+      window.open(data.pdfUrl, '_blank');
+      return;
+    }
+    if (data?.driveFileId) {
+      window.open(`https://drive.google.com/file/d/${data.driveFileId}/view`, '_blank');
+      return;
+    }
+    // 旧方式（pdfBase64）: 既存データとの後方互換
+    if (data?.pdfBase64) {
+      const binary = atob(data.pdfBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      window.open(URL.createObjectURL(blob), '_blank');
+      return;
+    }
+    alert('PDFデータがありません');
   } catch (e) {
     alert('PDF表示エラー: ' + e.message);
   }
@@ -4782,8 +4809,18 @@ async function deleteSalesData(docId, deptName, month) {
     // Driveバックアップがあれば削除予約（agent_runnerが実行）
     const doc = await db.collection('salesData').doc(docId).get();
     const data = doc.data();
+
+    // Storage の PDF を削除（新方式）
+    if (data?.pdfStoragePath) {
+      try {
+        await storage.ref(data.pdfStoragePath).delete();
+      } catch (e) {
+        console.warn('Storage削除失敗（既に削除済みの可能性）:', e.message);
+      }
+    }
+
+    // Drive の PDF 削除予約（sync_sales_to_drive.mjs が処理）
     if (data?.driveFileId) {
-      // 削除予約をFirestoreに記録（agent_runnerが処理）
       await db.collection('salesDeleteQueue').doc(docId).set({
         driveFileId: data.driveFileId,
         deptName, month,

@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // salesData/{docId}/ 以下: 認証ユーザーのみ読み書き可
+    // ブラウザから PDF をアップロード・取得するために必要
+    match /salesData/{docId}/{fileName} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

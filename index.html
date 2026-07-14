@@ -4655,8 +4655,18 @@ async function submitSalesData() {
     // 保持済みのPDF arrayBufferからBase64に変換
     const renamedFileName = `${month}_保険合計_${deptName}.pdf`;
     let pdfBase64 = null;
+    let pdfSkipped = false;
+    // Firestoreドキュメント上限（約1MB）を考慮し、Base64換算で900KB超はスキップ
+    // Base64サイズ = バイナリ × 4/3 ≒ 1.33倍。900KB Base64 ≒ 675KB PDF が安全上限
+    const PDF_B64_LIMIT = 900 * 1024; // 900KB
     if (salesPdfArrayBuffer) {
-      pdfBase64 = btoa(new Uint8Array(salesPdfArrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
+      const b64 = btoa(new Uint8Array(salesPdfArrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
+      if (b64.length <= PDF_B64_LIMIT) {
+        pdfBase64 = b64;
+      } else {
+        pdfSkipped = true;
+        console.warn(`PDFが大きすぎるためFirestoreへの保存をスキップ（${(b64.length / 1024).toFixed(0)}KB > ${PDF_B64_LIMIT / 1024}KB）`);
+      }
     }
 
     // P5: profileId と receiptSystem を格納（統一キーはvaluesに入り分析は統一キーで集計）
@@ -4672,7 +4682,8 @@ async function submitSalesData() {
       fileName: renamedFileName,
       originalFileName: document.getElementById('salesFileName').textContent,
       pdfBase64: pdfBase64 || null,
-      backupStatus: 'pending',
+      pdfSkipped: pdfSkipped,
+      backupStatus: pdfSkipped ? 'skipped_too_large' : 'pending',
     }, { merge: true });
 
     // サーバーへの書き込みを確認（キャッシュ保存のみでサーバー拒否されていないかチェック）
@@ -4689,7 +4700,11 @@ async function submitSalesData() {
       }
     }
 
-    alert('提出完了！');
+    if (pdfSkipped) {
+      alert('提出完了！\n\n⚠ PDFファイルが大きすぎるため、数値データのみ保存しました。\nPDFの保存はスキップされています（元ファイルはお手元に残っています）。');
+    } else {
+      alert('提出完了！');
+    }
     document.getElementById('salesExtracted').style.display = 'none';
     btn.style.display = 'none';
     document.getElementById('salesFileName').textContent = '';

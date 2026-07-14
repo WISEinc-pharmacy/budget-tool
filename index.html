@@ -4102,12 +4102,38 @@ const RECEIPT_PROFILES = {
     }
   },
   pharnes: {
-    // TODO: ウィーメックス pharnes V-EX (ながれやま) 帳票PDF入手後に実装
-    // 現状スタブ: STORE_PROFILEのマッピングのみ・fieldsは空
+    // ウィーメックス pharnes V-EX (ながれやま薬局)
+    // 帳票名: 調剤報酬集計 合計一覧（円）
+    // 2026-07-14 PDF実物より実装
+    // 技術料 = 調剤基本料 + 薬剤調製料合計 + 加算合計 + 薬学管理料合計
+    // ※ 帳票上に「技術料合計」という合算行は存在しない。4項目を合算して算出する。
     id: 'pharnes',
     name: 'ウィーメックス pharnes V-EX',
-    reportType: '(帳票種別未確定)',
-    fields: {}  // TODO: PDF入手後に §2.2 形式で追記
+    reportType: '調剤報酬集計 合計一覧',
+    fields: {
+      // --- main metrics ---
+      rxCount:             { label: 'レセプト件数', unit: '件', group: 'main' },
+      visitCount:          { label: '受付回数', unit: '回', group: 'main' },
+      totalInsurance:      { label: '保険内請求金額', unit: '円', group: 'main', note: '帳票表記: 保険内請求金額。合計=調剤報酬金額' },
+      // 技術料合計は帳票に直接記載なし → 4項目合算で derive
+      techFee:             { label: '技術料合計', unit: '円', group: 'main', derive: 'basicDispensingFee + dispensingTechFee + additionTotal + pharmacyMgmtFee' },
+      basicDispensingFee:  { label: '調剤基本料', unit: '円', group: 'main', affectsTech: true, note: '帳票p.1: 件数欄右の金額（274,500等）' },
+      dispensingTechFee:   { label: '薬剤調製料合計', unit: '円', group: 'main', affectsTech: true, note: '帳票p.1: 【薬剤調製料合計】行の金額' },
+      additionTotal:       { label: '加算合計', unit: '円', group: 'main', affectsTech: true, note: '帳票p.1: 【加算合計】行の金額' },
+      pharmacyMgmtFee:     { label: '薬学管理料合計', unit: '円', group: 'main', affectsTech: true, note: '帳票p.2: 【薬学管理料合計】行の金額' },
+      drugFee:             { label: '薬剤料合計', unit: '円', group: 'main', note: '帳票p.1: 【薬剤料合計】行の金額' },
+      techPerVisit:        { label: '技術料/回', unit: '円', group: 'main', calc: true },
+      // --- 算定件数（コンクール用）--- 帳票p.2 薬学管理料の主要項目（件数あり）
+      san_chozai_kanri_naifu:   { label: '調剤管理（内服）', unit: '件', group: 'santeisuu' },
+      san_chozai_kanri_igai:    { label: '調剤管理（以外）', unit: '件', group: 'santeisuu' },
+      san_fukuyaku_kanri_3m:    { label: '服薬管理（３月有）', unit: '件', group: 'santeisuu' },
+      san_fukuyaku_kanri_igai:  { label: '服薬管理（以外）', unit: '件', group: 'santeisuu' },
+      san_fukuyaku_kanri_tokuyo:{ label: '服薬管理（特養）', unit: '件', group: 'santeisuu' },
+      san_fukuyaku_kanri_sonota:{ label: '服薬管理（手無他）', unit: '件', group: 'santeisuu' },
+      san_gairaifukuyaku2:      { label: '外来服薬２', unit: '件', group: 'santeisuu' },
+      san_nyuyoji_fukuyaku:     { label: '乳幼児服薬', unit: '件', group: 'santeisuu' },
+      san_kakari_shidou:        { label: 'かかりつけ指導', unit: '件', group: 'santeisuu' },
+    }
   },
   pharmaseed: {
     // TODO: ウィーメックス pharma-Seed EX-LSA (アイ調剤) 帳票PDF入手後に実装
@@ -4480,28 +4506,40 @@ function extractSalesValues(text) {
 // - 汎用フォールバック/未プロファイル: 従来ロジック（両方揃えば合算、なければ直接）
 // ⚠️ 挙動は既存と完全同一: elysia=合算・pharmy/汎用=直接。プロファイル明示で意図を表現。
 function computeTechFee(data, profile) {
-  // プロファイルがelysiaの場合は必ず合算（derive定義に従う）
+  const toInt = v => (v != null && v !== '') ? parseInt(v) : null;
+
+  // elysiaは dispensingTechFee + pharmacyMgmtFee の2項目合算
   if (profile && profile.id === 'elysia') {
-    const d = data.dispensingTechFee, p = data.pharmacyMgmtFee;
-    if (d != null && d !== '' && p != null && p !== '') {
-      data.techFee = parseInt(d) + parseInt(p);
+    const d = toInt(data.dispensingTechFee), p = toInt(data.pharmacyMgmtFee);
+    if (d != null && p != null) data.techFee = d + p;
+    return data;
+  }
+  // pharmyは techFee を直接読み取り済み → 合算しない
+  if (profile && profile.id === 'pharmy') {
+    return data;
+  }
+  // pharnesは 調剤基本料 + 薬剤調製料合計 + 加算合計 + 薬学管理料合計 の4項目合算
+  if (profile && profile.id === 'pharnes') {
+    const b = toInt(data.basicDispensingFee);
+    const d = toInt(data.dispensingTechFee);
+    const a = toInt(data.additionTotal);
+    const p = toInt(data.pharmacyMgmtFee);
+    // 1項目でも取得できていれば合算（取得できていない項目は0扱い）
+    const hasAny = [b, d, a, p].some(v => v != null);
+    if (hasAny) {
+      data.techFee = (b || 0) + (d || 0) + (a || 0) + (p || 0);
     }
     return data;
   }
-  // pharmyは techFee を直接読み取り済み → 合算しない（affectsTech:false）
-  if (profile && profile.id === 'pharmy') {
-    return data; // techFeeはGeminiが直接抽出済み
-  }
-  // 汎用フォールバック: 従来ロジック（両方揃えば合算）
-  const d = data.dispensingTechFee, p = data.pharmacyMgmtFee;
-  if (d != null && d !== '' && p != null && p !== '') {
-    data.techFee = parseInt(d) + parseInt(p);
-  }
+  // 汎用フォールバック: dispensingTechFee + pharmacyMgmtFee（従来ロジック）
+  const d = toInt(data.dispensingTechFee), p = toInt(data.pharmacyMgmtFee);
+  if (d != null && p != null) data.techFee = d + p;
   return data;
 }
 
-// P2: 表の編集時: 調剤技術料/薬学管理料を編集したら技術料を再計算して反映
+// P2: 表の編集時: affectsTech=true の項目を編集したら技術料合計を再計算して反映
 // elysia: dispensingTechFee + pharmacyMgmtFee → techFee
+// pharnes: basicDispensingFee + dispensingTechFee + additionTotal + pharmacyMgmtFee → techFee
 // pharmy/汎用: techFee は直接読取済み → 合算しない（affectsTech:false なので本関数は呼ばれない）
 function recalcSalesTech() {
   const get = id => {
@@ -4510,12 +4548,25 @@ function recalcSalesTech() {
     const raw = (el.dataset.raw || el.value || '').replace(/,/g, '');
     return raw ? parseInt(raw) : null;
   };
+  const setField = (id, val) => {
+    const el = document.getElementById('sales_' + id);
+    if (el) { el.dataset.raw = String(val); el.value = val.toLocaleString(); }
+  };
   const deptId = document.getElementById('salesDept').value;
   const profile = getProfileForDept(deptId);
-  // elysia のみ合算（pharmyはaffectsTech:falseなのでここには来ない。汎用も従来動作で合算）
-  if (!profile || profile.id === 'elysia' || !profile.id) {
+  const techEl = document.getElementById('sales_techFee');
+
+  if (profile && profile.id === 'pharnes') {
+    // pharnes: 4項目合算
+    const b = get('basicDispensingFee') || 0;
+    const d = get('dispensingTechFee') || 0;
+    const a = get('additionTotal') || 0;
+    const p = get('pharmacyMgmtFee') || 0;
+    const sum = b + d + a + p;
+    if (techEl) { techEl.dataset.raw = String(sum); techEl.value = sum.toLocaleString(); }
+  } else if (!profile || profile.id === 'elysia') {
+    // elysia / 汎用: dispensingTechFee + pharmacyMgmtFee
     const d = get('dispensingTechFee'), p = get('pharmacyMgmtFee');
-    const techEl = document.getElementById('sales_techFee');
     if (d != null && p != null && techEl) {
       const sum = d + p;
       techEl.dataset.raw = String(sum);

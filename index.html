@@ -4136,12 +4136,13 @@ const RECEIPT_PROFILES = {
     }
   },
   pharmaseed: {
-    // TODO: ウィーメックス pharma-Seed EX-LSA (アイ調剤) 帳票PDF入手後に実装
-    // 現状スタブ: STORE_PROFILEのマッピングのみ・fieldsは空
+    // TODO: メディコム (アイ調剤薬局) 帳票PDF入手後に実装
+    // ⚠️ 2026-07-14 訂正: 旧「ウィーメックス pharma-Seed EX-LSA」は誤記。正しくはメディコム。
+    // 現状スタブ: STORE_PROFILEのマッピングのみ・fieldsは空。汎用フォールバックで動作中。
     id: 'pharmaseed',
-    name: 'ウィーメックス pharma-Seed EX-LSA',
+    name: 'メディコム',
     reportType: '(帳票種別未確定)',
-    fields: {}  // TODO: PDF入手後に §2.2 形式で追記
+    fields: {}  // TODO: アイ調剤のPDF入手後に §2.2 形式で追記
   }
 };
 

@@ -4969,6 +4969,7 @@ function monthIdxToYM(idx) {
 
 /** 指定部門・月のKOT総労働時間(h)を返す。データなし→0 */
 function getKotWorkingHours(deptId, monthIdx) {
+  // 分母 = 残業込み総労働時間（判例99・2026-07-13確定: assignedMinutes + overtimeMinutes）
   if (!laborDataCache?.months) return 0;
   const kotName = DEPT_TO_KOT[deptId];
   if (!kotName) return 0;
@@ -4976,7 +4977,10 @@ function getKotWorkingHours(deptId, monthIdx) {
   const mData = laborDataCache.months.find(m => m.yearMonth === ym);
   if (!mData?.divisions) return 0;
   const div = mData.divisions.find(d => d.name === kotName);
-  return div ? div.assignedMinutes / 60 : 0;
+  if (!div) return 0;
+  const assigned = div.assignedMinutes || 0;
+  const overtime = div.overtimeMinutes || 0;
+  return (assigned + overtime) / 60;
 }
 
 /** 技術料人時生産性: 技術料 ÷ 総労働時間(h) → 円/h */

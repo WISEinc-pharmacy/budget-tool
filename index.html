@@ -4666,15 +4666,20 @@ function renderSalesExtracted(hasValues, profile) {
   const noExt = document.getElementById('salesNoExtracted');
   if (noExt) noExt.style.display = 'none';
 
-  /** 1行分のHTML（統一キーid, ラベル, 単位, affectsTech, calc） */
-  function rowHtml(id, label, unit, affectsTech, calcFlag, isDerive) {
+  // 丸数字変換（1→①, 2→②, ... 20→⑳）
+  const circleNum = n => ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'][n-1] || `(${n})`;
+
+  /** 1行分のHTML（統一キーid, ラベル, 単位, affectsTech, calc, num=行番号, formula=計算式文字列） */
+  function rowHtml(id, label, unit, affectsTech, calcFlag, isDerive, num, formula) {
     const val = salesExtractedData[id];
     const borderColor = val !== null && val !== undefined ? '#2ecc71' : '#e74c3c';
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
     const disabledAttr = (calcFlag || isDerive) ? 'disabled' : '';
     const onblurExtra = affectsTech ? ';recalcSalesTech()' : '';
+    const numBadge = num ? `<span style="color:#1a5276;font-weight:700;font-size:18px;margin-right:4px;">${circleNum(num)}</span>` : '';
+    const formulaBadge = formula ? `<span style="color:#7f8c8d;font-size:13px;margin-left:6px;">${formula}</span>` : '';
     return `<tr style="background:${bgColor}">
-      <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${label} <span style="color:#999;font-size:17px;">${unit}</span></td>
+      <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${numBadge}${label}${formulaBadge} <span style="color:#999;font-size:17px;">${unit}</span></td>
       <td style="padding:4px 6px;"><input type="text" id="sales_${id}" value="${val!=null?val.toLocaleString():''}" data-raw="${val!=null?val:''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${disabledAttr} onfocus="this.value=this.dataset.raw" onblur="this.dataset.raw=this.value.replace(/,/g,'');this.value=this.dataset.raw?parseInt(this.dataset.raw).toLocaleString():''${onblurExtra}"></td>
     </tr>`;
   }
@@ -4682,17 +4687,37 @@ function renderSalesExtracted(hasValues, profile) {
   let html = '<colgroup><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">数値</th></tr></thead><tbody>';
 
   if (!profile || Object.keys(profile.fields).length === 0) {
-    // 汎用フォールバック: 従来の SALES_ITEMS で描画
-    SALES_ITEMS.forEach(item => {
-      html += rowHtml(item.id, item.name, item.unit, item.affectsTech || false, item.calc || false, false);
+    // 汎用フォールバック: 従来の SALES_ITEMS で描画（番号付き）
+    SALES_ITEMS.forEach((item, i) => {
+      html += rowHtml(item.id, item.name, item.unit, item.affectsTech || false, item.calc || false, false, i + 1, null);
     });
   } else {
-    // P2: プロファイル駆動: main グループをプロファイルのlabelで表示
+    // P2: プロファイル駆動: main グループをプロファイルのlabelで表示（番号+計算式付き）
     const mainFields = getMainFields(profile);
+
+    // プロファイルごとの技術料計算式を定義（derive欄に対して番号参照で表示）
+    // 番号は mainFields の表示順（calc除外前）の index+1
+    // derive を持つフィールドの計算式をid→番号で解決するためにidMapを作成
+    const idToNum = {};
+    let dispNum = 0;
+    mainFields.forEach(f => { dispNum++; idToNum[f.id] = dispNum; });
+
+    // 技術料合計(techFee)のformula文字列をプロファイルごとに生成
+    const techFeeFormulas = {
+      elysia:      () => `= ${circleNum(idToNum['dispensingTechFee'])}＋${circleNum(idToNum['pharmacyMgmtFee'])}`,
+      pharnes:     () => `= ${circleNum(idToNum['basicDispensingFee'])}＋${circleNum(idToNum['dispensingTechFee'])}＋${circleNum(idToNum['additionTotal'])}＋${circleNum(idToNum['pharmacyMgmtFee'])}`,
+      pharmaseed:  () => `= (${circleNum(idToNum['basicDispensingFee'])}＋${circleNum(idToNum['dispensingTechFee'])}＋${circleNum(idToNum['additionTotal'])}＋${circleNum(idToNum['pharmacyMgmtFee'])})×10`,
+      // pharmy: 直接読取のため計算式なし
+    };
+
+    let rowNum = 0;
     mainFields.forEach(f => {
+      rowNum++;
       const isDerive = !!f.derive;
       const isAffect = f.affectsTech === true;
-      html += rowHtml(f.id, f.label, f.unit, isAffect, f.calc || false, isDerive);
+      // derive フィールド（技術料合計）には計算式を付与
+      const formula = (isDerive && techFeeFormulas[profile.id]) ? techFeeFormulas[profile.id]() : null;
+      html += rowHtml(f.id, f.label, f.unit, isAffect, f.calc || false, isDerive, rowNum, formula);
     });
 
     // P3: 算定件数グループ
@@ -4704,7 +4729,7 @@ function renderSalesExtracted(hasValues, profile) {
         : '';
       html += `<tr><td colspan="2" style="padding:8px 8px 4px;font-size:14px;font-weight:700;color:#1a5276;background:#eaf2f8;border-top:2px solid #3498db;">算定件数（コンクール用）${santeiHeaderNote}</td></tr>`;
       santeiFields.forEach(f => {
-        html += rowHtml(f.id, f.label, f.unit, false, false, false);
+        html += rowHtml(f.id, f.label, f.unit, false, false, false, null, null);
       });
     }
   }

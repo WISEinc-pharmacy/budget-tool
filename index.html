@@ -4082,8 +4082,8 @@ const RECEIPT_PROFILES = {
       rxCount:            { label: 'レセプト件数', unit: '件', group: 'main' },
       visitCount:         { label: '受付回数', unit: '回', group: 'main' },
       totalInsurance:     { label: '保険合計', unit: '円', group: 'main' },
-      techFee:            { label: '技術料', unit: '円', group: 'main', note: '直接行あり・計算不要' },
-      dispensingTechFee:  { label: '調剤技術料', unit: '円', group: 'main', affectsTech: false, note: 'pharmy: techFee直接読取のため合算不要' },
+      techFee:            { label: '技術料', unit: '円', group: 'main', note: '直接行あり・計算不要。「技術料」行の金額のみを取ること。dispensingTechFeeと混同しないこと' },
+      dispensingTechFee:  { label: '薬剤調製料', unit: '円', group: 'main', affectsTech: false, note: 'pharmy帳票の正式名称は「薬剤調製料」。技術料行の値を入れないこと' },
       pharmacyMgmtFee:    { label: '薬学管理料', unit: '円', group: 'main', affectsTech: false },
       drugFee:            { label: '薬剤料', unit: '円', group: 'main' },
       basicFee:           { label: '調剤基本料', unit: '点', group: 'main' },
@@ -4316,6 +4316,29 @@ JSONのみを返してください。説明不要。`;
   const santeiSection = santeiDesc
     ? `\n// 算定件数（コンクール用）\n${santeiDesc}`
     : '';
+
+  // pharmy（モイネット ファーミー）専用プロンプト: 技術料と薬剤調製料の混同防止
+  if (profile.id === 'pharmy') {
+    return `この調剤薬局のPDF（${profile.name}・${profile.reportType}）から、以下の数値を正確に抽出してJSON形式で返してください。
+
+【重要ルール】
+- 数値のみ（カンマなし整数）で返してください
+- 金額（円）は必ず「円単位のフル金額」で返してください
+- 調剤基本料のみ「点」単位の整数で返してください（円換算不要）
+- 「小計」ではなく「合計」行の値を取ること
+- 帳票ラベルを正確に照合し、対応する数値セルを返してください
+- 見つからない場合はnullにしてください
+
+【特に重要: 技術料と薬剤調製料を混同しないこと】
+- "techFee"（技術料）: 帳票上の「技術料」行に書かれている金額だけを入れること
+- "dispensingTechFee"（薬剤調製料）: 帳票上の「薬剤調製料」行に書かれている金額だけを入れること
+- 「技術料」の数値を「薬剤調製料」に流用しないこと。これらは別の行の別の金額です
+
+{
+${fieldDesc}${santeiSection}}
+
+JSONのみを返してください。説明不要。`;
+  }
 
   // pharmaseed（メディコム）専用プロンプト: 全数値が「点数」単位
   if (profile.id === 'pharmaseed') {

@@ -8,4 +8,5 @@ node_modules/
 print_test*.html
 print_test*.mjs
 print_test*.pdf
+verify_print_logic.mjs
 *.bak-*

@@ -179,7 +179,21 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 /* font-size縮小はここでは行わない。transform scaleのみで1枚に収める（二重縮小防止） */
 @media print {
   body.print-midterm { }
-  body.print-midterm #tab-midterm { display: block !important; }
+  /* ナビ/UI要素を非表示（汎用ルールと重複するが詳細度を明示するため再定義） */
+  body.print-midterm .header,
+  body.print-midterm .tab-bar,
+  body.print-midterm .toolbar,
+  body.print-midterm .dept-bar,
+  body.print-midterm .user-bar { display: none !important; }
+  /* 他タブを明示的に非表示（.tab-content.active の汎用ルールを上書き） */
+  body.print-midterm #tab-budget,
+  body.print-midterm #tab-actual,
+  body.print-midterm #tab-compare,
+  body.print-midterm #tab-yoy,
+  body.print-midterm #tab-kessanCheck,
+  body.print-midterm #tab-sales,
+  body.print-midterm #tab-labor { display: none !important; }
+  body.print-midterm #tab-midterm { display: block !important; width: 190mm; overflow: visible; }
   body.print-midterm #tab-midterm table { page-break-inside: avoid; }
   /* font-size を @media print で変えない → beforeprint の計測値と印刷実体が一致する */
   body.print-midterm #tab-midterm #midtermTable { width: max-content !important; }

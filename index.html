@@ -4463,6 +4463,14 @@ async function handleSalesPdf(input) {
       if (val !== null && val !== undefined) salesExtractedData[key] = parseInt(val);
     }
 
+    // INC-187: pharmaseed(メディコム)は薬剤料(drugFee)がPDF上「点数」単位で返るため、
+    // 抽出直後に1回だけ円換算(×10)する。以降のDOM表示・submitSalesDataでの再収集は
+    // 既に円換算済みの値を扱うだけになり、computeTechFee(techFee専用・submitSalesDataで
+    // 再度呼ばれる)はdrugFeeに触れないため二重換算は発生しない。
+    if (profile && profile.id === 'pharmaseed' && salesExtractedData.drugFee != null) {
+      salesExtractedData.drugFee = Math.round(salesExtractedData.drugFee) * 10;
+    }
+
     // P2: 技術料の自動演算（プロファイル駆動・elysia=調剤技術料+薬学管理料 / 汎用も同様）
     computeTechFee(salesExtractedData, profile);
     // 技術料/回を計算
@@ -4816,6 +4824,35 @@ async function submitSalesData() {
   }
 
   if (Object.keys(values).length === 0) { alert('データがありません'); return; }
+
+  // INC-187: 提出時整合性ガード。techFee(技術料)+drugFee(薬剤料) が totalInsurance(保険合計)
+  // から大きく乖離している場合（単位換算漏れ・AIの誤抽出など）は提出をブロックし、乖離率を表示する。
+  // 全プロファイル共通（プロファイル固有ロジックではなく最終値の突合のため）。閾値10%
+  // （実店舗の自然乖離は特定保険医療材料料等で0.1〜1.4%程度・アイ調剤の実事故は61%乖離だった）。
+  // fail-soft: ガード自体が例外を投げても提出機能を止めない（INC-183/184の教訓＝ガードの例外で
+  // 提出全体を壊さない）。異常時はconsole.warnのみでチェックをスキップし、提出は継続させる。
+  try {
+    const ti = values.totalInsurance;
+    const tf = values.techFee || 0;
+    const df = values.drugFee || 0;
+    if (ti != null && ti > 0 && (tf > 0 || df > 0)) {
+      const sum = tf + df;
+      const diffRate = Math.abs(sum - ti) / ti;
+      if (diffRate > 0.10) {
+        const pct = (diffRate * 100).toFixed(1);
+        alert(
+          `⚠ 提出ブロック: 整合性チェックに失敗しました\n\n` +
+          `技術料 ${tf.toLocaleString()}円 + 薬剤料 ${df.toLocaleString()}円 = ${sum.toLocaleString()}円\n` +
+          `保険合計金額 = ${ti.toLocaleString()}円\n` +
+          `乖離率 = ${pct}%（許容10%を超過）\n\n` +
+          `単位換算ミスやAIの読み取り誤りの可能性があります。抽出結果を確認し、必要なら手修正してから再提出してください。`
+        );
+        return;
+      }
+    }
+  } catch (guardErr) {
+    console.warn('INC-187整合性ガードでエラーが発生しましたが、fail-softのため提出は継続します:', guardErr);
+  }
 
   // 年月確認の警告
   const [y, m] = month.split('-');

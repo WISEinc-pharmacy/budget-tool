@@ -4175,7 +4175,12 @@ const RECEIPT_PROFILES = {
       dispensingTechFee:   { label: '調製料（点）', unit: '点', group: 'main', affectsTech: true, note: '帳票: 調製料の点数' },
       additionTotal:       { label: '調剤加算（点）', unit: '点', group: 'main', affectsTech: true, note: '帳票: 調剤加算の点数' },
       pharmacyMgmtFee:     { label: '薬学管理料（点）', unit: '点', group: 'main', affectsTech: true, note: '帳票: 薬学管理料の点数' },
-      drugFee:             { label: '薬剤料（点）', unit: '点', group: 'main', note: '帳票: 薬剤料の点数（×10で円換算）' },
+      // INC: drugFeeはAI抽出直後に×10円換算され(handleSalesPdf内)、以降は円のまま保持・表示・提出される
+      // （4項目合算のtechFeeのようにderiveで都度×10するのではなく、値自体を1回だけ円に書き換える方式）。
+      // そのため unit='点' はAI抽出プロンプト向け（PDF記載は点数のため）、表示は displayUnit='円' を使う。
+      // 旧: label:'薬剤料（点）' unit:'点' のみだったため、実際は円換算済みの値が「点」ラベルで表示され、
+      // 利用者が「桁が多すぎる」と誤認して手動で0を1つ消し、INC-187整合性ガードに提出ブロックされた事故あり。
+      drugFee:             { label: '薬剤料', unit: '点', displayUnit: '円', group: 'main', note: '帳票の点数を内部で×10円換算した値を表示・保存（入力欄は円単位）' },
       techPerVisit:        { label: '技術料/回', unit: '円', group: 'main', calc: true },
       // --- 算定件数（コンクール用）--- 帳票p.2 薬学管理料の内訳（詳細）から
       san_chozai_kanri1:        { label: '調剤管理料1', unit: '件', group: 'santeisuu' },
@@ -4762,7 +4767,9 @@ function renderSalesExtracted(hasValues, profile) {
       const isAffect = f.affectsTech === true;
       // derive フィールド（技術料合計）には計算式を付与
       const formula = (isDerive && techFeeFormulas[profile.id]) ? techFeeFormulas[profile.id]() : null;
-      html += rowHtml(f.id, f.label, f.unit, isAffect, f.calc || false, isDerive, rowNum, formula);
+      // displayUnit優先: AI抽出単位(unit)と表示単位が異なるフィールド(例: pharmaseed.drugFeeは
+      // 抽出後に×10円換算されるため表示は円)向け。未指定なら従来通りunitを使う
+      html += rowHtml(f.id, f.label, f.displayUnit || f.unit, isAffect, f.calc || false, isDerive, rowNum, formula);
     });
 
     // P3: 算定件数グループ
@@ -4774,7 +4781,7 @@ function renderSalesExtracted(hasValues, profile) {
         : '';
       html += `<tr><td colspan="2" style="padding:8px 8px 4px;font-size:14px;font-weight:700;color:#1a5276;background:#eaf2f8;border-top:2px solid #3498db;">算定件数（コンクール用）${santeiHeaderNote}</td></tr>`;
       santeiFields.forEach(f => {
-        html += rowHtml(f.id, f.label, f.unit, false, false, false, null, null);
+        html += rowHtml(f.id, f.label, f.displayUnit || f.unit, false, false, false, null, null);
       });
     }
   }

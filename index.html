@@ -929,6 +929,8 @@ auth.onAuthStateChanged(async (user) => {
     document.getElementById('userName').textContent = user.displayName || user.email;
     document.getElementById('userPhoto').src = user.photoURL || '';
     await checkUserRole(user);
+    // 税理士: 初期表示から全部門（本部経費内訳を含む）を見られるようにする。他ロールの初期値（'kashiwa'）は変更しない
+    if (userRole === 'tax_advisor') { selectedDepts = DEPTS.map(d => d.id); }
     applyPermissions();
     updateModeUI();
     await loadAllFromFirestore();
@@ -1596,9 +1598,9 @@ function isItemVisible(it) {
   if (isViewerRole(userRole)) return false;
   // 全体モードは会社合計なので管理部門科目も含める
   if (currentDeptId() === 'all') return true;
-  // 本部経費（按分）とその内訳3行: admin/editorには部門によらず表示
+  // 本部経費（按分）とその内訳3行: admin/editor/tax_advisorには部門によらず表示
   const HONBU_IDS = ['honbu', 'honbu_yakuin', 'honbu_somu', 'naibu_ryuho'];
-  if (HONBU_IDS.includes(it.id) && (userRole === 'admin' || userRole === 'editor')) return true;
+  if (HONBU_IDS.includes(it.id) && (userRole === 'admin' || userRole === 'editor' || userRole === 'tax_advisor')) return true;
   // それ以外のadminOnly科目: 管理部門（adminOnly部門）が選択中の場合のみ表示
   const hasAdminDept = selectedDepts.some(id => {
     const dept = DEPTS.find(d => d.id === id);

@@ -32,5 +32,9 @@ service cloud.firestore {
     match /freee_import_requests/{doc} {
       allow read, write: if request.auth != null;
     }
+    // 人時生産性 月次記録（keiei_report/monthly_productivity.mjs書込。2026-08-03追加・未デプロイ）
+    match /keiei_monthly/{doc} {
+      allow read, write: if request.auth != null;
+    }
   }
 }

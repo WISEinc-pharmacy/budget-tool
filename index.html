@@ -942,15 +942,14 @@ function doLogin() { auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()
 function doLogout() { auth.signOut(); }
 
 auth.onAuthStateChanged(async (user) => {
-  // 認証確認完了後にローディング画面を解除
-  document.getElementById('loadingScreen').style.display = 'none';
   if (user) {
     currentUser = user;
     document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('mainApp').style.display = 'block';
     document.getElementById('userName').textContent = user.displayName || user.email;
     document.getElementById('userPhoto').src = user.photoURL || '';
     await checkUserRole(user);
+    // 未登録ユーザーはcheckUserRole内でsignOut済み → else分岐がローディング解除を担う
+    if (!auth.currentUser) return;
     // 税理士: 初期表示から全部門（本部経費内訳を含む）を見られるようにする。他ロールの初期値（'kashiwa'）は変更しない
     if (userRole === 'tax_advisor') { selectedDepts = DEPTS.map(d => d.id); }
     applyPermissions();
@@ -961,10 +960,14 @@ auth.onAuthStateChanged(async (user) => {
     updateYoyYearSelect();
     renderDeptBar();
     renderCurrentTab();
+    // 全初期化・データ取得完了後にメインアプリを表示し、ローディング画面を解除
+    document.getElementById('mainApp').style.display = 'block';
+    document.getElementById('loadingScreen').style.display = 'none';
   } else {
     currentUser = null;
-    document.getElementById('loginScreen').style.display = 'flex';
     document.getElementById('mainApp').style.display = 'none';
+    document.getElementById('loadingScreen').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
   }
 });
 

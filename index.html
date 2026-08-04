@@ -519,10 +519,12 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <h2>Freee取込</h2>
     <div style="margin:12px 0;padding:12px;border:2px solid #8e44ad;border-radius:8px;background:#faf5ff">
       <h3 style="margin:0 0 8px;color:#8e44ad">📡 freeeから月次取込（推奨）</h3>
-      <p style="margin:4px 0;font-size:13px">freee会計から選択月の部門別実績を直接取得して反映します。<strong>税理士との月次確認が終わった月</strong>を選んでください。入力途中の月は自動でブロックされます。既にデータがある月は上書き（洗い替え）します。</p>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-        <select id="freeeApiMonth" style="padding:6px 10px;font-size:14px"></select>
-        <button class="btn btn-import" id="btnFreeeApiExec" onclick="requestFreeeApiImport()">この月を取り込む</button>
+      <p style="margin:4px 0;font-size:13px">freee会計から選択期間の部門別実績を直接取得して反映します。<strong>税理士との月次確認が終わった月</strong>を選んでください（単月のみなら開始月・終了月を同じ月にしてください）。入力途中の月は自動でブロックされます（他の月には影響しません）。既にデータがある月は上書き（洗い替え）します。</p>
+      <div style="display:flex;gap:8px;align-items:flex-end;margin-top:8px;flex-wrap:wrap">
+        <label style="font-size:12px;color:#555">開始月<br><select id="freeeApiMonthStart" style="padding:6px 10px;font-size:14px"></select></label>
+        <span style="padding-bottom:6px">〜</span>
+        <label style="font-size:12px;color:#555">終了月<br><select id="freeeApiMonthEnd" style="padding:6px 10px;font-size:14px"></select></label>
+        <button class="btn btn-import" id="btnFreeeApiExec" onclick="requestFreeeApiImport()">この期間を取り込む</button>
       </div>
       <div id="freeeApiStatus" style="margin-top:10px"></div>
     </div>
@@ -3058,20 +3060,24 @@ function openFreeeModal() {
   populateFreeeApiMonths();
   document.getElementById('freeeApiStatus').innerHTML = '';
   document.getElementById('btnFreeeApiExec').disabled = false;
-  if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
+  freeeApiUnsubs.forEach((u) => u.unsub());
+  freeeApiUnsubs = [];
 }
 function closeFreeeModal() {
   document.getElementById('freeeModal').classList.remove('show');
-  if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
+  freeeApiUnsubs.forEach((u) => u.unsub());
+  freeeApiUnsubs = [];
 }
 
-// === freee API月次取込 ===
-// 依頼をFirestore(freee_import_requests)に書込み、麗華基盤の常駐ワーカー
+// === freee API月次取込（期間範囲対応） ===
+// 依頼をFirestore(freee_import_requests)に月ごとに1件ずつ書込み、麗華基盤の常駐ワーカー
 // (AI_secretary_reika/freee_import_worker.mjs)がfreee APIから部門別×品目別P/Lを
 // 取得して budgetData の対象月を洗い替えする。結果はonSnapshotでここに反映される。
-let freeeApiUnsub = null;
+// ワーカーは1サイクル（5分周期のタスクスケジューラ起動）でpending依頼を全件処理するため、
+// 範囲取込で月数が増えても複数サイクル待ちにはならない（実装時に freee_import_worker.mjs で確認済み）。
+// 取込ワーカー本体（1依頼=1ヶ月処理という土台）は変更しない。UI側で範囲内の月を時系列順に連続投入するだけ。
+let freeeApiUnsubs = []; // {unsub, ym} の配列（範囲取込中の各月の購読。単月選択時も要素数1で同じ経路を通る）
 function populateFreeeApiMonths() {
-  const sel = document.getElementById('freeeApiMonth');
   const now = new Date();
   const opts = [];
   for (let i = 1; i <= 12; i++) {
@@ -3079,7 +3085,23 @@ function populateFreeeApiMonths() {
     const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     opts.push(`<option value="${ym}">${d.getFullYear()}年${d.getMonth() + 1}月</option>`);
   }
-  sel.innerHTML = opts.join('');
+  document.getElementById('freeeApiMonthStart').innerHTML = opts.join('');
+  document.getElementById('freeeApiMonthEnd').innerHTML = opts.join('');
+}
+// 開始月・終了月（YYYY-MM）から対象月を時系列昇順で列挙する。年度（会計年度=2月始まり）は
+// またいでも通常の暦月なのでそのまま連番化できる。開始>終了の場合はnullを返す（呼び出し側でエラー表示）
+function enumerateFreeeYearMonths(startYm, endYm) {
+  const toIdx = (ym) => { const [y, m] = ym.split('-').map(Number); return y * 12 + (m - 1); };
+  const startIdx = toIdx(startYm);
+  const endIdx = toIdx(endYm);
+  if (!(startIdx <= endIdx)) return null;
+  const months = [];
+  for (let idx = startIdx; idx <= endIdx; idx++) {
+    const y = Math.floor(idx / 12);
+    const m = (idx % 12) + 1;
+    months.push(`${y}-${String(m).padStart(2, '0')}`);
+  }
+  return months;
 }
 function freeeFyPosition(ym) {
   const [y, m] = ym.split('-').map(Number);
@@ -3099,56 +3121,89 @@ async function freeeMonthHasData(ym) {
 }
 async function requestFreeeApiImport() {
   if (userRole !== 'admin' && userRole !== 'tax_advisor') { alert('管理者または税理士のみ使用できます'); return; }
-  const ym = document.getElementById('freeeApiMonth').value;
+  const startYm = document.getElementById('freeeApiMonthStart').value;
+  const endYm = document.getElementById('freeeApiMonthEnd').value;
   const btn = document.getElementById('btnFreeeApiExec');
   const box = document.getElementById('freeeApiStatus');
+  const months = enumerateFreeeYearMonths(startYm, endYm);
+  if (!months) {
+    box.innerHTML = '<div style="color:#c0392b">❌ 開始月は終了月と同じか、それより前の月にしてください</div>';
+    return;
+  }
   btn.disabled = true;
   try {
     box.innerHTML = '🔍 既存データを確認中...';
-    if (await freeeMonthHasData(ym)) {
-      const [yy, mm] = ym.split('-');
-      if (!confirm(`${yy}年${Number(mm)}月には既に実績データがあります。freeeの内容で上書き（洗い替え）しますか？`)) {
+    const existing = [];
+    for (const ym of months) {
+      if (await freeeMonthHasData(ym)) existing.push(ym);
+    }
+    if (existing.length) {
+      const label = existing.map((ym) => { const [yy, mm] = ym.split('-'); return `${yy}年${Number(mm)}月`; }).join('、');
+      if (!confirm(`以下の月には既に実績データがあります。freeeの内容で上書き（洗い替え）しますか？\n${label}`)) {
         box.innerHTML = ''; btn.disabled = false; return;
       }
     }
-    const ref = await db.collection('freee_import_requests').add({
-      yearMonth: ym,
-      requestedBy: (auth.currentUser && auth.currentUser.email) || 'unknown',
-      requestedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      status: 'pending',
-    });
-    if (freeeApiUnsub) freeeApiUnsub();
-    freeeApiUnsub = ref.onSnapshot((snap) => renderFreeeApiStatus(snap.data(), ym, btn, box));
+    // 既存の購読を解除してから、対象月を時系列順に1件ずつ依頼登録する
+    freeeApiUnsubs.forEach((u) => u.unsub());
+    freeeApiUnsubs = [];
+    const rows = {};
+    const refreshedMonths = new Set();
+    months.forEach((ym) => { rows[ym] = { status: 'queued' }; });
+    renderFreeeApiRangeStatus(box, months, rows, btn, refreshedMonths);
+    for (const ym of months) {
+      const ref = await db.collection('freee_import_requests').add({
+        yearMonth: ym,
+        requestedBy: (auth.currentUser && auth.currentUser.email) || 'unknown',
+        requestedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        status: 'pending',
+      });
+      const unsub = ref.onSnapshot((snap) => {
+        rows[ym] = snap.data() || rows[ym];
+        renderFreeeApiRangeStatus(box, months, rows, btn, refreshedMonths);
+      });
+      freeeApiUnsubs.push({ unsub, ym });
+    }
   } catch (e) {
     box.innerHTML = `<div style="color:#c0392b">❌ 依頼の登録に失敗しました: ${e.message}</div>`;
     btn.disabled = false;
   }
 }
-async function renderFreeeApiStatus(data, ym, btn, box) {
-  if (!data) return;
+// 範囲内の各月のstatusを一覧表示する。blockedの月があっても他の月の表示・購読は継続する
+// refreshedMonths: 「現在の年度表示を再読込済み」の月集合（重複リロード防止。呼び出し元で1回だけ生成し使い回す）
+function renderFreeeApiRangeStatus(box, months, rows, btn, refreshedMonths) {
   const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>');
-  if (data.status === 'pending') {
-    box.innerHTML = '⏳ 取込ワーカーの起動待ちです（最大5分）。この画面のまましばらくお待ちください...';
-  } else if (data.status === 'processing') {
-    box.innerHTML = '🔄 freeeから部門別データを取得・変換中です...';
-  } else if (data.status === 'blocked' || data.status === 'error' || data.status === 'expired') {
-    box.innerHTML = `<div style="padding:10px;background:#fff0f0;border:1px solid #e74c3c;border-radius:6px;color:#c0392b"><strong>⛔ 取込できませんでした</strong><br>${esc(data.blockReason)}</div>`;
-    btn.disabled = false;
-    if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
-  } else if (data.status === 'done') {
-    const r = data.result || {};
-    const nameOf = (id) => (DEPTS.find((d) => d.id === id) || {}).name || id;
-    const fmt = (n) => (n || 0).toLocaleString();
-    const td = 'padding:3px 8px;border:1px solid #ddd;text-align:right';
-    const rows = (r.summary || []).map((s) => `<tr><td style="padding:3px 8px;border:1px solid #ddd">${nameOf(s.deptId)}</td><td style="${td}">${fmt(s.sales)}</td><td style="${td}">${fmt(s.genka)}</td><td style="${td}">${fmt(s.sga)}</td><td style="${td}">${fmt(s.op)}</td></tr>`).join('');
-    const warn = (r.warnings || []).length ? `<div style="margin-top:6px;padding:8px;background:#fffbe6;border:1px solid #f39c12;border-radius:6px;font-size:12px">⚠ ${(r.warnings || []).map(esc).join('<br>⚠ ')}</div>` : '';
-    box.innerHTML = `<div style="padding:10px;background:#f0fff4;border:1px solid #27ae60;border-radius:6px"><strong>✅ ${ym} の取込が完了しました</strong>（全社売上 ${fmt(r.companySales)}円）<table style="margin-top:6px;font-size:12px;border-collapse:collapse"><tr><th style="${td}">部門</th><th style="${td}">売上</th><th style="${td}">原価</th><th style="${td}">販管費</th><th style="${td}">営業損益</th></tr>${rows}</table>${warn}</div>`;
-    btn.disabled = false;
-    if (freeeApiUnsub) { freeeApiUnsub(); freeeApiUnsub = null; }
-    if (r.fiscalYear === String(currentFiscalYear)) {
-      await loadAllFromFirestore();
-      renderCurrentTab();
+  const nameOf = (id) => (DEPTS.find((d) => d.id === id) || {}).name || id;
+  const fmt = (n) => (n || 0).toLocaleString();
+  const td = 'padding:2px 6px;border:1px solid #ddd;text-align:right';
+  const newlyDone = [];
+  const items = months.map((ym) => {
+    const data = rows[ym] || { status: 'queued' };
+    const [yy, mm] = ym.split('-');
+    const label = `${yy}年${Number(mm)}月`;
+    let body = '⏳ 依頼登録待ち...';
+    if (data.status === 'pending') body = '⏳ 取込ワーカーの起動待ちです（最大5分）';
+    else if (data.status === 'processing') body = '🔄 freeeから部門別データを取得・変換中...';
+    else if (data.status === 'blocked' || data.status === 'error' || data.status === 'expired') {
+      body = `<span style="color:#c0392b">⛔ 取込できませんでした: ${esc(data.blockReason)}</span>`;
+    } else if (data.status === 'done') {
+      const r = data.result || {};
+      const rowsHtml = (r.summary || []).map((s) => `<tr><td style="padding:2px 6px;border:1px solid #ddd">${nameOf(s.deptId)}</td><td style="${td}">${fmt(s.sales)}</td><td style="${td}">${fmt(s.genka)}</td><td style="${td}">${fmt(s.sga)}</td><td style="${td}">${fmt(s.op)}</td></tr>`).join('');
+      const warn = (r.warnings || []).length ? `<div style="margin-top:4px;font-size:11px;color:#e67e22">⚠ ${(r.warnings || []).map(esc).join('<br>⚠ ')}</div>` : '';
+      body = `<span style="color:#27ae60">✅ 完了</span>（全社売上 ${fmt(r.companySales)}円）<table style="margin-top:4px;font-size:11px;border-collapse:collapse"><tr><th style="${td}">部門</th><th style="${td}">売上</th><th style="${td}">原価</th><th style="${td}">販管費</th><th style="${td}">営業損益</th></tr>${rowsHtml}</table>${warn}`;
+      if (r.fiscalYear === String(currentFiscalYear) && !refreshedMonths.has(ym)) newlyDone.push(ym);
     }
+    return `<div style="padding:8px 10px;border:1px solid #ddd;border-radius:6px;margin-bottom:6px"><strong>${label}</strong><div style="margin-top:4px;font-size:13px">${body}</div></div>`;
+  });
+  box.innerHTML = items.join('');
+  const allFinished = months.every((ym) => ['done', 'blocked', 'error', 'expired'].includes((rows[ym] || {}).status));
+  if (allFinished) {
+    btn.disabled = false;
+    freeeApiUnsubs.forEach((u) => u.unsub());
+    freeeApiUnsubs = [];
+  }
+  if (newlyDone.length) {
+    newlyDone.forEach((ym) => refreshedMonths.add(ym));
+    loadAllFromFirestore().then(() => renderCurrentTab());
   }
 }
 

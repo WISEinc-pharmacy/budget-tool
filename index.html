@@ -120,7 +120,10 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .import-result.success { background: #d5f5e3; color: #1e8449; }
 .import-result.error { background: #fadbd8; color: #c0392b; }
 
-#loginScreen { display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+#loadingScreen { display: flex; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #f5f7fa; justify-content: center; align-items: center; z-index: 9999; }
+#loadingScreen .loading-inner { text-align: center; color: #1a5276; }
+#loadingScreen .loading-inner p { margin-top: 12px; font-size: 14px; }
+#loginScreen { display: none; justify-content: center; align-items: center; min-height: 80vh; }
 .login-box { background: #fff; border-radius: 8px; padding: 40px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; max-width: 400px; }
 .login-box h2 { margin-bottom: 8px; color: #1a5276; }
 .login-box p { margin-bottom: 24px; color: #777; }
@@ -226,6 +229,16 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 </style>
 </head>
 <body>
+
+<div id="loadingScreen">
+  <div class="loading-inner">
+    <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" style="animation:spin 1s linear infinite">
+      <circle cx="20" cy="20" r="16" fill="none" stroke="#1a5276" stroke-width="4" stroke-dasharray="60 40"/>
+    </svg>
+    <p>読み込み中...</p>
+  </div>
+</div>
+<style>@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }</style>
 
 <div id="loginScreen">
   <div class="login-box">
@@ -922,6 +935,8 @@ function doLogin() { auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()
 function doLogout() { auth.signOut(); }
 
 auth.onAuthStateChanged(async (user) => {
+  // 認証確認完了後にローディング画面を解除
+  document.getElementById('loadingScreen').style.display = 'none';
   if (user) {
     currentUser = user;
     document.getElementById('loginScreen').style.display = 'none';
@@ -1785,6 +1800,12 @@ async function renderActualTable() {
       vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); html+=`<td class="calc-value">${fmtProductivity(mv.gijutsu||0,getKotWorkingHours(deptId,m))}</td>`; });
     }
     html += '</tr>';
+    if (it.type === 'kot_kpi') {
+      // フリーランス取込状況行（kot_monthly.freelance参照・2026-08-04追加。人時生産性の計算式自体は変更しない）
+      html += `<tr class="ratio-row"><td>フリーランス取込状況</td><td class="calc-value">-</td>`;
+      vm.forEach(m => { html += `<td class="calc-value" style="font-size:11px;">${fmtFreelanceStatus(monthIdxToYM(m))}</td>`; });
+      html += '</tr>';
+    }
   });
   document.getElementById('actualTable').innerHTML = html + '</tbody>';
 }
@@ -5070,6 +5091,19 @@ function getKotWorkingHours(deptId, monthIdx) {
 function fmtProductivity(gijutsu, hours) {
   if (!hours || hours === 0) return '-';
   return Math.round(gijutsu / hours).toLocaleString() + '円/h';
+}
+
+/** フリーランス取込状況: kot_monthly/{ym}.freelance を参照（2026-08-04追加・書込元=freelance_import.mjs） */
+function fmtFreelanceStatus(ym) {
+  const mData = laborDataCache?.months?.find(m => m.yearMonth === ym);
+  const fl = mData?.freelance;
+  if (!fl) return '<span style="color:#bbb">―未取込</span>';
+  if (fl.status === 'complete') {
+    const totalHours = Object.values(fl.byStoreMinutes || {}).reduce((a, b) => a + b, 0) / 60;
+    const dateStr = fl.importedAt ? new Date(fl.importedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' }) : '';
+    return `<span style="color:#27ae60">✅完了 ${fl.memberCount}名/${totalHours.toFixed(1)}h</span>${dateStr ? `<br><span style="color:#999">(${dateStr}取込)</span>` : ''}`;
+  }
+  return `<span style="color:#f39c12">⚠️部分取込: 未提出${fl.missing || 0}名</span>`;
 }
 
 // ===== 労務タブ（KOT連携・Firestore） =====

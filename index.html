@@ -652,6 +652,11 @@ const ITEMS = [
   { id: 'genka_total', name: '売上原価合計', type: 'input', level: 0, plNum: '⑦' },
   { id: 'gross_profit', name: '売上総利益', type: 'calc', level: 0, style: 'profit', plNum: '⑧', plFormula: '＝⑥－⑦',
     calc: (m) => val(m, 'uriage_total') - val(m, 'genka_total') },
+  { id: 'yakuzai_sa', name: '薬価差', type: 'calc', level: 1, style: 'calc',
+    calc: (m) => val(m, 'yakuzai') - val(m, 'genka_total') },
+  { id: 'yakuzai_sa_ratio', name: '薬価差率', type: 'ratio', level: 1,
+    numerator: (m) => val(m, 'yakuzai') - val(m, 'genka_total'),
+    denominator: (m) => val(m, 'yakuzai') },
   { id: 'sec_sga', name: '販管費', type: 'header' },
   { id: 'kyuryo', name: '給料手当', type: 'input', level: 1, plNum: '⑨' },
   { id: 'shoyo', name: '賞与（一般）', type: 'input', level: 1, plNum: '⑩' },
@@ -5126,20 +5131,20 @@ function monthIdxToYM(idx) {
   return `${y}-${String(m).padStart(2, '0')}`;
 }
 
-/** 指定部門・月のKOT総労働時間(h)を返す。データなし→0 */
+/** 指定部門・月のKOT総労働時間(h)を返す。sheetMethodMinutesが無い月はnull（呼び出し側fmtProductivityで'-'表示）（2026-08-04 新定義切替） */
 function getKotWorkingHours(deptId, monthIdx) {
-  // 分母 = 残業込み総労働時間（判例99・2026-07-13確定: assignedMinutes + overtimeMinutes）
-  if (!laborDataCache?.months) return 0;
+  // 分母 = シート方式総労働時間 + フリーランス分（2026-08-04切替。旧定義assignedMinutes+overtimeMinutesは廃止・黙示フォールバック禁止）
+  if (!laborDataCache?.months) return null;
   const kotName = DEPT_TO_KOT[deptId];
-  if (!kotName) return 0;
+  if (!kotName) return null;
   const ym = monthIdxToYM(monthIdx);
   const mData = laborDataCache.months.find(m => m.yearMonth === ym);
-  if (!mData?.divisions) return 0;
+  if (!mData?.divisions) return null;
   const div = mData.divisions.find(d => d.name === kotName);
-  if (!div) return 0;
-  const assigned = div.assignedMinutes || 0;
-  const overtime = div.overtimeMinutes || 0;
-  return (assigned + overtime) / 60;
+  if (!div) return null;
+  if (div.sheetMethodMinutes === null || div.sheetMethodMinutes === undefined) return null;
+  const freelanceMinutes = mData.freelance?.byStoreMinutes?.[kotName] || 0;
+  return (div.sheetMethodMinutes + freelanceMinutes) / 60;
 }
 
 /** 技術料人時生産性: 技術料 ÷ 総労働時間(h) → 円/h */

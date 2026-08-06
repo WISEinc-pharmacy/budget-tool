@@ -4963,22 +4963,8 @@ async function submitSalesData() {
   btn.disabled = true; btn.textContent = '送信中...';
 
   try {
-    // 保持済みのPDF arrayBufferからBase64に変換
+    // Step 1: 数値データを先に保存（PDF保存の成否に関わらず完了させる）
     const renamedFileName = `${month}_保険合計_${deptName}.pdf`;
-    let pdfBase64 = null;
-    let pdfSkipped = false;
-    // Firestoreドキュメント上限（約1MB）を考慮し、Base64換算で900KB超はスキップ
-    // Base64サイズ = バイナリ × 4/3 ≒ 1.33倍。900KB Base64 ≒ 675KB PDF が安全上限
-    const PDF_B64_LIMIT = 900 * 1024; // 900KB
-    if (salesPdfArrayBuffer) {
-      const b64 = btoa(new Uint8Array(salesPdfArrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
-      if (b64.length <= PDF_B64_LIMIT) {
-        pdfBase64 = b64;
-      } else {
-        pdfSkipped = true;
-        console.warn(`PDFが大きすぎるためFirestoreへの保存をスキップ（${(b64.length / 1024).toFixed(0)}KB > ${PDF_B64_LIMIT / 1024}KB）`);
-      }
-    }
 
     // P5: profileId と receiptSystem を格納（統一キーはvaluesに入り分析は統一キーで集計）
     const profileId = profile ? profile.id : null;
@@ -4992,9 +4978,9 @@ async function submitSalesData() {
       submittedBy: currentUser?.email || 'unknown',
       fileName: renamedFileName,
       originalFileName: document.getElementById('salesFileName').textContent,
-      pdfBase64: pdfBase64 || null,
-      pdfSkipped: pdfSkipped,
-      backupStatus: pdfSkipped ? 'skipped_too_large' : 'pending',
+      pdfChunkCount: 0,
+      pdfSkipped: false,
+      backupStatus: salesPdfArrayBuffer ? 'pending' : 'no_pdf',
     }, { merge: true });
 
     // サーバーへの書き込みを確認（キャッシュ保存のみでサーバー拒否されていないかチェック）
@@ -5011,11 +4997,52 @@ async function submitSalesData() {
       }
     }
 
-    if (pdfSkipped) {
-      alert('提出完了！\n\n⚠ PDFファイルが大きすぎるため、数値データのみ保存しました。\nPDFの保存はスキップされています（元ファイルはお手元に残っています）。');
-    } else {
-      alert('提出完了！');
+    // Step 2: PDFをチャンク分割して pdfChunks サブコレクションに保存（fail-soft）
+    // PDF保存が失敗しても数値データは保存済み。alertのみ出して継続する。
+    if (salesPdfArrayBuffer) {
+      try {
+        btn.textContent = 'PDF保存中...';
+
+        // base64変換: チャンク単位でbtoa処理（O(n^2)の文字列連結を回避）
+        const uint8 = new Uint8Array(salesPdfArrayBuffer);
+        const BYTES_PER_CHUNK = 186000; // ~186KBバイナリ → ~248KB base64
+        let fullB64 = '';
+        for (let i = 0; i < uint8.length; i += BYTES_PER_CHUNK) {
+          fullB64 += btoa(String.fromCharCode(...uint8.slice(i, i + BYTES_PER_CHUNK)));
+        }
+
+        // base64を250,000文字単位でFirestoreチャンクに分割（1ドキュメント上限1MBの安全マージン）
+        const B64_CHUNK_SIZE = 250000;
+        const b64Chunks = [];
+        for (let i = 0; i < fullB64.length; i += B64_CHUNK_SIZE) {
+          b64Chunks.push(fullB64.slice(i, i + B64_CHUNK_SIZE));
+        }
+
+        const chunksRef = db.collection('salesData').doc(docId).collection('pdfChunks');
+
+        // 既存チャンク削除（再提出の場合）
+        const existingSnap = await chunksRef.get();
+        const delOps = [];
+        existingSnap.forEach(c => delOps.push(c.ref.delete()));
+        if (delOps.length > 0) await Promise.all(delOps);
+
+        // 新チャンク一括書き込み: seq=連番 (0始まり), data=base64文字列
+        const writeOps = b64Chunks.map((data, i) =>
+          chunksRef.doc(String(i).padStart(4, '0')).set({ seq: i, data })
+        );
+        await Promise.all(writeOps);
+
+        // 親ドキュメントにチャンク数を記録（sync_sales_to_drive.mjs がここで件数を判定する）
+        await db.collection('salesData').doc(docId).update({ pdfChunkCount: b64Chunks.length });
+
+        console.log(`PDF保存完了: ${b64Chunks.length}チャンク, ${(uint8.length / 1024).toFixed(0)}KB`);
+      } catch (pdfErr) {
+        console.error('PDF保存エラー（数値データは保存済み）:', pdfErr.message);
+        alert('数値データは提出完了しました。\n\n⚠ PDFの保存でエラーが発生しました: ' + pdfErr.message + '\n\nPDFは元ファイルをお手元に保管してください。管理者にご連絡いただければ再保存できます。');
+      }
     }
+
+    alert('提出完了！');
     document.getElementById('salesExtracted').style.display = 'none';
     btn.style.display = 'none';
     document.getElementById('salesFileName').textContent = '';

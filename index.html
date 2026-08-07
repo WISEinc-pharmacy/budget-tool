@@ -173,7 +173,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   #printHeader .print-meta { font-size: 10px; color: #555; margin-top: 2px; }
   tr.header-row, tr.subtotal-row, tr.profit-row, tr.ratio-row, tr.level-1, th, .col-total, td.col-total, th.col-total { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   /* 予実比較・年度比較は行数が多いので更に縮小 */
-  #tab-compare table, #tab-yoy table, #tab-sales table { font-size: 7px; }
+  #tab-compare table, #tab-yoy table, #tab-import table { font-size: 7px; }
   #tab-compare th:nth-child(2), #tab-yoy th:nth-child(2) { width: 35px !important; }
   /* 期間合計列: 印刷時は通常セルに合わせて縮小（font-size:13pxのままだと文字がつぶれる） */
   th.col-total, td.col-total { font-size: 8px !important; min-width: 45px !important; }
@@ -194,7 +194,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   body.print-midterm #tab-compare,
   body.print-midterm #tab-yoy,
   body.print-midterm #tab-kessanCheck,
-  body.print-midterm #tab-sales,
+  body.print-midterm #tab-import,
   body.print-midterm #tab-labor { display: none !important; }
   body.print-midterm #tab-midterm { display: block !important; width: 190mm; overflow: visible; }
   body.print-midterm #tab-midterm table { page-break-inside: avoid; }
@@ -294,11 +294,12 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   <div class="tab active" onclick="switchTab('budget')">予算</div>
   <div class="tab" onclick="switchTab('actual')">実績</div>
   <div class="tab" onclick="switchTab('compare')">予実比較</div>
+  <div class="tab" onclick="switchTab('homecare')">在宅内訳</div>
+  <div class="tab" onclick="switchTab('labor')">労務</div>
   <div class="tab" onclick="switchTab('yoy')">年度比較</div>
   <div class="tab" id="tabMidterm" onclick="switchTab('midterm')">中期計画</div>
   <div class="tab" id="tabKessanCheck" onclick="switchTab('kessanCheck')" style="display:none">決算照合</div>
-  <div class="tab" onclick="switchTab('sales')">営業報告</div>
-  <div class="tab" onclick="switchTab('labor')">労務</div>
+  <div class="tab" onclick="switchTab('import')">出力</div>
 </div>
 
 <div class="toolbar">
@@ -430,44 +431,88 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   </div>
 </div>
 
-<div id="tab-sales" class="tab-content">
-  <div style="padding:16px 24px;background:#f0f9f4;border-bottom:1px solid #a9dfbf;">
-    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
-      <h3 style="margin:0;color:#1a5276;font-size:15px;">📊 営業報告 — PDF取込</h3>
-      <select id="salesMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
-      <select id="salesDept" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
-      <a class="btn btn-secondary" href="https://wiseinc-pharmacy.github.io/pdf-merger/" target="_blank" rel="noopener" title="複数ページの結合・並べ替え・不要ページ削除ができます（別タブで開きます）">✂️ PDFを編集</a>
-      <span style="color:#e74c3c;font-size:12px;font-weight:600;">提出するPDFが複数になる場合は、編集で複数枚１部に結合して提出してください</span>
+<div id="tab-import" class="tab-content">
+  <!-- セクション切り替えボタン -->
+  <div style="display:flex;gap:0;border-bottom:2px solid #e0e0e0;background:#fafafa;padding:0 24px;">
+    <div id="importSec-sales" class="import-section-tab" onclick="switchImportSection('sales')"
+         style="padding:10px 20px;cursor:pointer;border-bottom:3px solid #1a5276;color:#1a5276;font-weight:600">
+      📄 営業報告PDF
     </div>
-    <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-      <label class="btn btn-import" id="salesPdfLabel" style="cursor:pointer;">
-        📄 PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">
-      </label>
-      <span id="salesFileName" style="color:#666;font-size:12px;"></span>
-      <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
-    </div>
-    <div style="margin-top:10px;padding:8px 12px;background:#fdedec;border:1px solid #e74c3c;border-radius:4px;color:#c0392b;font-size:13px;font-weight:600;">
-      ⚠️ PDFアップ後は、必ず目視で数値に間違いがないか確認してください（AIの読み取りは完全ではありません。給与・経営数値に反映されます）
+    <div id="importSec-homecare" class="import-section-tab" onclick="switchImportSection('homecare')"
+         style="padding:10px 20px;cursor:pointer;border-bottom:3px solid transparent;color:#666">
+      🏠 在宅内訳CSV
     </div>
   </div>
-  <div style="display:flex;align-items:flex-start;min-height:400px;border-bottom:1px solid #e0e0e0;">
-    <!-- 左カラム: 抽出結果（flex:1で半分） -->
-    <div style="flex:1;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;min-width:0;overflow-x:auto;">
-      <div id="salesExtracted" style="padding:12px 16px;display:none;border-bottom:1px solid #e0e0e0;">
-        <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">抽出結果 — 確認・修正してください</h4>
-        <table id="salesTable"></table>
+
+  <!-- 営業報告セクション（既存コンテンツそのまま） -->
+  <div id="importContent-sales">
+    <div style="padding:16px 24px;background:#f0f9f4;border-bottom:1px solid #a9dfbf;">
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+        <h3 style="margin:0;color:#1a5276;font-size:15px;">📊 営業報告 — PDF取込</h3>
+        <select id="salesMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
+        <select id="salesDept" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
+        <a class="btn btn-secondary" href="https://wiseinc-pharmacy.github.io/pdf-merger/" target="_blank" rel="noopener" title="複数ページの結合・並べ替え・不要ページ削除ができます（別タブで開きます）">✂️ PDFを編集</a>
+        <span style="color:#e74c3c;font-size:12px;font-weight:600;">提出するPDFが複数になる場合は、編集で複数枚１部に結合して提出してください</span>
       </div>
-      <div id="salesNoExtracted" style="padding:32px 16px;color:#aaa;font-size:12px;text-align:center;">📄 PDFを選択してAI読み取りを開始</div>
+      <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <label class="btn btn-import" id="salesPdfLabel" style="cursor:pointer;">
+          📄 PDF選択 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">
+        </label>
+        <span id="salesFileName" style="color:#666;font-size:12px;"></span>
+        <button class="btn btn-primary" id="salesSubmitBtn" onclick="submitSalesData()" style="display:none;">提出する</button>
+      </div>
+      <div style="margin-top:10px;padding:8px 12px;background:#fdedec;border:1px solid #e74c3c;border-radius:4px;color:#c0392b;font-size:13px;font-weight:600;">
+        ⚠️ PDFアップ後は、必ず目視で数値に間違いがないか確認してください（AIの読み取りは完全ではありません。給与・経営数値に反映されます）
+      </div>
     </div>
-    <!-- 右カラム: PDFプレビュー（常に表示・display:noneなし → clientWidth=0問題を解消） -->
-    <div id="salesPdfArea" style="flex:1;min-width:0;padding:8px;">
-      <iframe id="salesPdfPreview" src="pdfviewer.html" style="width:100%;height:80vh;border:1px solid #ccc;border-radius:4px;"></iframe>
+    <div style="display:flex;align-items:flex-start;min-height:400px;border-bottom:1px solid #e0e0e0;">
+      <!-- 左カラム: 抽出結果（flex:1で半分） -->
+      <div style="flex:1;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;min-width:0;overflow-x:auto;">
+        <div id="salesExtracted" style="padding:12px 16px;display:none;border-bottom:1px solid #e0e0e0;">
+          <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">抽出結果 — 確認・修正してください</h4>
+          <table id="salesTable"></table>
+        </div>
+        <div id="salesNoExtracted" style="padding:32px 16px;color:#aaa;font-size:12px;text-align:center;">📄 PDFを選択してAI読み取りを開始</div>
+      </div>
+      <!-- 右カラム: PDFプレビュー（常に表示・display:noneなし → clientWidth=0問題を解消） -->
+      <div id="salesPdfArea" style="flex:1;min-width:0;padding:8px;">
+        <iframe id="salesPdfPreview" src="pdfviewer.html" style="width:100%;height:80vh;border:1px solid #ccc;border-radius:4px;"></iframe>
+      </div>
+    </div>
+    <!-- 提出済みデータ（全幅 → 列見切れ問題を解消） -->
+    <div id="salesHistory" style="padding:12px 24px;">
+      <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">提出済みデータ</h4>
+      <div style="overflow-x:auto;"><table id="salesHistoryTable" style="font-size:12px;white-space:nowrap;border-collapse:collapse;min-width:100%;"></table></div>
     </div>
   </div>
-  <!-- 提出済みデータ（全幅 → 列見切れ問題を解消） -->
-  <div id="salesHistory" style="padding:12px 24px;">
-    <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">提出済みデータ</h4>
-    <div style="overflow-x:auto;"><table id="salesHistoryTable" style="font-size:12px;white-space:nowrap;border-collapse:collapse;min-width:100%;"></table></div>
+
+  <!-- 在宅内訳CSVアップロードセクション（新規） -->
+  <div id="importContent-homecare" style="display:none">
+    <div style="padding:16px 24px;background:#f0f9f4;border-bottom:1px solid #a9dfbf;">
+      <h3 style="margin:0 0 12px;color:#1a5276;font-size:15px;">🏠 在宅内訳CSV — 取込</h3>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <select id="homecareStore" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+          <option value="">店舗を選択</option>
+          <option value="kashiwa">柏</option>
+          <option value="adachi">足立</option>
+          <option value="nagareyama">ながれやま</option>
+          <option value="abiko">我孫子</option>
+        </select>
+        <input type="month" id="homecareMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+        <label class="btn btn-import" style="cursor:pointer;">
+          📄 CSVファイル選択
+          <input type="file" id="homecareFileInput" accept=".txt,.csv" style="display:none">
+        </label>
+        <span id="homecareFileName" style="color:#666;font-size:12px;"></span>
+      </div>
+    </div>
+    <!-- プレビューテーブル -->
+    <div id="homecarePreview" style="padding:16px 24px;"></div>
+    <!-- 保存ボタン（プレビュー後に表示） -->
+    <div id="homecareSaveArea" style="padding:0 24px;display:none;">
+      <button class="btn btn-primary" onclick="saveHomecareData()">💾 Firestoreに保存</button>
+      <span id="homecareSaveStatus" style="margin-left:12px;font-size:13px;"></span>
+    </div>
   </div>
 </div>
 
@@ -490,6 +535,24 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <h4 style="color:#1a5276;margin-bottom:8px;">店舗別 残業時間</h4>
     <div class="table-wrap"><table id="laborTable" style="min-width:0;"></table></div>
   </div>
+</div>
+
+<div id="tab-homecare" class="tab-content">
+  <div style="padding:16px 24px;background:#f0f9f4;border-bottom:1px solid #a9dfbf;">
+    <h3 style="margin:0 0 12px;color:#1a5276;font-size:15px;">🏠 在宅内訳 — 施設別</h3>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <select id="homecareViewStore" onchange="loadHomecareView()" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+        <option value="">全店舗</option>
+        <option value="kashiwa">柏</option>
+        <option value="adachi">足立</option>
+        <option value="nagareyama">ながれやま</option>
+        <option value="abiko">我孫子</option>
+      </select>
+      <input type="month" id="homecareViewMonth" onchange="loadHomecareView()" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+      <button class="btn btn-secondary" onclick="loadHomecareView()">表示</button>
+    </div>
+  </div>
+  <div id="homecareViewResult" style="padding:16px 24px;"></div>
 </div>
 
 <!-- インポートモーダル -->
@@ -3823,17 +3886,17 @@ function switchTab(tab){
   currentTab=tab;
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-  const tabIdx = {budget:1, actual:2, compare:3, yoy:4, midterm:5, kessanCheck:6, sales:7, labor:8}[tab] || 1;
+  const tabIdx = {budget:1, actual:2, compare:3, yoy:4, midterm:5, kessanCheck:6, import:7, labor:8, homecare:9}[tab] || 1;
   document.querySelector(`.tab:nth-child(${tabIdx})`).classList.add('active');
   document.getElementById(`tab-${tab}`).classList.add('active');
   // 決算照合タブではツールバー・年度ボタン・部門バーを隠す
   const isKessan = tab === 'kessanCheck';
-  // 営業報告タブは専用の月・店舗セレクタを使うため、共通ツールバー（表示期間）は非表示
-  document.querySelector('.toolbar').style.display = (isKessan || tab === 'sales') ? 'none' : '';
+  // データ取込タブは専用の月・店舗セレクタを使うため、共通ツールバー（表示期間）は非表示
+  document.querySelector('.toolbar').style.display = (isKessan || tab === 'import' || tab === 'homecare') ? 'none' : '';
   const fyBtns = document.getElementById('fyButtons');
   if (fyBtns) fyBtns.style.display = isKessan ? 'none' : '';
-  // 営業報告タブも専用の店舗セレクタを使うため、共通の部門バーは非表示
-  const hideDept = isKessan || tab === 'sales';
+  // データ取込タブも専用の店舗セレクタを使うため、共通の部門バーは非表示
+  const hideDept = isKessan || tab === 'import' || tab === 'homecare';
   document.getElementById('deptBar').style.display = hideDept ? 'none' : '';
   const deptLabel = document.querySelector('.current-dept-label');
   if (deptLabel) deptLabel.style.display = hideDept ? 'none' : '';
@@ -3849,8 +3912,9 @@ async function renderCurrentTab(){
   else if(currentTab==='yoy') await renderYoyTable();
   else if(currentTab==='midterm') await renderMidtermTable();
   else if(currentTab==='kessanCheck') await loadKessanData();
-  else if(currentTab==='sales') await renderSalesTab();
+  else if(currentTab==='import') await renderSalesTab();
   else if(currentTab==='labor') await loadLaborData();
+  else if(currentTab==='homecare') await loadHomecareView();
 }
 
 // ===== 決算照合タブ =====
@@ -5433,6 +5497,246 @@ function renderLaborChart(months, kotNameFilter) {
       },
     },
   });
+}
+
+// ===== 在宅内訳 =====
+let _homecareResult = null;
+
+// CSV集計共通ロジック（TextDecoder Shift-JIS → 施設別集計）
+function _parseHomecareCSV(arrayBuffer) {
+  const decoder = new TextDecoder('shift-jis');
+  const text = decoder.decode(new Uint8Array(arrayBuffer));
+  const lines = text.split('\n');
+  // 0行目: ヘッダー, 1行目: 単位行 → スキップ（i=2から開始）
+  const groups = {};
+  for (let i = 2; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    if (cols.length < 23) continue;
+    const facility = (cols[22] || '').trim() || '（未分類）';
+    if (!groups[facility]) {
+      groups[facility] = { patients: 0, times: 0, insTotal: 0, tech: 0, base: 0, dispensing: 0, guidance: 0, internal: 0 };
+    }
+    const g = groups[facility];
+    g.patients++;
+    g.times += parseInt(cols[4]) || 0;
+    g.insTotal += parseInt(cols[12]) || 0;
+    const col13 = parseInt(cols[13]) || 0;
+    const col14 = parseInt(cols[14]) || 0;
+    const col15 = parseInt(cols[15]) || 0;
+    const col16 = parseInt(cols[16]) || 0;
+    const col17 = parseInt(cols[17]) || 0;
+    const col18 = parseInt(cols[18]) || 0;
+    const col19 = parseInt(cols[19]) || 0;
+    const col20 = parseInt(cols[20]) || 0;
+    g.tech += col13 + col14 + col15 + col16 + col17 + col18 + col19 + col20;
+    g.base += col13;
+    g.dispensing += col15;
+    g.guidance += col17;
+    g.internal += col18;
+  }
+  const sorted = Object.entries(groups).sort((a, b) => b[1].insTotal - a[1].insTotal);
+  if (sorted.length === 0) return null;
+  const totals = sorted.reduce((acc, [, g]) => {
+    acc.patients += g.patients; acc.times += g.times; acc.insTotal += g.insTotal;
+    acc.tech += g.tech; acc.base += g.base; acc.dispensing += g.dispensing;
+    acc.guidance += g.guidance; acc.internal += g.internal;
+    return acc;
+  }, { patients:0, times:0, insTotal:0, tech:0, base:0, dispensing:0, guidance:0, internal:0 });
+  return { sorted, totals };
+}
+
+// データ取込タブ → 在宅内訳CSVセクション のファイル選択ハンドラ
+document.getElementById('homecareFileInput').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('homecareFileName').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const result = _parseHomecareCSV(ev.target.result);
+    if (!result) {
+      document.getElementById('homecarePreview').innerHTML = '<p style="color:#c0392b">データ行が見つかりませんでした。ファイル形式を確認してください。</p>';
+      document.getElementById('homecareSaveArea').style.display = 'none';
+      _homecareResult = null;
+      return;
+    }
+    _homecareResult = result;
+    const { sorted, totals } = result;
+    // プレビューテーブル描画
+    let html = '<div style="margin-bottom:8px;font-size:13px;color:#555">';
+    html += sorted.length + ' 施設 / ' + totals.patients.toLocaleString() + ' 患者（プレビュー）</div>';
+    html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap;min-width:700px">';
+    html += '<thead><tr style="background:#1a5276;color:#fff">';
+    ['施設名','患者数','回数','保険計(点)','技術料合計(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+      html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    sorted.forEach(([name, g], idx) => {
+      const bg = idx % 2 === 0 ? '#fff' : '#f0f8ff';
+      html += '<tr style="background:' + bg + '">';
+      html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd">' + name + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.patients.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.times.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + Math.round(g.insTotal / 10).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.tech.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.base.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.dispensing.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.guidance.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.internal.toLocaleString() + '</td>';
+      html += '</tr>';
+    });
+    html += '<tr style="background:#eaf2fb;font-weight:bold">';
+    html += '<td style="padding:5px 10px;border-top:2px solid #1a5276">合計 (' + sorted.length + '施設)</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.patients.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.times.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + Math.round(totals.insTotal / 10).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.tech.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.base.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.dispensing.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.guidance.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.internal.toLocaleString() + '</td>';
+    html += '</tr>';
+    html += '</tbody></table></div>';
+    document.getElementById('homecarePreview').innerHTML = html;
+    document.getElementById('homecareSaveArea').style.display = '';
+    const statusEl = document.getElementById('homecareSaveStatus');
+    if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+// データ取込タブ → 在宅内訳セクション切り替え
+function switchImportSection(sec) {
+  ['sales', 'homecare'].forEach(s => {
+    document.getElementById('importContent-' + s).style.display = s === sec ? '' : 'none';
+    const tab = document.getElementById('importSec-' + s);
+    tab.style.borderBottomColor = s === sec ? '#1a5276' : 'transparent';
+    tab.style.color = s === sec ? '#1a5276' : '#666';
+    tab.style.fontWeight = s === sec ? '600' : 'normal';
+  });
+}
+
+// Firestoreに保存
+async function saveHomecareData() {
+  const store = document.getElementById('homecareStore').value;
+  const month = document.getElementById('homecareMonth').value;
+  if (!store || !month) {
+    alert('店舗と年月を選択してください');
+    return;
+  }
+  if (!_homecareResult) {
+    alert('CSVファイルを先に選択してください');
+    return;
+  }
+  const status = document.getElementById('homecareSaveStatus');
+  status.textContent = '保存中...';
+  status.style.color = '#555';
+  try {
+    const docId = store + '_' + month.replace('-', '');  // 例: kashiwa_202607
+    await db.collection('homecareData').doc(docId).set({
+      store,
+      yearMonth: month,
+      facilities: _homecareResult.sorted.map(([name, g]) => ({ name, ...g })),
+      totals: _homecareResult.totals,
+      uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
+    });
+    status.textContent = '✅ 保存完了';
+    status.style.color = '#27ae60';
+  } catch(e) {
+    status.textContent = '❌ 保存失敗: ' + e.message;
+    status.style.color = '#e74c3c';
+  }
+}
+
+// 在宅内訳タブ — Firestoreデータ閲覧
+async function loadHomecareView() {
+  const store = document.getElementById('homecareViewStore').value;
+  const month = document.getElementById('homecareViewMonth').value;
+  const result = document.getElementById('homecareViewResult');
+  result.innerHTML = '<p style="color:#999">読み込み中...</p>';
+  try {
+    if (month && store) {
+      // 店舗+月指定 → 単一ドキュメント取得
+      const docId = store + '_' + month.replace('-', '');
+      const doc = await db.collection('homecareData').doc(docId).get();
+      if (!doc.exists) {
+        result.innerHTML = '<p style="color:#999">データがありません</p>';
+        return;
+      }
+      renderHomecareView(result, [doc.data()]);
+    } else if (month && !store) {
+      // 月のみ指定 → その月の全店舗を取得
+      const snap = await db.collection('homecareData').where('yearMonth', '==', month).get();
+      if (snap.empty) {
+        result.innerHTML = '<p style="color:#999">データがありません</p>';
+        return;
+      }
+      renderHomecareView(result, snap.docs.map(d => d.data()));
+    } else if (store && !month) {
+      // 店舗のみ指定 → 最新12件
+      const snap = await db.collection('homecareData').where('store', '==', store).orderBy('yearMonth', 'desc').limit(12).get();
+      if (snap.empty) {
+        result.innerHTML = '<p style="color:#999">データがありません</p>';
+        return;
+      }
+      renderHomecareView(result, snap.docs.map(d => d.data()));
+    } else {
+      // 全指定なし → 最新12件
+      const snap = await db.collection('homecareData').orderBy('yearMonth', 'desc').limit(12).get();
+      if (snap.empty) {
+        result.innerHTML = '<p style="color:#999">データがありません</p>';
+        return;
+      }
+      renderHomecareView(result, snap.docs.map(d => d.data()));
+    }
+  } catch(e) {
+    result.innerHTML = '<p style="color:#e74c3c">エラー: ' + e.message + '</p>';
+  }
+}
+
+function renderHomecareView(container, dataList) {
+  const storeLabels = { kashiwa:'柏', adachi:'足立', nagareyama:'ながれやま', abiko:'我孫子' };
+  let html = '';
+  dataList.forEach(data => {
+    const storeLabel = storeLabels[data.store] || data.store;
+    html += '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' ' + data.yearMonth + '</h4>';
+    html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
+    html += '<thead><tr style="background:#1a5276;color:#fff">';
+    ['施設名','患者数','回数','保険計(点)','技術料(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+      html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    (data.facilities || []).forEach((f, idx) => {
+      const bg = idx % 2 === 0 ? '#fff' : '#f0f8ff';
+      html += '<tr style="background:' + bg + '">';
+      html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd">' + f.name + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.patients||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.times||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + Math.round((f.insTotal||0)/10).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.tech||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.base||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.dispensing||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.guidance||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.internal||0).toLocaleString() + '</td>';
+      html += '</tr>';
+    });
+    const t = data.totals || {};
+    html += '<tr style="background:#eaf2fb;font-weight:bold">';
+    html += '<td style="padding:5px 10px;border-top:2px solid #1a5276">合計</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.patients||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.times||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + Math.round((t.insTotal||0)/10).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.tech||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.base||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.dispensing||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.guidance||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.internal||0).toLocaleString() + '</td>';
+    html += '</tr>';
+    html += '</tbody></table></div>';
+  });
+  container.innerHTML = html;
 }
 </script>
 </body>

@@ -5147,7 +5147,8 @@ async function renderSalesHistory() {
       });
       const ts = d.submittedAt?.toDate ? d.submittedAt.toDate().toLocaleDateString('ja-JP') : '—';
       const pdfLabel = d.fileName || '閲覧';
-      const pdfLink = d.pdfBase64 ? `<a href="#" onclick="viewSalesPdf('${doc.id}');return false;" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : (d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : '—');
+      const hasPdf = (d.pdfChunkCount > 0) || !!d.pdfBase64;
+      const pdfLink = hasPdf ? `<a href="#" onclick="viewSalesPdf('${doc.id}');return false;" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : (d.pdfUrl ? `<a href="${d.pdfUrl}" target="_blank" style="color:#3498db;text-decoration:none;">📄 ${pdfLabel}</a>` : '—');
       const delBtn = `<button onclick="deleteSalesData('${doc.id}','${d.deptName||d.deptId}','${d.month}')" style="padding:2px 8px;font-size:11px;background:#e74c3c;color:#fff;border:none;border-radius:3px;cursor:pointer;">削除</button>`;
       html += `<td style="padding:4px 10px;text-align:center;">${pdfLink}</td><td style="padding:4px 10px;font-size:11px;">${d.submittedBy||'—'}</td><td style="padding:4px 10px;font-size:11px;">${ts}</td><td style="padding:4px 10px;text-align:center;">${delBtn}</td></tr>`;
     });
@@ -5167,12 +5168,28 @@ async function viewSalesPdf(docId) {
   try {
     const doc = await db.collection('salesData').doc(docId).get();
     const data = doc.data();
-    if (!data?.pdfBase64) { alert('PDFデータがありません'); return; }
-    const binary = atob(data.pdfBase64);
+    let b64;
+    if (data?.pdfChunkCount > 0) {
+      // pdfChunks方式（2026-08-06以降の新形式）: サブコレクションからチャンクを seq 順に結合
+      const chunksSnap = await db.collection('salesData').doc(docId)
+        .collection('pdfChunks').orderBy('seq').get();
+      if (chunksSnap.empty) { alert('PDFデータがありません（チャンク0件）'); return; }
+      b64 = '';
+      chunksSnap.forEach(c => { b64 += c.data().data; });
+    } else if (data?.pdfBase64) {
+      // 旧形式（単一フィールドのbase64）
+      b64 = data.pdfBase64;
+    } else {
+      alert('PDFデータがありません');
+      return;
+    }
+    const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     const blob = new Blob([bytes], { type: 'application/pdf' });
-    window.open(URL.createObjectURL(blob), '_blank');
+    const pdfUrl = URL.createObjectURL(blob);
+    window.open(pdfUrl, '_blank');
+    setTimeout(() => URL.revokeObjectURL(pdfUrl), 60000);
   } catch (e) {
     alert('PDF表示エラー: ' + e.message);
   }

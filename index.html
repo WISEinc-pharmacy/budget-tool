@@ -510,7 +510,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <div id="homecarePreview" style="padding:16px 24px;"></div>
     <!-- 保存ボタン（プレビュー後に表示） -->
     <div id="homecareSaveArea" style="padding:0 24px;display:none;">
-      <button class="btn btn-primary" onclick="saveHomecareData()">💾 Firestoreに保存</button>
+      <button class="btn btn-primary" onclick="saveHomecareData()">⬆️ アップロードする</button>
       <span id="homecareSaveStatus" style="margin-left:12px;font-size:13px;"></span>
     </div>
   </div>
@@ -5456,7 +5456,12 @@ function renderLaborChart(months, kotNameFilter) {
   canvas.style.display = 'block';
 
   const isFiltered = kotNameFilter && kotNameFilter.length > 0;
-  const labels = months.map(m => m.yearMonth.replace(/^\d{4}-/, ''));
+  // 「2026年2月, 3月, …, 2027年1月」形式（年が変わる最初の月だけ年を付ける。旧: "02"等の数字のみで判読不能）
+  const labels = months.map((m, i) => {
+    const [y, mo] = m.yearMonth.split('-');
+    const prevY = i > 0 ? months[i - 1].yearMonth.split('-')[0] : null;
+    return (y !== prevY ? y + '年' : '') + parseInt(mo, 10) + '月';
+  });
   const overtimeData = months.map(m => {
     if (!isFiltered) return m.totalOvertimeHours || 0;
     return (m.divisions || []).filter(d => kotNameFilter.includes(d.name)).reduce((s, d) => s + d.overtimeHours, 0);
@@ -5714,7 +5719,7 @@ async function saveHomecareData() {
     return;
   }
   const status = document.getElementById('homecareSaveStatus');
-  status.textContent = '保存中...';
+  status.textContent = 'アップロード中...';
   status.style.color = '#555';
   try {
     const docId = store + '_' + month.replace('-', '');  // 例: kashiwa_202607
@@ -5726,10 +5731,10 @@ async function saveHomecareData() {
       uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
       uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
     });
-    status.textContent = '✅ 保存完了';
+    status.textContent = '✅ アップロード完了';
     status.style.color = '#27ae60';
   } catch(e) {
-    status.textContent = '❌ 保存失敗: ' + e.message;
+    status.textContent = '❌ アップロード失敗: ' + e.message;
     status.style.color = '#e74c3c';
   }
 }

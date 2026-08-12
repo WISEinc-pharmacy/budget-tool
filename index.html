@@ -5764,25 +5764,120 @@ async function loadHomecareView() {
       }
       renderHomecareView(result, snap.docs.map(d => d.data()));
     } else if (store && !month) {
-      // 店舗のみ指定 → 最新12件
-      const snap = await db.collection('homecareData').where('store', '==', store).orderBy('yearMonth', 'desc').limit(12).get();
+      // 店舗のみ指定 → 「項目×月」「施設×月」の推移表（月ブロック縦積みは見づらい・2026-08-12山内さん指示で元スプシ形式の月横並びに変更）
+      // orderByを外しwhere単独+クライアントソートにすることで複合インデックス不要
+      const snap = await db.collection('homecareData').where('store', '==', store).get();
       if (snap.empty) {
         result.innerHTML = '<p style="color:#999">データがありません</p>';
         return;
       }
-      renderHomecareView(result, snap.docs.map(d => d.data()));
+      const docs = snap.docs.map(d => d.data()).sort((a, b) => a.yearMonth.localeCompare(b.yearMonth)).slice(-12);
+      renderHomecareStoreMatrix(result, docs);
     } else {
-      // 全指定なし → 最新12件
-      const snap = await db.collection('homecareData').orderBy('yearMonth', 'desc').limit(12).get();
+      // 全指定なし → 店舗×月の推移表
+      const snap = await db.collection('homecareData').get();
       if (snap.empty) {
         result.innerHTML = '<p style="color:#999">データがありません</p>';
         return;
       }
-      renderHomecareView(result, snap.docs.map(d => d.data()));
+      renderHomecareAllMatrix(result, snap.docs.map(d => d.data()));
     }
   } catch(e) {
     result.innerHTML = '<p style="color:#e74c3c">エラー: ' + e.message + '</p>';
   }
+}
+
+// ===== 在宅内訳 月次推移マトリクス（項目/施設/店舗 × 月の横並び表示） =====
+let _homecareMetric = 'insTotal';
+const HOMECARE_METRICS = [
+  ['patients', '患者数'], ['times', '回数'], ['insTotal', '保険計(点)'], ['tech', '技術料(点)'],
+  ['base', '基本点'], ['dispensing', '調剤点'], ['guidance', '指導点'], ['internal', '内服薬点']
+];
+function _hcVal(obj, key) {
+  const v = (obj || {})[key] || 0;
+  return key === 'insTotal' ? Math.round(v / 10) : v;
+}
+function _hcMonthLabels(months) {
+  return months.map((ym, i) => {
+    const [y, mo] = ym.split('-');
+    const prevY = i > 0 ? months[i - 1].split('-')[0] : null;
+    return (y !== prevY ? y + '年' : '') + parseInt(mo, 10) + '月';
+  });
+}
+function _hcMetricSelect() {
+  return '<label style="font-size:13px;color:#555">表示項目: <select onchange="_homecareMetric=this.value;loadHomecareView()" style="padding:3px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">' +
+    HOMECARE_METRICS.map(([k, l]) => '<option value="' + k + '"' + (k === _homecareMetric ? ' selected' : '') + '>' + l + '</option>').join('') +
+    '</select></label>';
+}
+const _HC_TH = 'padding:6px 10px;text-align:right';
+const _HC_TD = 'padding:5px 10px;text-align:right;border-bottom:1px solid #ddd';
+
+// 店舗選択時: 合計項目×月 ＋ 施設×月（指標切替）
+function renderHomecareStoreMatrix(container, docs) {
+  const storeLabels = { kashiwa: '柏', adachi: '足立', nagareyama: 'ながれやま', abiko: '我孫子' };
+  const months = docs.map(d => d.yearMonth);
+  const mLabels = _hcMonthLabels(months);
+  const storeLabel = storeLabels[docs[0].store] || docs[0].store;
+  let html = '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' — 月次推移（直近' + months.length + 'か月）</h4>';
+  html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
+  html += '<thead><tr style="background:#1a5276;color:#fff"><th style="padding:6px 10px;text-align:left">項目</th>' +
+    mLabels.map(l => '<th style="' + _HC_TH + '">' + l + '</th>').join('') + '</tr></thead><tbody>';
+  HOMECARE_METRICS.forEach(([k, label], idx) => {
+    html += '<tr style="background:' + (idx % 2 === 0 ? '#fff' : '#f0f8ff') + '">';
+    html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd;font-weight:500">' + label + '</td>';
+    docs.forEach(d => { html += '<td style="' + _HC_TD + '">' + _hcVal(d.totals, k).toLocaleString() + '</td>'; });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  // 施設×月（選択中の指標で表示・合計降順）
+  const facTotals = {};
+  docs.forEach(d => (d.facilities || []).forEach(f => {
+    facTotals[f.name] = (facTotals[f.name] || 0) + _hcVal(f, _homecareMetric);
+  }));
+  const facNames = Object.keys(facTotals).sort((a, b) => facTotals[b] - facTotals[a]);
+  html += '<div style="display:flex;align-items:center;gap:12px;margin:20px 0 8px;flex-wrap:wrap"><h4 style="color:#1a5276;margin:0">施設別 月次推移</h4>' + _hcMetricSelect() + '</div>';
+  html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
+  html += '<thead><tr style="background:#1a5276;color:#fff"><th style="padding:6px 10px;text-align:left">施設名</th>' +
+    mLabels.map(l => '<th style="' + _HC_TH + '">' + l + '</th>').join('') + '</tr></thead><tbody>';
+  facNames.forEach((name, idx) => {
+    html += '<tr style="background:' + (idx % 2 === 0 ? '#fff' : '#f0f8ff') + '">';
+    html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd">' + name + '</td>';
+    docs.forEach(d => {
+      const f = (d.facilities || []).find(x => x.name === name);
+      html += '<td style="' + _HC_TD + '">' + (f ? _hcVal(f, _homecareMetric).toLocaleString() : '-') + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '<tr style="background:#eaf2fb;font-weight:bold"><td style="padding:5px 10px;border-top:2px solid #1a5276">合計</td>' +
+    docs.map(d => '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + _hcVal(d.totals, _homecareMetric).toLocaleString() + '</td>').join('') + '</tr>';
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+// 全店舗・月未指定時: 店舗×月（指標切替）
+function renderHomecareAllMatrix(container, docs) {
+  const storeLabels = { kashiwa: '柏', adachi: '足立', nagareyama: 'ながれやま', abiko: '我孫子' };
+  const months = [...new Set(docs.map(d => d.yearMonth))].sort().slice(-12);
+  const mLabels = _hcMonthLabels(months);
+  const byKey = {};
+  docs.forEach(d => { byKey[d.store + '|' + d.yearMonth] = d; });
+  const stores = Object.keys(storeLabels).filter(s => docs.some(d => d.store === s));
+  let html = '<div style="display:flex;align-items:center;gap:12px;margin:16px 0 8px;flex-wrap:wrap"><h4 style="color:#1a5276;margin:0">店舗別 月次推移（直近' + months.length + 'か月）</h4>' + _hcMetricSelect() + '</div>';
+  html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
+  html += '<thead><tr style="background:#1a5276;color:#fff"><th style="padding:6px 10px;text-align:left">店舗</th>' +
+    mLabels.map(l => '<th style="' + _HC_TH + '">' + l + '</th>').join('') + '</tr></thead><tbody>';
+  stores.forEach((s, idx) => {
+    html += '<tr style="background:' + (idx % 2 === 0 ? '#fff' : '#f0f8ff') + '">';
+    html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd;font-weight:500">' + storeLabels[s] + '</td>';
+    months.forEach(ym => {
+      const d = byKey[s + '|' + ym];
+      html += '<td style="' + _HC_TD + '">' + (d ? _hcVal(d.totals, _homecareMetric).toLocaleString() : '-') + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  html += '<p style="color:#888;font-size:12px;margin-top:8px">店舗を選択すると、その店舗の項目別・施設別の月次推移を表示します。月も選択すると単月の施設明細を表示します。</p>';
+  container.innerHTML = html;
 }
 
 function renderHomecareView(container, dataList) {

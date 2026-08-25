@@ -140,6 +140,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .role-badge.viewer_gakujutsu { background: #2980b9; color: #fff; }
 .role-badge.admin { background: #e74c3c; color: #fff; }
 .role-badge.tax_advisor { background: #f39c12; color: #fff; }
+.role-badge.uploader { background: #16a085; color: #fff; }
 .save-status { font-size: 11px; color: #999; margin-left: 12px; }
 .current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; display: flex; align-items: center; gap: 12px; }
 .mode-indicator { font-size: 12px; padding: 3px 10px; border-radius: 4px; font-weight: 600; }
@@ -630,6 +631,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
         <option value="viewer_kanribu">閲覧者（管理部）</option>
         <option value="viewer_gakujutsu">閲覧者（学術）</option>
         <option value="tax_advisor">税理士</option>
+        <option value="uploader">アップロード専用（店舗）</option>
         <option value="admin">管理者</option>
       </select>
       <button class="btn btn-primary" onclick="addUser()" style="margin-left:8px">追加</button>
@@ -902,7 +904,7 @@ function docId(deptId) { return `FY${getFiscalYear()}_${deptId}`; }
 function showSaveStatus(s, t) { const el = document.getElementById('saveStatus'); el.textContent = t; el.className = 'save-status ' + s; if (s === 'saved') setTimeout(() => el.textContent = '', 2000); }
 
 async function saveToFirestore() {
-  if (isViewerRole(userRole) || userRole === 'tax_advisor') return;
+  if (isViewerRole(userRole) || userRole === 'tax_advisor' || userRole === 'uploader') return;
   if (currentDeptId() === 'all') { await saveAllBudgetToFirestore(); return; } // 全体はbudgetのみmerge保存（中期計画のannualInputsを壊さない）
   showSaveStatus('saving', '保存中...');
   try {
@@ -1018,12 +1020,19 @@ auth.onAuthStateChanged(async (user) => {
     if (userRole === 'tax_advisor') { selectedDepts = DEPTS.map(d => d.id); }
     applyPermissions();
     updateModeUI();
-    await loadAllFromFirestore();
-    updateFilterSelects();
-    updateFyButtons();
-    updateYoyYearSelect();
-    renderDeptBar();
-    renderCurrentTab();
+    if (userRole === 'uploader') {
+      // アップロード専用（店舗）: 予実データ(budgetData)のfetch自体を行わず、営業報告PDFタブのみ初期表示する
+      // （2026-08-24 山内さんB案: 店舗に経営数字を読み込ませない＝クライアントに乗せない）
+      switchTab('import');
+      switchImportSection('sales');
+    } else {
+      await loadAllFromFirestore();
+      updateFilterSelects();
+      updateFyButtons();
+      updateYoyYearSelect();
+      renderDeptBar();
+      renderCurrentTab();
+    }
     // 全初期化・データ取得完了後にメインアプリを表示し、ローディング画面を解除
     document.getElementById('mainApp').style.display = 'block';
     document.getElementById('loadingScreen').style.display = 'none';
@@ -1057,7 +1066,7 @@ async function checkUserRole(user) {
 }
 
 function getRoleLabel(role) {
-  const labels = { admin: '管理者', editor: '編集者', viewer: '閲覧者（店舗）', viewer_kanribu: '閲覧者（管理部）', viewer_gakujutsu: '閲覧者（学術）', tax_advisor: '税理士' };
+  const labels = { admin: '管理者', editor: '編集者', viewer: '閲覧者（店舗）', viewer_kanribu: '閲覧者（管理部）', viewer_gakujutsu: '閲覧者（学術）', tax_advisor: '税理士', uploader: 'アップロード専用（店舗）' };
   return labels[role] || role;
 }
 function isViewerRole(role) { return role === 'viewer' || role === 'viewer_kanribu' || role === 'viewer_gakujutsu'; }
@@ -1072,6 +1081,25 @@ function applyPermissions() {
   document.getElementById('btnFreee').style.display = userRole === 'tax_advisor' ? '' : 'none';
   document.getElementById('tabMidterm').style.display = canEdit ? '' : 'none';
   document.getElementById('tabKessanCheck').style.display = userRole === 'admin' ? '' : 'none';
+  applyUploaderMode();
+}
+
+// アップロード専用（店舗）ロール: 営業報告PDFタブ以外の経営数字系UI（ヘッダー操作群・タブ切替・凡例・在宅内訳CSV）を一切表示しない
+// （2026-08-24 山内さんB案: 店舗スタッフには帳票PDFのアップロードだけをさせたい）
+function applyUploaderMode() {
+  const isUploader = userRole === 'uploader';
+  const headerActions = document.querySelector('.header-actions');
+  if (headerActions) headerActions.style.display = isUploader ? 'none' : '';
+  const tabBar = document.querySelector('.tab-bar');
+  if (tabBar) tabBar.style.display = isUploader ? 'none' : '';
+  const legend = document.querySelector('.legend');
+  if (legend) legend.style.display = isUploader ? 'none' : '';
+  const importSecHomecare = document.getElementById('importSec-homecare');
+  if (importSecHomecare) importSecHomecare.style.display = isUploader ? 'none' : '';
+  // 2026-08-24: 提出済みデータ一覧は全店舗の技術料金額+削除ボタンが並ぶため、
+  // uploader（店舗アップロード専用）には非表示にする（他店の経営数字を見せない設計の穴を防止）
+  const salesHistory = document.getElementById('salesHistory');
+  if (salesHistory) salesHistory.style.display = isUploader ? 'none' : '';
 }
 
 // ===== 印刷 =====
@@ -1178,6 +1206,29 @@ function openHelpModal() {
       <li>「<strong>Googleでログイン</strong>」ボタンをクリックし、管理者に登録済みのGoogleアカウントでログインします。</li>
       <li>未登録のアカウントではログインできません。利用を希望する場合は <strong>director@wise-jmco.com</strong> へご連絡ください。</li>
     </ul></div>`;
+
+  // アップロード専用（店舗）ロールは営業報告PDFの案内のみ表示して終了する（2026-08-24 B案）
+  if (userRole === 'uploader') {
+    h += `<div class="help-section"><h3>このアカウントでできること</h3>
+      <ul>
+        <li>あなたの権限は<strong>アップロード専用（店舗）</strong>です。営業報告PDFのアップロードのみ行えます。</li>
+        <li>予算・実績・予実比較・在宅内訳・労務・中期計画などの経営数字は閲覧できません。</li>
+      </ul></div>`;
+    h += `<div class="help-section"><h3>営業報告（PDF取込）の使い方</h3>
+      <ul>
+        <li>「<strong>月</strong>」と「<strong>店舗</strong>」を選びます。</li>
+        <li>「<strong>PDF選択</strong>」から営業帳票PDFを選ぶと、AIが数値を自動で読み取ります。</li>
+        <li>右側にPDFプレビュー、左側にAIの抽出結果が並びます。<strong>PDF原本と抽出結果を必ず見比べ</strong>、間違いがあればセルをクリックして手で修正してください。</li>
+        <li>数値が正しいことを確認したら「<strong>提出する</strong>」を押します。データは経営報告の数値として取り込まれます。</li>
+        <li>営業報告と詳細資料など<strong>複数枚のPDFがある場合</strong>は、「<strong>✂️ PDFを編集</strong>」ボタンでPDF編集ツールを開き、<strong>営業報告を1ページ目にして1つのPDFに結合</strong>してからアップロードしてください。</li>
+      </ul>
+      <div class="help-tip" style="color:#c0392b;border-color:#e74c3c;background:#fdedec"><strong>⚠️ 提出前に必ず目視でダブルチェック</strong><br>AIの読み取りは完全ではありません。給与・経営判断に直結する数値のため、提出前に人の目で必ず確認してください。</div></div>`;
+    h += `<div class="help-section"><h3>お問い合わせ</h3>
+      <p>操作でお困りの場合は<strong>開発者</strong>に確認してください。</p></div>`;
+    document.getElementById('helpContent').innerHTML = h;
+    document.getElementById('helpModal').classList.add('show');
+    return;
+  }
 
   // 2. 画面の見方
   h += `<div class="help-section"><h3>画面の見方</h3>
@@ -1294,6 +1345,7 @@ function openHelpModal() {
         <li><span class="role-badge viewer" style="font-size:11px">閲覧者（店舗）</span> 6店舗データの閲覧のみ</li>
         <li><span class="role-badge viewer_kanribu" style="font-size:11px">閲覧者（管理部）</span> 管理部・本部データの閲覧のみ</li>
         <li><span class="role-badge viewer_gakujutsu" style="font-size:11px">閲覧者（学術）</span> 学術研修企画運営室データの閲覧のみ</li>
+        <li><span class="role-badge uploader" style="font-size:11px">アップロード専用（店舗）</span> 営業報告PDFのアップロードのみ（経営数字は非表示）</li>
       </ul></div>`;
   }
 
@@ -1337,6 +1389,7 @@ async function renderUserList() {
         <option value="viewer_kanribu" ${u.role==='viewer_kanribu'?'selected':''}>閲覧者（管理部）</option>
         <option value="viewer_gakujutsu" ${u.role==='viewer_gakujutsu'?'selected':''}>閲覧者（学術）</option>
         <option value="tax_advisor" ${u.role==='tax_advisor'?'selected':''}>税理士</option>
+        <option value="uploader" ${u.role==='uploader'?'selected':''}>アップロード専用（店舗）</option>
       </select></td>
       <td>${isSelf?'-':'<button class="btn btn-warn" style="font-size:11px;padding:2px 8px" onclick="removeUser(\''+u.email+'\')">削除</button>'}</td></tr>`;
   });
@@ -2367,7 +2420,7 @@ function scheduleMidtermSave(fy, deptId) {
 }
 
 async function saveMidtermDept(fy, deptId, includeBudget) {
-  if (isViewerRole(userRole) || userRole === 'tax_advisor') return;
+  if (isViewerRole(userRole) || userRole === 'tax_advisor' || userRole === 'uploader') return;
   const st = midtermCache[fy] && midtermCache[fy][deptId];
   if (!st) return;
   showSaveStatus('saving', '保存中...');

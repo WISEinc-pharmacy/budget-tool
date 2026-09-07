@@ -778,6 +778,13 @@ const ITEMS = [
     calc: (m) => val(m, 'sga_sub') + val(m, 'honbu') },
   { id: 'op_profit', name: '営業利益', type: 'calc', level: 0, style: 'profit', plNum: '㊿', plFormula: '＝⑧－㊾',
     calc: (m) => val(m, 'gross_profit') - val(m, 'sga_total') },
+  // 累積営業利益: 表示期間フィルタの先頭月から当月までの営業利益(㊿)の累計。
+  // 単月のstoreだけでは前月以前の値にアクセスできないため通常のcalcでは算出できない。
+  // cumulativeOf で「どの科目を累積するか」だけ持たせ、実際の累積計算は各描画関数（renderBudgetTable等）が
+  // getVisibleMonths()の並び順でextBudget/extActualを都度合算する形でspecial-caseする（山内さん指示 2026-09-07）。
+  // calcを持たせないため通常の月次再計算ループでは素通りし、budget/actual配列は0のまま＝Firestoreへ意味のある値が書き込まれない。
+  { id: 'op_profit_cum', name: '累積営業利益', type: 'calc', level: 0, style: 'profit',
+    plFormula: '＝表示期間の先頭月から当月までの㊿の累計', cumulativeOf: 'op_profit' },
 
   { id: 'sec_eigyogai_rev', name: '営業外収益', type: 'header', adminOnly: true },
   { id: 'uketori_risoku', name: '受取利息', type: 'calc', level: 1, style: 'calc', adminOnly: true, plNum: '(51)', plFormula: '＝(52)＋(53)',
@@ -925,7 +932,7 @@ async function saveDeptToFirestore(deptId) {
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     updatedBy: currentUser.email };
   ITEMS.forEach(it => {
-    if (it.type === 'header') return;
+    if (it.type === 'header' || it.cumulativeOf) return; // 累積科目は計算専用のためFirestoreへ保存しない
     data.budget[it.id] = d.budget[it.id];
     data.actual[it.id] = d.actual[it.id];
     data.annualInputs[it.id] = d.annualInputs[it.id];
@@ -940,7 +947,7 @@ async function saveAllBudgetToFirestore() {
   try {
     recalcDept('all');
     const payload = { budget: {}, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: currentUser.email };
-    ITEMS.forEach(it => { if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return; payload.budget[it.id] = allData['all'].budget[it.id]; });
+    ITEMS.forEach(it => { if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi' || it.cumulativeOf) return; payload.budget[it.id] = allData['all'].budget[it.id]; });
     await db.collection('budgetData').doc(`FY${getFiscalYear()}_all`).set(payload, { merge: true });
     delete midtermCache[getFiscalYear()];
     showSaveStatus('saved', '保存しました');
@@ -1804,10 +1811,19 @@ async function renderBudgetTable() {
         vm.forEach(m => html += `<td class="calc-value">${fmt(extBudget(data,prevData,it.id,m), true)}</td>`);
       }
     } else if (it.type === 'calc') {
-      const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
-      html += (showDist ? '<td></td>' : '');
-      html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
-      vm.forEach(m => { const v = extBudget(data,prevData,it.id,m); html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      if (it.cumulativeOf) {
+        let running = 0;
+        const series = vm.map(m => { running += extBudget(data,prevData,it.cumulativeOf,m); return running; });
+        const periodTotal = series.length ? series[series.length-1] : 0;
+        html += (showDist ? '<td></td>' : '');
+        html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
+        series.forEach(v => { html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      } else {
+        const periodTotal = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
+        html += (showDist ? '<td></td>' : '');
+        html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
+        vm.forEach(m => { const v = extBudget(data,prevData,it.id,m); html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      }
     } else if (it.type === 'ratio') {
       html += (showDist ? '<td></td>' : '');
       let numSum=0,denSum=0; vm.forEach(m => { const pS = prevData?prevData.budget:null; const mv=getExtMonthVals(data.budget,pS,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
@@ -1834,6 +1850,8 @@ function renderBudgetAllTable() {
   ITEMS.forEach(it => {
     if (!isItemVisible(it)) return;
     if (it.actualOnly) return;
+    // 累積科目(累積営業利益等)は「全体(独立入力)/積み上げ/差分」の突合専用テーブルの構造に馴染まないため対象外
+    if (it.cumulativeOf) return;
     if (it.type === 'header') {
       html += `<tr class="${getRowClass(it)}"><td>${plLabel(it)}</td><td></td><td></td>`;
       vm.forEach(() => html += '<td></td>');
@@ -1912,9 +1930,17 @@ async function renderActualTable() {
       html += `<td class="calc-value col-total">${fmt(periodTotal)}</td>`;
       vm.forEach(m => html += `<td class="calc-value">${fmt(extActual(data,prevData,it.id,m),true)}</td>`);
     } else if (it.type === 'calc') {
-      const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
-      html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
-      vm.forEach(m => { const v=extActual(data,prevData,it.id,m); html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      if (it.cumulativeOf) {
+        let running = 0;
+        const series = vm.map(m => { running += extActual(data,prevData,it.cumulativeOf,m); return running; });
+        const periodTotal = series.length ? series[series.length-1] : 0;
+        html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
+        series.forEach(v => { html += `<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      } else {
+        const periodTotal = vm.reduce((s,m) => s + extActual(data,prevData,it.id,m), 0);
+        html += `<td class="calc-value col-total ${periodTotal<0?"negative":""}">${fmt(periodTotal,true)}</td>`;
+        vm.forEach(m => { const v=extActual(data,prevData,it.id,m); html+=`<td class="calc-value ${v<0?'negative':''}">${fmt(v,true)}</td>`; });
+      }
     } else if (it.type === 'ratio') {
       let numSum=0,denSum=0; vm.forEach(m => { const pS=prevData?prevData.actual:null; const mv=getExtMonthVals(data.actual,pS,m); numSum+=it.numerator(mv); denSum+=it.denominator(mv); });
       html += `<td class="calc-value">${fmtPct(numSum,denSum)}</td>`;
@@ -1966,6 +1992,28 @@ async function renderCompareTable() {
       return;
     }
     const isCalc = it.type === 'calc';
+    if (it.cumulativeOf) {
+      let rb=0, ra=0;
+      const bSeries=[], aSeries=[], dSeries=[];
+      vm.forEach(m => {
+        rb += extBudget(data,prevData,it.cumulativeOf,m);
+        ra += extActual(data,prevData,it.cumulativeOf,m);
+        bSeries.push(rb); aSeries.push(ra); dSeries.push(ra-rb);
+      });
+      const bA = bSeries.length ? bSeries[bSeries.length-1] : 0;
+      const aA = aSeries.length ? aSeries[aSeries.length-1] : 0;
+      const dA = aA - bA;
+      html += `<tr class="${getRowClass(it)}"><td rowspan="3">${plLabel(it)}</td><td>予算</td><td class="col-total">${fmt(bA,true)}</td>`;
+      bSeries.forEach(v => html+=`<td>${fmt(v,true)}</td>`);
+      html += '</tr>';
+      html += `<tr class="${getRowClass(it)}"><td>実績</td><td class="col-total">${fmt(aA,true)}</td>`;
+      aSeries.forEach(v => html+=`<td>${fmt(v,true)}</td>`);
+      html += '</tr>';
+      html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total ${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
+      dSeries.forEach(d => html+=`<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`);
+      html += '</tr>';
+      return;
+    }
     const bA = vm.reduce((s,m) => s + extBudget(data,prevData,it.id,m), 0);
     html += `<tr class="${getRowClass(it)}"><td rowspan="3">${plLabel(it)}</td><td>予算</td><td class="col-total">${fmt(bA,isCalc)}</td>`;
     vm.forEach(m => html+=`<td>${fmt(extBudget(data,prevData,it.id,m),isCalc)}</td>`);
@@ -2104,6 +2152,28 @@ async function renderYoyTable() {
       return;
     }
     const isCalc = it.type === 'calc';
+    if (it.cumulativeOf) {
+      let rc=0, rp=0;
+      const cSeries=[], pSeries=[], dSeries=[];
+      vm.forEach(m => {
+        rc += (curData.actual[it.cumulativeOf][m]||0);
+        rp += (cmpData.actual[it.cumulativeOf][m]||0);
+        cSeries.push(rc); pSeries.push(rp); dSeries.push(rc-rp);
+      });
+      const cA = cSeries.length ? cSeries[cSeries.length-1] : 0;
+      const pA = pSeries.length ? pSeries[pSeries.length-1] : 0;
+      const dA = cA - pA;
+      html += `<tr class="${getRowClass(it)}"><td rowspan="3">${plLabel(it)}</td><td>${curFY}年度</td><td class="col-total">${fmt(cA,true)}</td>`;
+      cSeries.forEach(v => html += `<td>${fmt(v,true)}</td>`);
+      html += '</tr>';
+      html += `<tr class="${getRowClass(it)}"><td>${cmpFY}年度</td><td class="col-total">${fmt(pA,true)}</td>`;
+      pSeries.forEach(v => html += `<td>${fmt(v,true)}</td>`);
+      html += '</tr>';
+      html += `<tr style="background:#ffeaea"><td>差異</td><td class="col-total ${dA<0?'negative':''}">${fmt(dA,true)}</td>`;
+      dSeries.forEach(d => html += `<td class="${d<0?'negative':''}">${fmt(d,true)}</td>`);
+      html += '</tr>';
+      return;
+    }
     // 今年度実績
     const cA = vm.reduce((s,m) => s + (curData.actual[it.id][m]||0), 0);
     html += `<tr class="${getRowClass(it)}"><td rowspan="3">${plLabel(it)}</td><td>${curFY}年度</td><td class="col-total">${fmt(cA,isCalc)}</td>`;
@@ -2350,6 +2420,8 @@ async function renderMidtermTable() {
   ITEMS.forEach(it => {
     if (!isItemVisible(it)) return;
     if (it.actualOnly || it.type === 'kot_kpi') return;
+    // 累積科目(累積営業利益等)は中期計画が年度単位の annual 列のみで月次概念がないため対象外
+    if (it.cumulativeOf) return;
     if (!it.name) return; // 空白スペーサー行
     const tdCls = col => col.highlight ? 'mid-td-forecast' : (col.planFY ? 'mid-td-plan' : '');
     if (it.type === 'header') {
@@ -2434,7 +2506,7 @@ async function saveMidtermDept(fy, deptId, includeBudget) {
     };
     if (includeBudget) payload.budget = {};
     ITEMS.forEach(it => {
-      if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
+      if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi' || it.cumulativeOf) return;
       // 未入力(undefined)は 0 に正規化して保存（Firestore は undefined を受け付けない）
       const ai = st.annualInputs[it.id];
       payload.annualInputs[it.id] = (ai === undefined || ai === null || ai === '') ? 0 : ai;
@@ -2446,7 +2518,7 @@ async function saveMidtermDept(fy, deptId, includeBudget) {
     // 同年度を月次タブで開いている場合はメモリにも反映
     if (String(fy) === getFiscalYear() && allData[deptId]) {
       ITEMS.forEach(it => {
-        if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
+        if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi' || it.cumulativeOf) return;
         const ai2 = st.annualInputs[it.id];
         allData[deptId].annualInputs[it.id] = (ai2 === undefined || ai2 === null || ai2 === '') ? 0 : ai2;
         allData[deptId].distMethod[it.id] = st.distMethod[it.id] || 'even';
@@ -2752,7 +2824,7 @@ async function saveVersion() {
     userName: currentUser.displayName || currentUser.email
   };
   ITEMS.forEach(it => {
-    if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi') return;
+    if (it.type === 'header' || it.type === 'ratio' || it.type === 'kot_kpi' || it.cumulativeOf) return;
     versionData.budget[it.id] = d.budget[it.id];
     versionData.actual[it.id] = d.actual[it.id];
     versionData.annualInputs[it.id] = d.annualInputs[it.id];
@@ -3007,7 +3079,9 @@ function exportCSV(mode) {
   const deptName = isSingleDept() ? DEPTS.find(d=>d.id===currentDeptId())?.name : `${selectedDepts.length}部門合計`;
   const fy = document.getElementById('fiscalYear').value;
 
-  const visibleItems = ITEMS.filter(it => it.type !== 'header' && isItemVisible(it));
+  // 累積科目(累積営業利益等)はCSVが常にFY全12か月をエクスポートするため
+  // 「表示期間フィルタの先頭からの累計」という定義がCSVの文脈では意味を持たない → 除外
+  const visibleItems = ITEMS.filter(it => it.type !== 'header' && !it.cumulativeOf && isItemVisible(it));
   if (mode==='budget'||mode==='all') {
     if (mode==='all') csv+='【予算】\n';
     csv += '"科目","年間合計",' + months.map(m=>`"${m}"`).join(',') + '\n';
@@ -3917,7 +3991,7 @@ async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
   };
   // ITEMS初期化 + 実績を全リセット（CSVにない科目の残存データを消去）
   ITEMS.forEach(it => {
-    if (it.type === 'header') return;
+    if (it.type === 'header' || it.cumulativeOf) return; // 累積科目は計算専用のため保存対象外
     if (!data.budget[it.id]) data.budget[it.id] = new Array(12).fill(0);
     data.actual[it.id] = new Array(12).fill(0); // 常にリセット
     if (!data.annualInputs[it.id]) data.annualInputs[it.id] = 0;

@@ -1,14 +1,37 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{email} {
-      allow read, write: if request.auth != null;
+    // ── ロール判定（users/{email}.role を参照）──
+    // 匿名認証（freee_import_worker 等のバッチ）は email を持たないため、先に isAnon() で分岐して users 参照を避ける
+    function signedIn() { return request.auth != null; }
+    function isAnon() { return request.auth.token.firebase.sign_in_provider == 'anonymous'; }
+    function hasUserDoc() { return request.auth.token.email != null && exists(/databases/$(database)/documents/users/$(request.auth.token.email)); }
+    function role() { return hasUserDoc() ? get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role : ''; }
+    function isStaff() { return role() in ['admin', 'editor', 'tax_advisor']; }
+    function isEditor() { return role() in ['admin', 'editor']; }
+    // 役員・管理部・学術・全体・会社合計 は staff 専用（FY{年}_{部門ID} / FY{年}_company_total）
+    function isAdminOnlyDoc(docId) { return docId.matches('.*_(yakuin|kanribu|gakujutsu|all|company_total)$'); }
+    function canReadBudgetDoc(docId) {
+      return isAnon() || isStaff()
+        || (role() == 'viewer' && !isAdminOnlyDoc(docId))
+        || (role() == 'viewer_kanribu' && docId.matches('.*_kanribu$'))
+        || (role() == 'viewer_gakujutsu' && docId.matches('.*_gakujutsu$'));
     }
+
+    match /users/{email} {
+      allow read, write: if signedIn();
+    }
+    // 予実データ: 読取はロール別（2026-09-09 INC-376: 店舗閲覧が役員・管理部・学術を閲覧できていた）。
+    // 書込は admin/editor と匿名バッチ（freee取込）のみ
     match /budgetData/{doc} {
-      allow read, write: if request.auth != null;
+      allow get: if signedIn() && canReadBudgetDoc(doc);
+      allow list: if signedIn() && (isAnon() || isStaff());   // コレクション一括取得は staff と匿名バッチのみ
+      allow write: if signedIn() && (isAnon() || isEditor());
     }
     match /budgetData/{doc}/versions/{version} {
-      allow read, write: if request.auth != null;
+      allow get: if signedIn() && canReadBudgetDoc(doc);
+      allow list: if signedIn() && canReadBudgetDoc(doc);
+      allow write: if signedIn() && (isAnon() || isEditor());
     }
     match /salesData/{doc} {
       allow read, write: if request.auth != null;

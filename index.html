@@ -1451,6 +1451,7 @@ function getVisibleDepts() {
 function renderDeptBar() {
   let html = '';
   const visibleDepts = getVisibleDepts();
+  sanitizeSelectedDepts();
 
   if (editMode) {
     // 編集モード: ラジオボタン（1部門のみ）
@@ -1486,11 +1487,14 @@ function renderDeptBar() {
     html += `<div class="dept-actions">`;
     html += `<button onclick="selectAllDepts()">全選択</button>`;
     html += `<button onclick="clearDepts()">全解除</button>`;
-    html += `<button onclick="selectStoresOnly()">全店舗</button>`;
-    html += `<button onclick="selectTokatsu()">東葛</button>`;
-    html += `<button onclick="selectJohoku()">城北</button>`;
-    html += `<button onclick="selectGairai()">外来</button>`;
-    html += `<button onclick="selectOther()">その他</button>`;
+    // グループボタンは、そのロールで閲覧可能な部門を1つでも含むものだけ表示する（権限外部門のみのグループは出さない・2026-09-09）
+    const visIds = visibleDepts.map(d => d.id);
+    const hasVisible = ids => ids.some(id => visIds.includes(id));
+    if (hasVisible(DEPT_GROUPS.stores))  html += `<button onclick="selectStoresOnly()">全店舗</button>`;
+    if (hasVisible(DEPT_GROUPS.tokatsu)) html += `<button onclick="selectTokatsu()">東葛</button>`;
+    if (hasVisible(DEPT_GROUPS.johoku))  html += `<button onclick="selectJohoku()">城北</button>`;
+    if (hasVisible(DEPT_GROUPS.gairai))  html += `<button onclick="selectGairai()">外来</button>`;
+    if (hasVisible(DEPT_GROUPS.other))   html += `<button onclick="selectOther()">その他</button>`;
     html += `</div>`;
   }
 
@@ -1524,35 +1528,40 @@ function selectAllDepts() {
   renderCurrentTab();
 }
 
-function selectStoresOnly() {
-  selectedDepts = ['kashiwa', 'adachi', 'nagareyama', 'ai_chozai', 'abiko', 'sakuradai', 'koshigaya', 'kiyose'];
+// 部門グループ定義（グループボタンの表示判定と選択の両方がここを参照する）
+const DEPT_GROUPS = {
+  stores:  ['kashiwa', 'adachi', 'nagareyama', 'ai_chozai', 'abiko', 'sakuradai', 'koshigaya', 'kiyose'],
+  tokatsu: ['kashiwa', 'sakuradai', 'abiko', 'nagareyama'],
+  johoku:  ['adachi', 'ai_chozai'],
+  gairai:  ['koshigaya', 'kiyose'],
+  other:   ['yakuin', 'kanribu', 'gakujutsu'],
+};
+
+// 選択部門をそのロールの閲覧可能部門に強制する。'all'（全体）は admin/editor/tax_advisor のみ。
+// 背景: 店舗閲覧（viewer）で「その他」ボタンから役員・管理部・学術が選択できていた（2026-09-09 山内さん指摘）
+function sanitizeSelectedDepts() {
+  const visIds = getVisibleDepts().map(d => d.id);
+  const allOk = (userRole === 'admin' || userRole === 'editor' || userRole === 'tax_advisor');
+  const next = selectedDepts.filter(id => id === 'all' ? allOk : visIds.includes(id));
+  if (next.length === 0 && visIds.length > 0) next.push(visIds[0]);
+  selectedDepts = next;
+}
+
+// グループ選択は必ず権限フィルタを通す。権限内の部門が1つも無いグループは何もしない
+function selectDeptGroup(ids) {
+  const visIds = getVisibleDepts().map(d => d.id);
+  const next = ids.filter(id => visIds.includes(id));
+  if (next.length === 0) return;
+  selectedDepts = next;
   renderDeptBar();
   renderCurrentTab();
 }
 
-function selectTokatsu() {
-  selectedDepts = ['kashiwa', 'sakuradai', 'abiko', 'nagareyama'];
-  renderDeptBar();
-  renderCurrentTab();
-}
-
-function selectJohoku() {
-  selectedDepts = ['adachi', 'ai_chozai'];
-  renderDeptBar();
-  renderCurrentTab();
-}
-
-function selectGairai() {
-  selectedDepts = ['koshigaya', 'kiyose'];
-  renderDeptBar();
-  renderCurrentTab();
-}
-
-function selectOther() {
-  selectedDepts = ['yakuin', 'kanribu', 'gakujutsu'];
-  renderDeptBar();
-  renderCurrentTab();
-}
+function selectStoresOnly() { selectDeptGroup(DEPT_GROUPS.stores); }
+function selectTokatsu()    { selectDeptGroup(DEPT_GROUPS.tokatsu); }
+function selectJohoku()     { selectDeptGroup(DEPT_GROUPS.johoku); }
+function selectGairai()     { selectDeptGroup(DEPT_GROUPS.gairai); }
+function selectOther()      { selectDeptGroup(DEPT_GROUPS.other); }
 
 // ===== 計算エンジン =====
 function recalcDept(deptId) {
@@ -4046,6 +4055,7 @@ function switchTab(tab){
   renderCurrentTab();
 }
 async function renderCurrentTab(){
+  sanitizeSelectedDepts(); // 描画直前にも権限外部門を除去（防御の二重化・2026-09-09）
   if(currentTab==='budget') await renderBudgetTable();
   else if(currentTab==='actual') await renderActualTable();
   else if(currentTab==='compare') await renderCompareTable();

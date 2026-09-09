@@ -5756,9 +5756,24 @@ function _getHomecareProfileForStore(store) {
 }
 
 // CSV集計共通ロジック（TextDecoder Shift-JIS → 施設別集計）。店舗の機種プロファイルに応じて列マッピングを切替える
+// CSVバイト列の文字コード自動判定（UTF-8 BOM → UTF-8厳密デコード → 失敗時Shift_JIS）
+// 背景: Shift_JIS固定デコードだとExcel再保存やレセコン設定でUTF-8出力されたCSVの施設名が文字化けする（2026-09-09 関根さん報告・要望ID mttu8q6yquw）
+function _decodeCsvBuffer(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+    return { text: new TextDecoder('utf-8').decode(bytes.subarray(3)), encoding: 'utf-8-bom' };
+  }
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), encoding: 'utf-8' };
+  } catch (_e) {
+    return { text: new TextDecoder('shift-jis').decode(bytes), encoding: 'shift-jis' };
+  }
+}
+
 function _parseHomecareCSV(arrayBuffer, store) {
-  const decoder = new TextDecoder('shift-jis');
-  const text = decoder.decode(new Uint8Array(arrayBuffer));
+  const decoded = _decodeCsvBuffer(arrayBuffer);
+  const text = decoded.text;
+  console.log('[homecare CSV] encoding=' + decoded.encoding);
   const lines = text.split('\n');
   const profile = _getHomecareProfileForStore(store);
   if (!profile || !profile.confirmed) {

@@ -1023,6 +1023,9 @@ auth.onAuthStateChanged(async (user) => {
     await checkUserRole(user);
     // 未登録ユーザーはcheckUserRole内でsignOut済み → else分岐がローディング解除を担う
     if (!auth.currentUser) return;
+    // 強制ログアウト（キルスイッチ）: config/access_control の forceLogoutBeforeMs より前のログインは即サインアウト
+    if (await enforceForcedLogout(user)) return;
+    startForcedLogoutPolling();
     // 税理士: 初期表示から全部門（本部経費内訳を含む）を見られるようにする。他ロールの初期値（'kashiwa'）は変更しない
     if (userRole === 'tax_advisor') { selectedDepts = DEPTS.map(d => d.id); }
     applyPermissions();
@@ -1050,6 +1053,35 @@ auth.onAuthStateChanged(async (user) => {
     document.getElementById('loginScreen').style.display = 'flex';
   }
 });
+
+// ── 強制ログアウト（キルスイッチ・2026-09-09 INC-376/378）──
+// config/access_control.forceLogoutBeforeMs を全ログインユーザーが参照し、自分のログイン時刻がそれより前なら即サインアウト＆リロード。
+// 権限漏れ等の緊急時に、開いているセッションを（新コード配信後は）即座に失効させるための構造。サーバ側トークン失効(最大1時間遅延)を補う。
+let _forcedLogoutTimer = null;
+async function enforceForcedLogout(user) {
+  try {
+    const doc = await db.collection('config').doc('access_control').get();
+    if (!doc.exists) return false;
+    const cutoff = Number(doc.data().forceLogoutBeforeMs || 0);
+    if (!cutoff) return false;
+    const loginMs = user.metadata && user.metadata.lastSignInTime ? new Date(user.metadata.lastSignInTime).getTime() : 0;
+    if (loginMs && loginMs < cutoff) {
+      if (_forcedLogoutTimer) { clearInterval(_forcedLogoutTimer); _forcedLogoutTimer = null; }
+      await firebase.auth().signOut();
+      alert('セキュリティ設定の更新のため、再ログインが必要です。恐れ入りますが、もう一度ログインしてください。');
+      location.reload();
+      return true;
+    }
+  } catch (e) { console.error('enforceForcedLogout:', e && (e.code || e.message)); }
+  return false;
+}
+function startForcedLogoutPolling() {
+  if (_forcedLogoutTimer) return;
+  _forcedLogoutTimer = setInterval(() => {
+    const u = firebase.auth().currentUser;
+    if (u) enforceForcedLogout(u);
+  }, 60000); // 60秒ごと
+}
 
 async function checkUserRole(user) {
   const doc = await db.collection('users').doc(user.email).get();

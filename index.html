@@ -499,7 +499,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
           <option value="nagareyama">ながれやま</option>
           <option value="abiko">我孫子</option>
         </select>
-        <input type="month" id="homecareMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+        <select id="homecareMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
         <label class="btn btn-import" style="cursor:pointer;">
           📄 CSVファイル選択
           <input type="file" id="homecareFileInput" accept=".txt,.csv" style="display:none">
@@ -1091,8 +1091,11 @@ function applyPermissions() {
   applyUploaderMode();
 }
 
-// アップロード専用（店舗）ロール: 営業報告PDFタブ以外の経営数字系UI（ヘッダー操作群・タブ切替・凡例・在宅内訳CSV）を一切表示しない
-// （2026-08-24 山内さんB案: 店舗スタッフには帳票PDFのアップロードだけをさせたい）
+// アップロード専用（店舗）ロール: 「データ取込」タブ内の 営業報告PDF / 在宅内訳CSV の
+// アップロード操作以外の経営数字系UI（ヘッダー操作群・タブ切替・凡例・提出済み一覧）を一切表示しない
+// （2026-08-24 山内さんB案: 店舗スタッフには帳票アップロードだけをさせたい）
+// （2026-09-09 案A: 9/2告知に合わせ「在宅内訳CSV」のアップロード操作も開放。他店データの閲覧経路
+//   （在宅内訳タブの推移表=tabBar経由・提出済み一覧=salesHistory）は従来どおり非表示のまま）
 function applyUploaderMode() {
   const isUploader = userRole === 'uploader';
   const headerActions = document.querySelector('.header-actions');
@@ -1101,8 +1104,9 @@ function applyUploaderMode() {
   if (tabBar) tabBar.style.display = isUploader ? 'none' : '';
   const legend = document.querySelector('.legend');
   if (legend) legend.style.display = isUploader ? 'none' : '';
-  const importSecHomecare = document.getElementById('importSec-homecare');
-  if (importSecHomecare) importSecHomecare.style.display = isUploader ? 'none' : '';
+  // 2026-09-09: 在宅内訳CSVのアップロード操作自体はuploaderにも開放する（importSec-homecareは常に表示）。
+  // 他店の集計値は importContent-homecare 内では読み出さない（アップロードした自ファイルのプレビューのみ）ため、
+  // ここを非表示にしていた旧実装（2026-08-24）を解除する。
   // 2026-08-24: 提出済みデータ一覧は全店舗の技術料金額+削除ボタンが並ぶため、
   // uploader（店舗アップロード専用）には非表示にする（他店の経営数字を見せない設計の穴を防止）
   const salesHistory = document.getElementById('salesHistory');
@@ -1214,12 +1218,13 @@ function openHelpModal() {
       <li>未登録のアカウントではログインできません。利用を希望する場合は <strong>director@wise-jmco.com</strong> へご連絡ください。</li>
     </ul></div>`;
 
-  // アップロード専用（店舗）ロールは営業報告PDFの案内のみ表示して終了する（2026-08-24 B案）
+  // アップロード専用（店舗）ロールは営業報告PDF・在宅内訳CSVの案内のみ表示して終了する
+  // （2026-08-24 B案・2026-09-09 在宅内訳CSVアップロードを追加開放）
   if (userRole === 'uploader') {
     h += `<div class="help-section"><h3>このアカウントでできること</h3>
       <ul>
-        <li>あなたの権限は<strong>アップロード専用（店舗）</strong>です。営業報告PDFのアップロードのみ行えます。</li>
-        <li>予算・実績・予実比較・在宅内訳・労務・中期計画などの経営数字は閲覧できません。</li>
+        <li>あなたの権限は<strong>アップロード専用（店舗）</strong>です。<strong>営業報告PDF</strong>と<strong>在宅内訳CSV</strong>のアップロードのみ行えます。</li>
+        <li>予算・実績・予実比較・在宅内訳（推移表）・労務・中期計画などの経営数字は閲覧できません。</li>
       </ul></div>`;
     h += `<div class="help-section"><h3>営業報告（PDF取込）の使い方</h3>
       <ul>
@@ -1230,6 +1235,12 @@ function openHelpModal() {
         <li>営業報告と詳細資料など<strong>複数枚のPDFがある場合</strong>は、「<strong>✂️ PDFを編集</strong>」ボタンでPDF編集ツールを開き、<strong>営業報告を1ページ目にして1つのPDFに結合</strong>してからアップロードしてください。</li>
       </ul>
       <div class="help-tip" style="color:#c0392b;border-color:#e74c3c;background:#fdedec"><strong>⚠️ 提出前に必ず目視でダブルチェック</strong><br>AIの読み取りは完全ではありません。給与・経営判断に直結する数値のため、提出前に人の目で必ず確認してください。</div></div>`;
+    h += `<div class="help-section"><h3>在宅内訳（CSV取込）の使い方</h3>
+      <ul>
+        <li>「<strong>🏠 在宅内訳CSV</strong>」タブに切り替えます。</li>
+        <li>「<strong>店舗</strong>」と「<strong>月</strong>」を選び、レセコンから出力した在宅内訳CSVファイルを選択します（自店の帳票のみアップロードしてください）。</li>
+        <li>施設別の集計プレビューが表示されるので内容を確認し、「<strong>⬆️ アップロードする</strong>」を押します。</li>
+      </ul></div>`;
     h += `<div class="help-section"><h3>お問い合わせ</h3>
       <p>操作でお困りの場合は<strong>開発者</strong>に確認してください。</p></div>`;
     document.getElementById('helpContent').innerHTML = h;
@@ -4527,17 +4538,25 @@ window.addEventListener('message', (e) => {
   }
 });
 
-function initSalesSelectors() {
-  const monthSel = document.getElementById('salesMonth');
-  const deptSel = document.getElementById('salesDept');
-  if (!monthSel || monthSel.options.length > 0) return;
+// 月選択セレクトへ直近12か月を追加する共通関数（営業報告PDF・在宅内訳CSVで同一の組立関数を使う。Bot UIモーダル一貫性の原則）
+function populateRecentMonthOptions(sel) {
+  if (!sel || sel.tagName !== 'SELECT' || sel.options.length > 0) return;
   const now = new Date();
   for (let i = 0; i < 12; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const label = `${d.getFullYear()}年${d.getMonth()+1}月`;
-    monthSel.add(new Option(label, val));
+    sel.add(new Option(label, val));
   }
+}
+
+function initSalesSelectors() {
+  const monthSel = document.getElementById('salesMonth');
+  const deptSel = document.getElementById('salesDept');
+  // 在宅内訳CSVタブの月選択も同じ生成関数で揃える（2026-09-09。monthSel側の早期returnとは独立に毎回試行）
+  populateRecentMonthOptions(document.getElementById('homecareMonth'));
+  if (!monthSel || monthSel.options.length > 0) return;
+  populateRecentMonthOptions(monthSel);
   // 薬局部門のみ（admin系除外）
   DEPTS.filter(d => !d.adminOnly).forEach(d => {
     deptSel.add(new Option(d.name, d.id));

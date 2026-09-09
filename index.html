@@ -989,11 +989,11 @@ async function loadAllFromFirestore() {
   try {
     const fy = getFiscalYear();
     const prefix = `FY${fy}_`;
-    const snap = await db.collection('budgetData').get();
+    const docs = await _getBudgetDocs(prefix); // 権限内の部門docだけを個別取得（コレクション全件取得は廃止・2026-09-09）
 
     // 新形式（FY{年度}_{部門ID}）のみ読み込む。
     // 旧形式（FYなし）の自動移行は廃止: 未作成年度に切り替えた際、古いドラフトが新年度へコピーされる事故が起きていたため
-    snap.forEach(doc => {
+    docs.forEach(doc => {
       if (!doc.id.startsWith(prefix)) return;
       const deptId = doc.id.substring(prefix.length);
       const data = doc.data();
@@ -1537,6 +1537,21 @@ const DEPT_GROUPS = {
   other:   ['yakuin', 'kanribu', 'gakujutsu'],
 };
 
+// Firestoreから読み込む部門ID（権限内のみ）。'all'（全体）と company_total は admin/editor/tax_advisor のみ。
+// 背景: 旧実装は collection('budgetData').get() で全部門を無条件にクライアントへ乗せていた（2026-09-09 山内さん指摘）
+function isStaffRole() { return userRole === 'admin' || userRole === 'editor' || userRole === 'tax_advisor'; }
+function _loadableDeptIds() {
+  const ids = getVisibleDepts().map(d => d.id);
+  if (isStaffRole()) ids.push('all');
+  return ids;
+}
+async function _getBudgetDocs(prefix) {
+  const docs = await Promise.all(_loadableDeptIds().map(id =>
+    db.collection('budgetData').doc(prefix + id).get().catch(e => { console.error('budgetData load error:', prefix + id, e.code || e.message); return null; })
+  ));
+  return docs.filter(d => d && d.exists);
+}
+
 // 選択部門をそのロールの閲覧可能部門に強制する。'all'（全体）は admin/editor/tax_advisor のみ。
 // 背景: 店舗閲覧（viewer）で「その他」ボタンから役員・管理部・学術が選択できていた（2026-09-09 山内さん指摘）
 function sanitizeSelectedDepts() {
@@ -2074,8 +2089,8 @@ async function loadYoyData(fy) {
   });
   try {
     const prefix = `FY${fy}_`;
-    const snap = await db.collection('budgetData').get();
-    snap.forEach(doc => {
+    const docs = await _getBudgetDocs(prefix); // 権限内の部門docのみ（2026-09-09）
+    docs.forEach(doc => {
       if (!doc.id.startsWith(prefix)) return;
       const deptId = doc.id.substring(prefix.length);
       if (!result[deptId]) return;
@@ -2238,7 +2253,7 @@ async function loadMidtermYear(fy) {
   if (midtermCache[fy]) return midtermCache[fy];
   const result = {};
   // DEPTS に加えて「全体」(id:'all') も読み込む。全体=会社の中期計画をトップダウン入力する先（FY{年}_all）
-  await Promise.all([...DEPTS, { id: 'all' }].map(async d => {
+  await Promise.all(_loadableDeptIds().map(id => ({ id })).map(async d => { // 権限内の部門のみ（2026-09-09）
     const store = { budget: {}, actual: {}, annualInputs: {}, distMethod: {} };
     ITEMS.forEach(it => {
       store.budget[it.id] = new Array(12).fill(0);
@@ -4173,6 +4188,7 @@ let kessanFreeeCache = { fy: null, uriage: 0, genka: 0, sga: 0 };
 async function loadKessanFreeeData(fy) {
   if (kessanFreeeCache.fy === fy) return;
   const prefix = 'FY' + fy + '_';
+  if (!isStaffRole()) { kessanFreeeCache = { fy, uriage: 0, genka: 0, sga: 0 }; return; } // 会社合計はstaffのみ（2026-09-09）
   try {
     const companyDoc = await db.collection('budgetData').doc(prefix + 'company_total').get();
     if (companyDoc.exists) {
@@ -4181,8 +4197,8 @@ async function loadKessanFreeeData(fy) {
     }
 
     let totals = { uriage: 0, genka: 0, sga: 0 };
-    const snap = await db.collection('budgetData').get();
-    snap.forEach(doc => {
+    const docs = await _getBudgetDocs(prefix); // 権限内の部門docのみ（2026-09-09）
+    docs.forEach(doc => {
       if (!doc.id.startsWith(prefix)) return;
       const data = doc.data() || {};
       if (data.source === 'freee_company_total' || data.isCompanyTotal) return;

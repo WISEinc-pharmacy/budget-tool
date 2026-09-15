@@ -510,7 +510,11 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <!-- プレビューテーブル -->
     <div id="homecarePreview" style="padding:16px 24px;"></div>
     <!-- 保存ボタン（プレビュー後に表示） -->
-    <div id="homecareSaveArea" style="padding:0 24px;display:none;">
+    <div id="homecareSaveArea" style="padding:0 24px 16px;display:none;">
+      <label style="font-size:12px;color:#555;display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        <input type="checkbox" id="homecareReplaceAll" style="margin:0;">
+        この月のデータを全て置き換える（チェックしない場合は既存施設に追記し、同名施設のみ上書き更新します。施設ごとに複数回に分けてアップロードする場合はチェックを外したままにしてください）
+      </label>
       <button class="btn btn-primary" onclick="saveHomecareData()">⬆️ アップロードする</button>
       <span id="homecareSaveStatus" style="margin-left:12px;font-size:13px;"></span>
     </div>
@@ -1016,6 +1020,11 @@ function doLogout() { auth.signOut(); }
 
 auth.onAuthStateChanged(async (user) => {
   if (user) {
+    // 失効即検知（2026-09-09 INC-376/379）: ページ読込・復帰時にサーバへ強制リフレッシュ。
+    // 管理者がトークンを失効(validSince更新)/アカウント無効化した場合、ここで例外→即サインアウト。
+    // これによりリロードすれば（キャッシュ済みIDトークンが残っていても）その場でログアウトされる。
+    try { await user.getIdToken(true); }
+    catch (e) { console.warn('token refresh failed → signOut:', e && (e.code || e.message)); try { await firebase.auth().signOut(); } catch (_) {} location.reload(); return; }
     currentUser = user;
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('userName').textContent = user.displayName || user.email;
@@ -5410,6 +5419,8 @@ async function viewSalesPdf(docId) {
 }
 
 async function deleteSalesData(docId, deptName, month) {
+  const canEdit = userRole === 'admin' || userRole === 'editor';
+  if (!canEdit) { alert('削除は管理者・編集者のみ操作できます。'); return; }
   if (!confirm(`⚠ ${deptName} ${month} のデータを削除します。\n\nFirestoreのデータとDriveのPDFも削除されます。\n削除したら元に戻せません。本当に削除しますか？`)) return;
   try {
     // Driveバックアップがあれば削除予約（agent_runnerが実行）
@@ -5925,6 +5936,44 @@ function switchImportSection(sec) {
   });
 }
 
+// ===HOMECARE_MERGE_START===
+// 在宅内訳CSV 施設マージ（同一月に施設を1つずつ順次アップロードしても既存施設のデータを消さない）
+// 背景(2026-09-10・要望): saveHomecareData()が.set()でdoc全置換していたため、我孫子が施設ごとにCSVを
+// 1施設ずつ取り込むと最後の1施設しか残らなかった（INC相当・依頼ID: dev_request_bot/requests.json）。
+// 対処: 保存前に既存docのfacilities[]を取得し、施設名(name)をキーにupsertでマージしてから保存する。
+/**
+ * 既存施設配列と新規施設配列を施設名(name)キーでマージする（同名は新規で上書き＝再アップロード時の更新に対応）
+ * @param {Array<{name:string,[key:string]:number}>} prevFacilities 既存(保存済み)の施設配列
+ * @param {Array<{name:string,[key:string]:number}>} newFacilities  今回アップロードした施設配列
+ * @returns {Array<{name:string,[key:string]:number}>} upsert後の施設配列（挿入順維持: 既存→新規追加分）
+ */
+function mergeHomecareFacilities(prevFacilities, newFacilities) {
+  const map = new Map();
+  (prevFacilities || []).forEach(f => { if (f && f.name) map.set(f.name, f); });
+  (newFacilities || []).forEach(f => { if (f && f.name) map.set(f.name, f); }); // 同名施設は新CSVの値で上書き
+  return Array.from(map.values());
+}
+
+/**
+ * マージ後の全施設からtotalsを再計算する（施設オブジェクトの数値プロパティを動的に合算・将来の項目追加にも耐える）
+ * @param {Array<{name:string,[key:string]:number}>} facilities
+ * @returns {Object} 合算後のtotalsオブジェクト（nameは含まない）
+ */
+function recalcHomecareTotals(facilities) {
+  const totals = {};
+  (facilities || []).forEach(f => {
+    Object.keys(f || {}).forEach(k => {
+      if (k === 'name') return;
+      const v = f[k];
+      if (typeof v === 'number' && !Number.isNaN(v)) {
+        totals[k] = (totals[k] || 0) + v;
+      }
+    });
+  });
+  return totals;
+}
+// ===HOMECARE_MERGE_END===
+
 // Firestoreに保存
 async function saveHomecareData() {
   const store = document.getElementById('homecareStore').value;
@@ -5942,15 +5991,33 @@ async function saveHomecareData() {
   status.style.color = '#555';
   try {
     const docId = store + '_' + month.replace('-', '');  // 例: kashiwa_202607
+    const newFacilities = _homecareResult.sorted.map(([name, g]) => ({ name, ...g }));
+    const replaceAllEl = document.getElementById('homecareReplaceAll');
+    const replaceAll = !!(replaceAllEl && replaceAllEl.checked);
+    let mergedFacilities = newFacilities;
+    let prevCount = 0;
+    if (!replaceAll) {
+      // 既存doc取得 → 施設名キーでマージ（1施設ずつアップロードしても前施設分を消さない）
+      const prevDoc = await db.collection('homecareData').doc(docId).get();
+      const prevFacilities = prevDoc.exists ? (prevDoc.data().facilities || []) : [];
+      prevCount = prevFacilities.length;
+      mergedFacilities = mergeHomecareFacilities(prevFacilities, newFacilities);
+    }
+    const mergedTotals = recalcHomecareTotals(mergedFacilities);
     await db.collection('homecareData').doc(docId).set({
       store,
       yearMonth: month,
-      facilities: _homecareResult.sorted.map(([name, g]) => ({ name, ...g })),
-      totals: _homecareResult.totals,
+      facilities: mergedFacilities,
+      totals: mergedTotals,
       uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
       uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
     });
-    status.textContent = '✅ アップロード完了';
+    const noteSuffix = replaceAll
+      ? '（全置換・' + mergedFacilities.length + '施設）'
+      : (prevCount > 0
+          ? '（既存' + prevCount + '施設に追記/更新・計' + mergedFacilities.length + '施設）'
+          : '（新規' + mergedFacilities.length + '施設）');
+    status.textContent = '✅ アップロード完了' + noteSuffix;
     status.style.color = '#27ae60';
   } catch(e) {
     status.textContent = '❌ アップロード失敗: ' + e.message;

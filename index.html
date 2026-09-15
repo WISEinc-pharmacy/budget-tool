@@ -497,7 +497,11 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
           <option value="kashiwa">柏</option>
           <option value="adachi">足立</option>
           <option value="nagareyama">ながれやま</option>
+          <option value="ai_chozai">アイ調剤</option>
           <option value="abiko">我孫子</option>
+          <option value="sakuradai">さくら台</option>
+          <option value="koshigaya">越谷</option>
+          <option value="kiyose">清瀬</option>
         </select>
         <select id="homecareMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
         <label class="btn btn-import" style="cursor:pointer;">
@@ -505,6 +509,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
           <input type="file" id="homecareFileInput" accept=".txt,.csv" style="display:none">
         </label>
         <span id="homecareFileName" style="color:#666;font-size:12px;"></span>
+        <button class="btn btn-secondary" onclick="reportNoHomecare()">🚫 この月は在宅患者なし（②提出なし）として報告</button>
+        <span id="homecareNoneStatus" style="font-size:12px;"></span>
       </div>
     </div>
     <!-- プレビューテーブル -->
@@ -551,7 +557,11 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
         <option value="kashiwa">柏</option>
         <option value="adachi">足立</option>
         <option value="nagareyama">ながれやま</option>
+        <option value="ai_chozai">アイ調剤</option>
         <option value="abiko">我孫子</option>
+        <option value="sakuradai">さくら台</option>
+        <option value="koshigaya">越谷</option>
+        <option value="kiyose">清瀬</option>
       </select>
       <input type="month" id="homecareViewMonth" onchange="loadHomecareView()" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
       <button class="btn btn-secondary" onclick="loadHomecareView()">表示</button>
@@ -5453,7 +5463,8 @@ async function renderSalesTab() {
 const DEPT_TO_KOT = {
   kashiwa: '柏', adachi: '足立', nagareyama: 'ながれやま',
   ai_chozai: 'アイ調剤', abiko: '我孫子', sakuradai: 'さくら台',
-  koshigaya: '越谷', kiyose: '清瀬',
+  // 越谷はKOT側の部門名が「越谷」単独ではなく「はぐくみ薬局　越谷」（全角スペース区切り・kot_monthly実測=2026-09-15確認）
+  koshigaya: 'はぐくみ薬局　越谷', kiyose: '清瀬',
 };
 
 /** budget-toolの月インデックス(0=期首月)をyyyy-MMに変換 */
@@ -5749,6 +5760,9 @@ function renderLaborChart(months, kotNameFilter) {
 // ===== 在宅内訳 =====
 let _homecareResult = null;
 
+// 在宅内訳の対象店舗ラベル（DEPTSから機械的に生成・全表示関数で共有＝判例144対応で8店へ拡張・2026-09-15）
+const HOMECARE_STORE_LABELS = Object.fromEntries(DEPTS.filter(d => !d.adminOnly).map(d => [d.id, d.name]));
+
 // 在宅内訳CSV 機種プロファイル（店舗ごとにレセコン機種が異なる＝CSVの列構造も異なる）
 // stores: homecareStore <select> の value（L494-500）と対応
 // confirmed: 実CSVサンプルで列構造を確証済みか。false のものは列を推測せず未対応表示にする（2026-08-11）
@@ -6025,6 +6039,53 @@ async function saveHomecareData() {
   }
 }
 
+// 「在宅患者なし」報告（判例144・2026-09-11山内さん決定）
+// 区分は「外来店舗か否か」ではなく「在宅患者の有無」。在宅患者がいない店舗・月はCSV提出の代わりにこのボタンで報告する。
+// homecareData/{store}_{yyyymm} に noHomecare:true・facilities:[]・totals:{} を保存（uploaderロールでも操作可＝9/9案Aと同じ開放範囲）
+async function reportNoHomecare() {
+  const store = document.getElementById('homecareStore').value;
+  const month = document.getElementById('homecareMonth').value;
+  const statusEl = document.getElementById('homecareNoneStatus');
+  if (!store || !month) {
+    alert('店舗と年月を選択してください');
+    return;
+  }
+  const storeName = (DEPTS.find(d => d.id === store) || {}).name || store;
+  const docId = store + '_' + month.replace('-', '');
+  try {
+    const existing = await db.collection('homecareData').doc(docId).get();
+    if (existing.exists) {
+      const data = existing.data();
+      const hasFacilities = Array.isArray(data.facilities) && data.facilities.length > 0;
+      if (hasFacilities) {
+        const ok = confirm(storeName + ' ' + month + ' には既にCSVデータ（' + data.facilities.length + '施設）が登録されています。\n「在宅患者なし」で上書きしてよろしいですか？（既存の施設データは削除されます）');
+        if (!ok) return;
+      } else if (data.noHomecare) {
+        const ok = confirm(storeName + ' ' + month + ' は既に「在宅患者なし」として報告済みです。再度保存しますか？');
+        if (!ok) return;
+      }
+    }
+    if (statusEl) { statusEl.textContent = '報告中...'; statusEl.style.color = '#555'; }
+    await db.collection('homecareData').doc(docId).set({
+      store,
+      yearMonth: month,
+      noHomecare: true,
+      facilities: [],
+      totals: {},
+      uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
+    });
+    if (statusEl) { statusEl.textContent = '✅ 「在宅患者なし」として報告しました'; statusEl.style.color = '#27ae60'; }
+    // CSVプレビュー・保存エリアが残っていればリセット
+    document.getElementById('homecarePreview').innerHTML = '';
+    document.getElementById('homecareSaveArea').style.display = 'none';
+    document.getElementById('homecareFileName').textContent = '';
+    _homecareResult = null;
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '❌ 報告失敗: ' + e.message; statusEl.style.color = '#e74c3c'; }
+  }
+}
+
 // 在宅内訳タブ — Firestoreデータ閲覧
 async function loadHomecareView() {
   const store = document.getElementById('homecareViewStore').value;
@@ -6100,18 +6161,25 @@ const _HC_TD = 'padding:5px 10px;text-align:right;border-bottom:1px solid #ddd';
 
 // 店舗選択時: 合計項目×月 ＋ 施設×月（指標切替）
 function renderHomecareStoreMatrix(container, docs) {
-  const storeLabels = { kashiwa: '柏', adachi: '足立', nagareyama: 'ながれやま', abiko: '我孫子' };
   const months = docs.map(d => d.yearMonth);
   const mLabels = _hcMonthLabels(months);
-  const storeLabel = storeLabels[docs[0].store] || docs[0].store;
+  const storeLabel = HOMECARE_STORE_LABELS[docs[0].store] || docs[0].store;
   let html = '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' — 月次推移（直近' + months.length + 'か月）</h4>';
   html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
   html += '<thead><tr style="background:#1a5276;color:#fff"><th style="padding:6px 10px;text-align:left">項目</th>' +
     mLabels.map(l => '<th style="' + _HC_TH + '">' + l + '</th>').join('') + '</tr></thead><tbody>';
+  // 報告状況行（判例144: 「在宅患者なし」報告済みの月を明示・2026-09-15）
+  html += '<tr style="background:#fdf6e3">';
+  html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd;font-weight:500">報告状況</td>';
+  docs.forEach(d => {
+    const label = d.noHomecare ? '<span style="color:#888">在宅患者なし</span>' : '<span style="color:#27ae60">提出あり</span>';
+    html += '<td style="padding:5px 10px;text-align:center;border-bottom:1px solid #ddd;font-size:11px">' + label + '</td>';
+  });
+  html += '</tr>';
   HOMECARE_METRICS.forEach(([k, label], idx) => {
     html += '<tr style="background:' + (idx % 2 === 0 ? '#fff' : '#f0f8ff') + '">';
     html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd;font-weight:500">' + label + '</td>';
-    docs.forEach(d => { html += '<td style="' + _HC_TD + '">' + _hcVal(d.totals, k).toLocaleString() + '</td>'; });
+    docs.forEach(d => { html += '<td style="' + _HC_TD + '">' + (d.noHomecare ? '―' : _hcVal(d.totals, k).toLocaleString()) + '</td>'; });
     html += '</tr>';
   });
   html += '</tbody></table></div>';
@@ -6142,22 +6210,22 @@ function renderHomecareStoreMatrix(container, docs) {
 
 // 全店舗・月未指定時: 店舗×月（指標切替）
 function renderHomecareAllMatrix(container, docs) {
-  const storeLabels = { kashiwa: '柏', adachi: '足立', nagareyama: 'ながれやま', abiko: '我孫子' };
   const months = [...new Set(docs.map(d => d.yearMonth))].sort().slice(-12);
   const mLabels = _hcMonthLabels(months);
   const byKey = {};
   docs.forEach(d => { byKey[d.store + '|' + d.yearMonth] = d; });
-  const stores = Object.keys(storeLabels).filter(s => docs.some(d => d.store === s));
+  const stores = Object.keys(HOMECARE_STORE_LABELS).filter(s => docs.some(d => d.store === s));
   let html = '<div style="display:flex;align-items:center;gap:12px;margin:16px 0 8px;flex-wrap:wrap"><h4 style="color:#1a5276;margin:0">店舗別 月次推移（直近' + months.length + 'か月）</h4>' + _hcMetricSelect() + '</div>';
   html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
   html += '<thead><tr style="background:#1a5276;color:#fff"><th style="padding:6px 10px;text-align:left">店舗</th>' +
     mLabels.map(l => '<th style="' + _HC_TH + '">' + l + '</th>').join('') + '</tr></thead><tbody>';
   stores.forEach((s, idx) => {
     html += '<tr style="background:' + (idx % 2 === 0 ? '#fff' : '#f0f8ff') + '">';
-    html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd;font-weight:500">' + storeLabels[s] + '</td>';
+    html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd;font-weight:500">' + HOMECARE_STORE_LABELS[s] + '</td>';
     months.forEach(ym => {
       const d = byKey[s + '|' + ym];
-      html += '<td style="' + _HC_TD + '">' + (d ? _hcVal(d.totals, _homecareMetric).toLocaleString() : '-') + '</td>';
+      const cell = !d ? '-' : (d.noHomecare ? '<span style="color:#888">なし</span>' : _hcVal(d.totals, _homecareMetric).toLocaleString());
+      html += '<td style="' + _HC_TD + '">' + cell + '</td>';
     });
     html += '</tr>';
   });
@@ -6167,10 +6235,15 @@ function renderHomecareAllMatrix(container, docs) {
 }
 
 function renderHomecareView(container, dataList) {
-  const storeLabels = { kashiwa:'柏', adachi:'足立', nagareyama:'ながれやま', abiko:'我孫子' };
   let html = '';
   dataList.forEach(data => {
-    const storeLabel = storeLabels[data.store] || data.store;
+    const storeLabel = HOMECARE_STORE_LABELS[data.store] || data.store;
+    if (data.noHomecare) {
+      // 判例144: 「在宅患者なし」報告済みの月はテーブルを出さず専用メッセージのみ表示（2026-09-15）
+      html += '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' ' + data.yearMonth + '</h4>';
+      html += '<p style="color:#888;font-size:13px;padding:8px 12px;background:#f7f7f7;border-radius:6px;display:inline-block">🚫 この月は「在宅患者なし」として報告されています。</p>';
+      return;
+    }
     html += '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' ' + data.yearMonth + '</h4>';
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';

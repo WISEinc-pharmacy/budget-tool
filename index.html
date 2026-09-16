@@ -6169,7 +6169,7 @@ async function loadHomecareView() {
         result.innerHTML = '<p style="color:#999">データがありません</p>';
         return;
       }
-      renderHomecareView(result, [doc.data()]);
+      await renderHomecareView(result, [doc.data()]);
     } else if (month && !store) {
       // 月のみ指定 → その月の全店舗を取得
       const snap = await db.collection('homecareData').where('yearMonth', '==', month).get();
@@ -6177,7 +6177,7 @@ async function loadHomecareView() {
         result.innerHTML = '<p style="color:#999">データがありません</p>';
         return;
       }
-      renderHomecareView(result, snap.docs.map(d => d.data()));
+      await renderHomecareView(result, snap.docs.map(d => d.data()));
     } else if (store && !month) {
       // 店舗のみ指定 → 「項目×月」「施設×月」の推移表（月ブロック縦積みは見づらい・2026-08-12山内さん指示で元スプシ形式の月横並びに変更）
       // orderByを外しwhere単独+クライアントソートにすることで複合インデックス不要
@@ -6307,15 +6307,36 @@ function renderHomecareAllMatrix(container, docs) {
 function _hcDash(v) {
   return typeof v === 'number' ? v.toLocaleString() : '—';
 }
-function renderHomecareView(container, dataList) {
+
+// 施設別集計(homecareData.totals)とレセコン月計表(salesData.values)の突合判定（INC-401・2026-09-16）
+// 判定基準: |差分%|<=1% 一致 / <=3% 要確認 / それ超 乖離。月計表未提出・技術料欄なしは判定不可扱い。
+// node側 homecare_reconcile.mjs の judgeReconcile と同一の判定ロジック（ブラウザ単体scriptのためコードは複製・値は同期を維持すること）
+function _hcJudge({ tech, techFee, times, visitCount, insTotal, totalInsurance, hasSalesData }) {
+  if (!hasSalesData) return { status: 'nosales', label: '月計表未提出' };
+  const techFeePoints = (typeof techFee === 'number') ? techFee / 10 : null;
+  if (techFeePoints === null) return { status: 'nosales', label: '月計表未提出（技術料欄なし）' };
+  const diff = (typeof tech === 'number') ? tech - techFeePoints : null;
+  const diffPercent = (diff !== null) ? (techFeePoints !== 0 ? (diff / techFeePoints) * 100 : (diff === 0 ? 0 : null)) : null;
+  let status, label;
+  if (diffPercent === null) { status = 'unknown'; label = '判定不可'; }
+  else if (Math.abs(diffPercent) <= 1) { status = 'match'; label = '✅ 月計表と一致'; }
+  else if (Math.abs(diffPercent) <= 3) { status = 'check'; label = '⚠ 要確認'; }
+  else { status = 'mismatch'; label = '❌ 乖離（再取込 or 式の確認）'; }
+  const timesMatch = (typeof times === 'number' && typeof visitCount === 'number') ? (times === visitCount) : null;
+  const insDiffPercent = (typeof insTotal === 'number' && typeof totalInsurance === 'number' && totalInsurance !== 0)
+    ? ((insTotal - totalInsurance) / totalInsurance) * 100 : null;
+  return { status, label, techFeePoints, diff, diffPercent, timesMatch, insDiffPercent };
+}
+
+async function renderHomecareView(container, dataList) {
   let html = '';
-  dataList.forEach(data => {
+  for (const data of dataList) {
     const storeLabel = HOMECARE_STORE_LABELS[data.store] || data.store;
     if (data.noHomecare) {
       // 判例144: 「在宅患者なし」報告済みの月はテーブルを出さず専用メッセージのみ表示（2026-09-15）
       html += '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' ' + data.yearMonth + '</h4>';
       html += '<p style="color:#888;font-size:13px;padding:8px 12px;background:#f7f7f7;border-radius:6px;display:inline-block">🚫 この月は「在宅患者なし」として報告されています。</p>';
-      return;
+      continue;
     }
     html += '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' ' + data.yearMonth + '</h4>';
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
@@ -6352,8 +6373,42 @@ function renderHomecareView(container, dataList) {
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.guidance||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.internal||0).toLocaleString() + '</td>';
     html += '</tr>';
+    // ===== 月計表突合（INC-401・2026-09-16）: salesData/{yearMonth}_{store} の技術料合計と施設別CSV集計を比較 =====
+    let sv = null, hasSalesData = false;
+    try {
+      const salesDocId = data.yearMonth + '_' + data.store;
+      const salesDoc = await db.collection('salesData').doc(salesDocId).get();
+      if (salesDoc.exists) { hasSalesData = true; sv = salesDoc.data().values || {}; }
+    } catch (e) {
+      console.warn('月計表突合の取得に失敗（表示は継続）:', e);
+    }
+    const j = _hcJudge({
+      tech: t.tech, techFee: sv ? sv.techFee : null,
+      times: t.times, visitCount: sv ? sv.visitCount : null,
+      insTotal: t.insTotal, totalInsurance: sv ? sv.totalInsurance : null,
+      hasSalesData
+    });
+    const isOld = typeof t.drugFee !== 'number';
+    html += '<tr style="background:#fffbea"><td colspan="10" style="padding:8px 10px;border-top:1px solid #ddd;font-size:12px;color:#555">';
+    html += '<b>月計表突合（INC-401）:</b> ';
+    if (j.status === 'nosales' || j.status === 'unknown') {
+      html += '<span style="color:#888">' + j.label + '</span>';
+    } else {
+      const color = j.status === 'match' ? '#27ae60' : (j.status === 'check' ? '#e67e22' : '#e74c3c');
+      html += '月計表 技術料合計÷10=' + Math.round(j.techFeePoints).toLocaleString() + '点　';
+      html += '差分=' + (j.diff >= 0 ? '+' : '') + Math.round(j.diff).toLocaleString() + '点（' + (j.diffPercent >= 0 ? '+' : '') + j.diffPercent.toFixed(1) + '%）　';
+      html += '<span style="color:' + color + ';font-weight:bold">' + j.label + '</span>';
+      html += '　｜　回数: ' + (j.timesMatch === true ? '<span style="color:#27ae60">✓一致</span>' :
+        j.timesMatch === false ? '<span style="color:#e67e22">✗不一致(' + (t.times||0).toLocaleString() + '回 vs 月計表' + (sv.visitCount||0).toLocaleString() + '回)</span>' : '-');
+      html += '　保険計: ' + (j.insDiffPercent !== null ?
+        (Math.abs(j.insDiffPercent) <= 1 ? '<span style="color:#27ae60">✓一致</span>' : '<span style="color:#e67e22">✗差' + j.insDiffPercent.toFixed(1) + '%</span>') : '-');
+    }
+    if (isOld) {
+      html += '<br><span style="color:#e74c3c">⚠ この月は旧式（drugFee未保存）で集計されています。再取込で確定してください（INC-399）</span>';
+    }
+    html += '</td></tr>';
     html += '</tbody></table></div>';
-  });
+  }
   container.innerHTML = html;
 }
 </script>

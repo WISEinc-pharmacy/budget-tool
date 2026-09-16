@@ -5814,13 +5814,16 @@ const HOMECARE_STORE_LABELS = Object.fromEntries(DEPTS.filter(d => !d.adminOnly)
 // 在宅内訳CSV 機種プロファイル（店舗ごとにレセコン機種が異なる＝CSVの列構造も異なる）
 // stores: homecareStore <select> の value（L494-500）と対応
 // confirmed: 実CSVサンプルで列構造を確証済みか。false のものは列を推測せず未対応表示にする（2026-08-11）
+// 技術料に時加算(col14)を含めるかどうかの切替（既定=含める）。除外する場合はfalseに変更（INC-399・2026-09-16）
+const TECH_INCLUDE_TIME_ADD = true;
 const HOMECARE_CSV_PROFILES = {
   pharmy: {
     name: 'モイネット ファーミー',
     stores: ['kashiwa', 'abiko'],
     confirmed: true,
     // 0行目: ヘッダー, 1行目: 単位行 → スキップ（i=2から開始）。col22=施設名, col4=回数, col12=保険計,
-    // col13-20=技術料内訳（実績データで確証済み・変更禁止）
+    // col13-17=技術料（基本点/時加算/調剤点/調加算/指導点）・col18-20=薬剤料/材料料（内服薬/内服外/材料点、技術料に含めない。
+    // 旧実装はcol18-20まで技術料に合算するバグがあり2026-08分で技術料≒保険計/10に一致していた＝INC-399。2026-09-16修正）
     parse(lines) {
       const groups = {};
       for (let i = 2; i < lines.length; i++) {
@@ -5830,7 +5833,10 @@ const HOMECARE_CSV_PROFILES = {
         if (cols.length < 23) continue;
         const facility = (cols[22] || '').trim() || '（未分類）';
         if (!groups[facility]) {
-          groups[facility] = { patients: 0, times: 0, insTotal: 0, tech: 0, base: 0, dispensing: 0, guidance: 0, internal: 0 };
+          groups[facility] = {
+            patients: 0, times: 0, insTotal: 0, tech: 0, base: 0, dispensing: 0, guidance: 0, internal: 0,
+            timeAdd: 0, dispAdd: 0, oralMed: 0, externalMed: 0, material: 0, drugFee: 0
+          };
         }
         const g = groups[facility];
         g.patients++;
@@ -5844,11 +5850,18 @@ const HOMECARE_CSV_PROFILES = {
         const col18 = parseInt(cols[18]) || 0;
         const col19 = parseInt(cols[19]) || 0;
         const col20 = parseInt(cols[20]) || 0;
-        g.tech += col13 + col14 + col15 + col16 + col17 + col18 + col19 + col20;
+        // 技術料＝基本点+時加算+調剤点+調加算+指導点（col13-17）。col18-20（薬剤料/材料料）は含めない（INC-399）
+        g.tech += col13 + (TECH_INCLUDE_TIME_ADD ? col14 : 0) + col15 + col16 + col17;
         g.base += col13;
         g.dispensing += col15;
         g.guidance += col17;
-        g.internal += col18;
+        g.internal += col18; // 旧フィールド名（誤解を招く名称のため表示側は新設のoralMedを使用。後方互換のため保持）
+        g.timeAdd += col14;
+        g.dispAdd += col16;
+        g.oralMed += col18;
+        g.externalMed += col19;
+        g.material += col20;
+        g.drugFee += col18 + col19 + col20; // 薬剤料+材料料の合計（表示用。tech+drugFee=保険計/10で検算可能）
       }
       const sorted = Object.entries(groups).sort((a, b) => b[1].insTotal - a[1].insTotal);
       if (sorted.length === 0) return null;
@@ -5856,8 +5869,13 @@ const HOMECARE_CSV_PROFILES = {
         acc.patients += g.patients; acc.times += g.times; acc.insTotal += g.insTotal;
         acc.tech += g.tech; acc.base += g.base; acc.dispensing += g.dispensing;
         acc.guidance += g.guidance; acc.internal += g.internal;
+        acc.timeAdd += g.timeAdd; acc.dispAdd += g.dispAdd; acc.oralMed += g.oralMed;
+        acc.externalMed += g.externalMed; acc.material += g.material; acc.drugFee += g.drugFee;
         return acc;
-      }, { patients:0, times:0, insTotal:0, tech:0, base:0, dispensing:0, guidance:0, internal:0 });
+      }, {
+        patients:0, times:0, insTotal:0, tech:0, base:0, dispensing:0, guidance:0, internal:0,
+        timeAdd:0, dispAdd:0, oralMed:0, externalMed:0, material:0, drugFee:0
+      });
       return { sorted, totals };
     }
   },
@@ -5949,7 +5967,7 @@ document.getElementById('homecareFileInput').addEventListener('change', function
     html += sorted.length + ' 施設 / ' + totals.patients.toLocaleString() + ' 患者（プレビュー）</div>';
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap;min-width:700px">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';
-    ['施設名','患者数','回数','保険計(点)','技術料合計(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+    ['施設名','患者数','回数','保険計(点)','技術料合計(点)','薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
       html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
     });
     html += '</tr></thead><tbody>';
@@ -5961,6 +5979,7 @@ document.getElementById('homecareFileInput').addEventListener('change', function
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.times.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + Math.round(g.insTotal / 10).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.tech.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.drugFee.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.base.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.dispensing.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.guidance.toLocaleString() + '</td>';
@@ -5973,6 +5992,7 @@ document.getElementById('homecareFileInput').addEventListener('change', function
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.times.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + Math.round(totals.insTotal / 10).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.tech.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.drugFee.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.base.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.dispensing.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.guidance.toLocaleString() + '</td>';
@@ -6186,6 +6206,7 @@ async function loadHomecareView() {
 let _homecareMetric = 'insTotal';
 const HOMECARE_METRICS = [
   ['patients', '患者数'], ['times', '回数'], ['insTotal', '保険計(点)'], ['tech', '技術料(点)'],
+  ['drugFee', '薬剤料（内服＋内服外＋材料）(点)'],
   ['base', '基本点'], ['dispensing', '調剤点'], ['guidance', '指導点'], ['internal', '内服薬点']
 ];
 function _hcVal(obj, key) {
@@ -6282,6 +6303,10 @@ function renderHomecareAllMatrix(container, docs) {
   container.innerHTML = html;
 }
 
+// 旧データ（drugFee等の新フィールドが無いdoc）はエラーにせず「—」表示にする（INC-399対応・2026-09-16）
+function _hcDash(v) {
+  return typeof v === 'number' ? v.toLocaleString() : '—';
+}
 function renderHomecareView(container, dataList) {
   let html = '';
   dataList.forEach(data => {
@@ -6295,7 +6320,7 @@ function renderHomecareView(container, dataList) {
     html += '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' ' + data.yearMonth + '</h4>';
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';
-    ['施設名','患者数','回数','保険計(点)','技術料(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+    ['施設名','患者数','回数','保険計(点)','技術料(点)','薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
       html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
     });
     html += '</tr></thead><tbody>';
@@ -6307,6 +6332,7 @@ function renderHomecareView(container, dataList) {
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.times||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + Math.round((f.insTotal||0)/10).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.tech||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + _hcDash(f.drugFee) + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.base||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.dispensing||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.guidance||0).toLocaleString() + '</td>';
@@ -6320,6 +6346,7 @@ function renderHomecareView(container, dataList) {
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.times||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + Math.round((t.insTotal||0)/10).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.tech||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + _hcDash(t.drugFee) + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.base||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.dispensing||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.guidance||0).toLocaleString() + '</td>';

@@ -6,9 +6,14 @@
 // 実行: node test_pharmy_parse.mjs
 //
 // 抽出方式: index.html内の「parse(lines) {」から対応する閉じ括弧までをクォート認識の括弧カウントで
-// 切り出し、new Function('TECH_INCLUDE_TIME_ADD','lines', body) として評価する。
+// 切り出し、computeHomecareTotalsFromRows()本体と結合したうえで
+// new Function('TECH_INCLUDE_TIME_ADD','lines', combinedBody) として評価する。
 // index.html自体を書き換えずに実関数（コピー・再実装ではない）を直接テストするため、
 // 将来index.htmlのparse()実装が変わってもこのテストが実装とズレない。
+//
+// INC-403（2026-09-16）でparse()は「行の正規化」のみを担当するよう分離され、
+// 集計はcomputeHomecareTotalsFromRows()に一本化された。parse()はこの関数を呼び出すため、
+// テスト側も両方を同一スコープへ抽出して結合評価する（parse()単体では実行できない）。
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -50,17 +55,32 @@ function extractParsePharmy() {
   if (!techConstMatch) throw new Error('TECH_INCLUDE_TIME_ADD 定数が見つかりません（index.html側の宣言が変更された可能性）');
   const techIncludeTimeAdd = techConstMatch[1] === 'true';
 
+  // computeHomecareTotalsFromRows() 本体（関数宣言そのものを丸ごと取り込み、parse()から呼べるようにする）
+  const computeBlock = extractBraceBlock(src, 'function computeHomecareTotalsFromRows(header, rows, _profile) {');
+  const computeFull = 'function computeHomecareTotalsFromRows(header, rows, _profile) ' + computeBlock.full;
+  if (!computeFull.includes('REQUIRED') || !computeFull.includes('g.tech')) {
+    throw new Error('抽出したcomputeHomecareTotalsFromRows本体が想定と一致しません（index.html構造変更の疑い）');
+  }
+
+  // HOMECARE_ROWS_HEADER_PHARMY（pharmy用の行ヘッダー定数）もparse()が参照するため同一スコープへ取り込む
+  const headerConstMatch = src.match(/const\s+HOMECARE_ROWS_HEADER_PHARMY\s*=\s*(\[[\s\S]*?\]);/);
+  if (!headerConstMatch) throw new Error('HOMECARE_ROWS_HEADER_PHARMY 定数が見つかりません（index.html側の宣言が変更された可能性）');
+  const headerConstSrc = 'const HOMECARE_ROWS_HEADER_PHARMY = ' + headerConstMatch[1] + ';';
+
   const { full } = extractBraceBlock(src, 'parse(lines) {');
   // full は "{ ...本体... }" （外側の中括弧を含む）。new Function の第3引数には中身のみ渡す。
-  const body = full.slice(1, -1);
+  const parseBody = full.slice(1, -1);
 
   // eslint的な安全確認: 抽出テキストにHOMECARE_CSV_PROFILES/pharmy固有の識別子が含まれるか（抽出位置の妥当性チェック）
-  if (!body.includes('cols[22]') || !body.includes('g.tech')) {
+  if (!parseBody.includes('cols[22]') || !parseBody.includes('computeHomecareTotalsFromRows')) {
     throw new Error('抽出したparse本体がpharmy用と一致しません（index.html構造変更の疑い）');
   }
 
+  // HOMECARE_ROWS_HEADER_PHARMY定数 → computeHomecareTotalsFromRows（関数宣言・ホイスト） → parse()本体、の順に
+  // 同一スコープへ結合し評価する
+  const combinedBody = headerConstSrc + '\n' + computeFull + '\n' + parseBody;
   // eslint-disable-next-line no-new-func
-  const parsePharmy = new Function('TECH_INCLUDE_TIME_ADD', 'lines', body);
+  const parsePharmy = new Function('TECH_INCLUDE_TIME_ADD', 'lines', combinedBody);
   return { parsePharmy, techIncludeTimeAdd };
 }
 

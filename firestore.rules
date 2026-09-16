@@ -67,5 +67,15 @@ service cloud.firestore {
     match /homecareData/{docId} {
       allow read, write: if request.auth != null;
     }
+    // 在宅内訳CSV 行データ（homecareRows・識別子除去済み・INC-403・2026-09-16追加）
+    // 施設別集計(homecareData)の元になる行データを保持し、式修正後も再集計できるようにする。
+    // homecareDataと同条件（認証済みユーザーなら読み書き可＝uploaderロールもCSV取込で書込む）。
+    match /homecareRows/{docId} {
+      allow read, write: if request.auth != null;
+      // 1MB制限を超える行数はchunksサブコレクションへ分割保存する
+      match /chunks/{chunkId} {
+        allow read, write: if request.auth != null;
+      }
+    }
   }
 }

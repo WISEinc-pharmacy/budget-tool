@@ -5807,6 +5807,7 @@ function renderLaborChart(months, kotNameFilter) {
 
 // ===== 在宅内訳 =====
 let _homecareResult = null;
+let _homecareFileName = null; // 直近選択したCSVファイル名（homecareRows.sourceFileName用・INC-403）
 
 // 在宅内訳の対象店舗ラベル（DEPTSから機械的に生成・全表示関数で共有＝判例144対応で8店へ拡張・2026-09-15）
 const HOMECARE_STORE_LABELS = Object.fromEntries(DEPTS.filter(d => !d.adminOnly).map(d => [d.id, d.name]));
@@ -5816,6 +5817,75 @@ const HOMECARE_STORE_LABELS = Object.fromEntries(DEPTS.filter(d => !d.adminOnly)
 // confirmed: 実CSVサンプルで列構造を確証済みか。false のものは列を推測せず未対応表示にする（2026-08-11）
 // 技術料に時加算(col14)を含めるかどうかの切替（既定=含める）。除外する場合はfalseに変更（INC-399・2026-09-16）
 const TECH_INCLUDE_TIME_ADD = true;
+
+// ===HOMECARE_ROWS_START===
+// 在宅内訳CSVの行データ正規化・集計の分離（INC-403・2026-09-16）
+// 背景: 旧実装は施設ごとの集計値のみをhomecareDataへ保存し、行データ・他列を破棄していた。
+// そのためINC-399の式修正時に過去月を再計算できず、スタッフに再提出を強いた（山内さん9/16指摘）。
+// 対処: 取込時に識別子を除いた行データをhomecareRowsへ保存し、集計はこの純関数でいつでもやり直せるようにする。
+// parse()は「行の正規化（1行=1レコードの配列化）」のみを担当し、集計ロジックはここに一本化する。
+// pharmy用の行ヘッダー（識別子は含まない）。列位置はCSV_IMPORT_SPEC.md L50-75準拠。
+// 除外した識別子列: col0 患者名, col1 (空), col21 患者ID, col23 カナ（保存しない）
+const HOMECARE_ROWS_HEADER_PHARMY = [
+  'facility', 'insuranceType', 'copayRatio', 'visits', 'copay', 'careCopay',
+  'selectTherapy', 'selfPayDrug', 'billedAmount', 'paidAmount', 'unpaidAmount',
+  'insuranceTotal', 'basePoints', 'timePoints', 'dispensingPoints', 'dispensingAddPoints',
+  'guidancePoints', 'oralMedPoints', 'externalMedPoints', 'materialPoints'
+];
+
+/**
+ * 正規化済み行データ(header配列+行配列)から施設別集計(sorted/totals)を計算する純関数（副作用なし）。
+ * header内のキー名（facility/visits/insuranceTotal/basePoints/timePoints/dispensingPoints/
+ * dispensingAddPoints/guidancePoints/oralMedPoints/externalMedPoints/materialPoints）で列位置を解決するため、
+ * 将来プロファイルが増えても同じキー名の行データであれば集計ロジックを共有できる（現状の対応はpharmyのみ）。
+ * @param {string[]} header 列名配列（識別子列は含まない前提）
+ * @param {Array<Array<number|string>>} rows 行データ（各要素はheaderと同じ順の値配列）
+ * @param {string} [_profile] 将来プロファイル別差異に備えた予約引数（現状は列名解決のみで未使用）
+ * @returns {{sorted: Array<[string,Object]>, totals: Object}|null}
+ */
+function computeHomecareTotalsFromRows(header, rows, _profile) {
+  const idx = {};
+  (header || []).forEach((h, i) => { idx[h] = i; });
+  const REQUIRED = ['facility', 'visits', 'insuranceTotal', 'basePoints', 'timePoints', 'dispensingPoints', 'dispensingAddPoints', 'guidancePoints', 'oralMedPoints', 'externalMedPoints', 'materialPoints'];
+  if (REQUIRED.some(k => !(k in idx))) return null;
+  const groups = {};
+  (rows || []).forEach(r => {
+    const facility = (r[idx.facility] == null ? '' : String(r[idx.facility])).trim() || '（未分類）';
+    if (!groups[facility]) {
+      groups[facility] = {
+        patients: 0, times: 0, insTotal: 0, tech: 0, base: 0, dispensing: 0, guidance: 0, internal: 0,
+        timeAdd: 0, dispAdd: 0, oralMed: 0, externalMed: 0, material: 0, drugFee: 0
+      };
+    }
+    const g = groups[facility];
+    const num = (k) => Number(r[idx[k]]) || 0;
+    const base = num('basePoints'), timeAdd = num('timePoints'), disp = num('dispensingPoints'),
+      dispAdd = num('dispensingAddPoints'), guidance = num('guidancePoints'),
+      oral = num('oralMedPoints'), external = num('externalMedPoints'), material = num('materialPoints');
+    g.patients++;
+    g.times += num('visits');
+    g.insTotal += num('insuranceTotal');
+    // 技術料＝基本点+時加算+調剤点+調加算+指導点（col18-20の薬剤料/材料料は含めない・INC-399の式を継承）
+    g.tech += base + (TECH_INCLUDE_TIME_ADD ? timeAdd : 0) + disp + dispAdd + guidance;
+    g.base += base; g.dispensing += disp; g.guidance += guidance;
+    g.internal += oral; // 旧フィールド名（後方互換のため保持。表示側は新設のoralMedを使用）
+    g.timeAdd += timeAdd; g.dispAdd += dispAdd;
+    g.oralMed += oral; g.externalMed += external; g.material += material;
+    g.drugFee += oral + external + material; // 薬剤料+材料料の合計（tech+drugFee=insTotal/10で検算可能）
+  });
+  const sorted = Object.entries(groups).sort((a, b) => b[1].insTotal - a[1].insTotal);
+  if (sorted.length === 0) return null;
+  const totals = sorted.reduce((acc, [, g]) => {
+    Object.keys(acc).forEach(k => { acc[k] += g[k]; });
+    return acc;
+  }, {
+    patients: 0, times: 0, insTotal: 0, tech: 0, base: 0, dispensing: 0, guidance: 0, internal: 0,
+    timeAdd: 0, dispAdd: 0, oralMed: 0, externalMed: 0, material: 0, drugFee: 0
+  });
+  return { sorted, totals };
+}
+// ===HOMECARE_ROWS_END===
+
 const HOMECARE_CSV_PROFILES = {
   pharmy: {
     name: 'モイネット ファーミー',
@@ -5824,59 +5894,43 @@ const HOMECARE_CSV_PROFILES = {
     // 0行目: ヘッダー, 1行目: 単位行 → スキップ（i=2から開始）。col22=施設名, col4=回数, col12=保険計,
     // col13-17=技術料（基本点/時加算/調剤点/調加算/指導点）・col18-20=薬剤料/材料料（内服薬/内服外/材料点、技術料に含めない。
     // 旧実装はcol18-20まで技術料に合算するバグがあり2026-08分で技術料≒保険計/10に一致していた＝INC-399。2026-09-16修正）
+    // parse()は行の正規化のみを担当する（識別子=患者名col0/患者ID col21/カナcol23は保存しない）。
+    // 集計はcomputeHomecareTotalsFromRows()に一本化（INC-403・2026-09-16。取込時とhomecareRowsからの再計算で同一ロジックを共有）
     parse(lines) {
-      const groups = {};
+      const header = HOMECARE_ROWS_HEADER_PHARMY;
+      const rows = [];
       for (let i = 2; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
         const cols = line.split(',');
         if (cols.length < 23) continue;
         const facility = (cols[22] || '').trim() || '（未分類）';
-        if (!groups[facility]) {
-          groups[facility] = {
-            patients: 0, times: 0, insTotal: 0, tech: 0, base: 0, dispensing: 0, guidance: 0, internal: 0,
-            timeAdd: 0, dispAdd: 0, oralMed: 0, externalMed: 0, material: 0, drugFee: 0
-          };
-        }
-        const g = groups[facility];
-        g.patients++;
-        g.times += parseInt(cols[4]) || 0;
-        g.insTotal += parseInt(cols[12]) || 0;
-        const col13 = parseInt(cols[13]) || 0;
-        const col14 = parseInt(cols[14]) || 0;
-        const col15 = parseInt(cols[15]) || 0;
-        const col16 = parseInt(cols[16]) || 0;
-        const col17 = parseInt(cols[17]) || 0;
-        const col18 = parseInt(cols[18]) || 0;
-        const col19 = parseInt(cols[19]) || 0;
-        const col20 = parseInt(cols[20]) || 0;
-        // 技術料＝基本点+時加算+調剤点+調加算+指導点（col13-17）。col18-20（薬剤料/材料料）は含めない（INC-399）
-        g.tech += col13 + (TECH_INCLUDE_TIME_ADD ? col14 : 0) + col15 + col16 + col17;
-        g.base += col13;
-        g.dispensing += col15;
-        g.guidance += col17;
-        g.internal += col18; // 旧フィールド名（誤解を招く名称のため表示側は新設のoralMedを使用。後方互換のため保持）
-        g.timeAdd += col14;
-        g.dispAdd += col16;
-        g.oralMed += col18;
-        g.externalMed += col19;
-        g.material += col20;
-        g.drugFee += col18 + col19 + col20; // 薬剤料+材料料の合計（表示用。tech+drugFee=保険計/10で検算可能）
+        const insuranceType = (cols[3] || '').trim();
+        rows.push([
+          facility, insuranceType,
+          parseInt(cols[2]) || 0,   // copayRatio（給）
+          parseInt(cols[4]) || 0,   // visits（回数）
+          parseInt(cols[5]) || 0,   // copay（定負担）
+          parseInt(cols[6]) || 0,   // careCopay（介護負担）
+          parseInt(cols[7]) || 0,   // selectTherapy（選定療養）
+          parseInt(cols[8]) || 0,   // selfPayDrug（自費薬）
+          parseInt(cols[9]) || 0,   // billedAmount（請求額）
+          parseInt(cols[10]) || 0,  // paidAmount（入金額）
+          parseInt(cols[11]) || 0,  // unpaidAmount（現未収）
+          parseInt(cols[12]) || 0,  // insuranceTotal（保険計）
+          parseInt(cols[13]) || 0,  // basePoints（基本点）
+          parseInt(cols[14]) || 0,  // timePoints（時加算）
+          parseInt(cols[15]) || 0,  // dispensingPoints（調剤点）
+          parseInt(cols[16]) || 0,  // dispensingAddPoints（調加算）
+          parseInt(cols[17]) || 0,  // guidancePoints（指導点）
+          parseInt(cols[18]) || 0,  // oralMedPoints（内服薬）
+          parseInt(cols[19]) || 0,  // externalMedPoints（内服外）
+          parseInt(cols[20]) || 0,  // materialPoints（材料点）
+        ]);
       }
-      const sorted = Object.entries(groups).sort((a, b) => b[1].insTotal - a[1].insTotal);
-      if (sorted.length === 0) return null;
-      const totals = sorted.reduce((acc, [, g]) => {
-        acc.patients += g.patients; acc.times += g.times; acc.insTotal += g.insTotal;
-        acc.tech += g.tech; acc.base += g.base; acc.dispensing += g.dispensing;
-        acc.guidance += g.guidance; acc.internal += g.internal;
-        acc.timeAdd += g.timeAdd; acc.dispAdd += g.dispAdd; acc.oralMed += g.oralMed;
-        acc.externalMed += g.externalMed; acc.material += g.material; acc.drugFee += g.drugFee;
-        return acc;
-      }, {
-        patients:0, times:0, insTotal:0, tech:0, base:0, dispensing:0, guidance:0, internal:0,
-        timeAdd:0, dispAdd:0, oralMed:0, externalMed:0, material:0, drugFee:0
-      });
-      return { sorted, totals };
+      const agg = computeHomecareTotalsFromRows(header, rows, 'pharmy');
+      if (!agg) return null;
+      return { sorted: agg.sorted, totals: agg.totals, header, rows };
     }
   },
   elysia: {
@@ -5936,6 +5990,7 @@ document.getElementById('homecareFileInput').addEventListener('change', function
   const file = e.target.files[0];
   if (!file) return;
   document.getElementById('homecareFileName').textContent = file.name;
+  _homecareFileName = file.name; // homecareRows保存時のsourceFileName用（INC-403）
   const store = document.getElementById('homecareStore').value;
   if (!store) {
     document.getElementById('homecarePreview').innerHTML = '<p style="color:#c0392b">先に店舗を選択してください（店舗ごとにCSVの列構造が異なります）。</p>';
@@ -6056,6 +6111,82 @@ function recalcHomecareTotals(facilities) {
 }
 // ===HOMECARE_MERGE_END===
 
+// ===HOMECARE_ROWS_MERGE_START===
+// 在宅内訳CSV 行データ(homecareRows)のマージ（INC-403・2026-09-16）
+// mergeHomecareFacilities（施設単位upsert）と対称: 施設ごとに順次アップロードしても既存施設分の行を消さない。
+// 新CSVに含まれる施設の行は新データで置き換え、含まれない施設の行は既存のまま保持する。
+/**
+ * @param {string[]|null} prevHeader 既存保存済みの行ヘッダー（未保存ならnull）
+ * @param {Array<Array>|null} prevRows 既存保存済みの行データ（未保存ならnull）
+ * @param {string[]} newHeader 今回アップロードの行ヘッダー
+ * @param {Array<Array>} newRows 今回アップロードの行データ
+ * @returns {{header:string[], rows:Array<Array>}}
+ */
+function mergeHomecareRows(prevHeader, prevRows, newHeader, newRows) {
+  if (!prevRows || !prevRows.length || !prevHeader || !prevHeader.length) {
+    return { header: newHeader, rows: newRows.slice() };
+  }
+  if (JSON.stringify(prevHeader) !== JSON.stringify(newHeader)) {
+    // ヘッダー不一致（プロファイル変更・列追加等）は安全側で新規データのみ採用し、旧行は破棄しない選択肢がないため置き換える
+    return { header: newHeader, rows: newRows.slice() };
+  }
+  const facIdx = newHeader.indexOf('facility');
+  if (facIdx === -1) return { header: newHeader, rows: newRows.slice() };
+  const newFacilities = new Set(newRows.map(r => r[facIdx]));
+  const keptPrev = prevRows.filter(r => !newFacilities.has(r[facIdx]));
+  return { header: newHeader, rows: keptPrev.concat(newRows) };
+}
+// ===HOMECARE_ROWS_MERGE_END===
+
+// homecareRows: 1docあたりの行数上限（Firestore 1MBドキュメント制限への配慮・超過分はchunksサブコレクションへ分割）
+const HOMECARE_ROWS_CHUNK_SIZE = 500;
+
+/** homecareRows/{docId} を全行分読み出す（chunked=trueならchunksサブコレクションを連結）。未保存ならnullを返す */
+async function loadHomecareRowsAll(docId) {
+  const ref = db.collection('homecareRows').doc(docId);
+  const doc = await ref.get();
+  if (!doc.exists) return null;
+  const data = doc.data();
+  if (!data.chunked) return { header: data.header || [], rows: data.rows || [], profile: data.profile || null };
+  const chunksSnap = await ref.collection('chunks').get();
+  const chunkDocs = chunksSnap.docs.slice().sort((a, b) => (a.data().chunkIndex || 0) - (b.data().chunkIndex || 0));
+  const rows = [];
+  chunkDocs.forEach(d => { rows.push(...(d.data().rows || [])); });
+  return { header: data.header || [], rows, profile: data.profile || null };
+}
+
+/**
+ * homecareRows/{docId} へ行データを保存する（1MB制限を超える行数はchunksサブコレクションへ分割）。
+ * 識別子（患者名・患者ID・カナ等）は呼び出し側（各profile.parse）で既に除外済みの前提。
+ */
+async function saveHomecareRows(docId, { store, yearMonth, profile, header, rows, sourceFileName }) {
+  const rowCount = rows.length;
+  const uploadedAt = firebase.firestore.FieldValue.serverTimestamp();
+  const uploadedBy = auth.currentUser ? auth.currentUser.uid : 'unknown';
+  const base = { store, yearMonth, profile: profile || null, header, rowCount, uploadedAt, uploadedBy };
+  if (sourceFileName) base.sourceFileName = sourceFileName;
+  const rowsRef = db.collection('homecareRows').doc(docId);
+  if (rowCount <= HOMECARE_ROWS_CHUNK_SIZE) {
+    await rowsRef.set({ ...base, rows, chunked: false, chunkCount: 0 });
+    // 前回chunked保存の残骸があれば削除（行数が減って非chunkedに戻ったケース）
+    const oldChunks = await rowsRef.collection('chunks').get();
+    await Promise.all(oldChunks.docs.map(d => d.ref.delete()));
+  } else {
+    const chunkCount = Math.ceil(rowCount / HOMECARE_ROWS_CHUNK_SIZE);
+    await rowsRef.set({ ...base, chunked: true, chunkCount, rows: [] });
+    const writes = [];
+    for (let n = 0; n < chunkCount; n++) {
+      const chunkRows = rows.slice(n * HOMECARE_ROWS_CHUNK_SIZE, (n + 1) * HOMECARE_ROWS_CHUNK_SIZE);
+      writes.push(rowsRef.collection('chunks').doc(String(n)).set({ chunkIndex: n, rows: chunkRows }));
+    }
+    await Promise.all(writes);
+    // chunk数が前回より減った場合、余ったchunkドキュメントを削除
+    const existingChunks = await rowsRef.collection('chunks').get();
+    const stale = existingChunks.docs.filter(d => Number(d.id) >= chunkCount);
+    await Promise.all(stale.map(d => d.ref.delete()));
+  }
+}
+
 // Firestoreに保存
 async function saveHomecareData() {
   const store = document.getElementById('homecareStore').value;
@@ -6094,6 +6225,30 @@ async function saveHomecareData() {
       uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
       uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
     });
+    // homecareRows: 提出された行データ（識別子を除く）を保存する（INC-403・2026-09-16）。
+    // 式修正後の再計算をhomecareRowsから行えるようにするための正データ。集計(facilities/totals)の保存に失敗させないよう、
+    // このブロックの失敗はconsole.warnに留め、アップロード完了表示自体はブロックしない。
+    try {
+      if (_homecareResult.header && _homecareResult.rows) {
+        const profileObj = _getHomecareProfileForStore(store);
+        const profileId = profileObj ? Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === profileObj) : null;
+        let rowsToSave = { header: _homecareResult.header, rows: _homecareResult.rows };
+        if (!replaceAll) {
+          const prevRowsDoc = await loadHomecareRowsAll(docId);
+          rowsToSave = mergeHomecareRows(
+            prevRowsDoc ? prevRowsDoc.header : null, prevRowsDoc ? prevRowsDoc.rows : null,
+            _homecareResult.header, _homecareResult.rows
+          );
+        }
+        await saveHomecareRows(docId, {
+          store, yearMonth: month, profile: profileId,
+          header: rowsToSave.header, rows: rowsToSave.rows,
+          sourceFileName: _homecareFileName || null,
+        });
+      }
+    } catch (rowsErr) {
+      console.warn('[homecareRows] 行データの保存に失敗しました（施設別集計は保存済み）:', rowsErr);
+    }
     const noteSuffix = replaceAll
       ? '（全置換・' + mergedFacilities.length + '施設）'
       : (prevCount > 0
@@ -6408,8 +6563,51 @@ async function renderHomecareView(container, dataList) {
     }
     html += '</td></tr>';
     html += '</tbody></table></div>';
+    // 保存データ(homecareRows)からの再集計ボタン（editor/admin限定・INC-403・2026-09-16）
+    // 式修正（INC-399等）後に、CSV再提出を求めなくても保存済み行データから最新ロジックで再集計できる。
+    if (userRole === 'admin' || userRole === 'editor') {
+      const hcId = data.store + '_' + data.yearMonth.replace('-', '');
+      html += '<div style="margin:4px 0 16px">';
+      html += '<button onclick="recomputeHomecareFromRows(\'' + data.store + '\',\'' + data.yearMonth + '\')" ' +
+        'style="padding:4px 10px;font-size:12px;border:1px solid #1a5276;border-radius:4px;background:#fff;color:#1a5276;cursor:pointer">保存データから再集計</button>';
+      html += ' <span id="hcRecalcStatus-' + hcId + '" style="font-size:12px;color:#555;margin-left:6px"></span>';
+      html += '</div>';
+    }
   }
   container.innerHTML = html;
+}
+
+// 保存済み行データ(homecareRows)から施設別集計(homecareData.facilities/totals)を再生成する（INC-403・2026-09-16）
+// 式修正（INC-399等）後の再提出を不要にする: 保存済み行があれば、その時点の最新ロジック(computeHomecareTotalsFromRows)で
+// facilities/totalsだけを作り直してhomecareDataへ上書きする（行データ自体・noHomecare等の他フィールドは変更しない）。
+async function recomputeHomecareFromRows(store, yearMonth) {
+  if (userRole !== 'admin' && userRole !== 'editor') { alert('編集権限がありません'); return; }
+  const docId = store + '_' + yearMonth.replace('-', '');
+  const statusEl = document.getElementById('hcRecalcStatus-' + docId);
+  if (statusEl) { statusEl.textContent = '再集計中...'; statusEl.style.color = '#555'; }
+  try {
+    const rowsData = await loadHomecareRowsAll(docId);
+    if (!rowsData || !rowsData.rows || !rowsData.rows.length) {
+      if (statusEl) { statusEl.textContent = '❌ 保存済み行データがありません（この月はhomecareRows未保存・旧データの可能性）'; statusEl.style.color = '#e74c3c'; }
+      return;
+    }
+    const agg = computeHomecareTotalsFromRows(rowsData.header, rowsData.rows, rowsData.profile);
+    if (!agg) {
+      if (statusEl) { statusEl.textContent = '❌ 集計に必要な列が保存データに揃っていません'; statusEl.style.color = '#e74c3c'; }
+      return;
+    }
+    const facilities = agg.sorted.map(([name, g]) => ({ name, ...g }));
+    await db.collection('homecareData').doc(docId).set({
+      facilities,
+      totals: agg.totals,
+      recomputedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      recomputedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
+    }, { merge: true });
+    if (statusEl) { statusEl.textContent = '✅ 再集計完了（' + facilities.length + '施設・' + rowsData.rows.length + '行から再生成）'; statusEl.style.color = '#27ae60'; }
+    await loadHomecareView();
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '❌ 再集計失敗: ' + e.message; statusEl.style.color = '#e74c3c'; }
+  }
 }
 </script>
 </body>

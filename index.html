@@ -5082,20 +5082,56 @@ function recalcSalesTech() {
  * profile がある場合は:
  *   - main グループをプロファイルのlabelで表示（統一キーで編集・保存）
  *   - santeisuu グループを「算定件数」ヘッダー付きで別グループ表示
- *   - pharmy の場合は santeisuu に「件数取得不可（金額のみ）」注記を追加
+ *   - pharmy の場合は santeisuu に「件数は概算（金額÷固定単価・従来スプシ方式）」注記を追加
+ *   - 2026-09-16: 当該 store/month に kpi_counts.mjs による kpiCounts（Firestore
+ *     salesData/{month}_{storeId}.kpiCounts）が既に書込済みなら、santeisuu行に件数列を
+ *     追加表示する。無ければ列自体を出さず従来表示のまま（fail-soft）
  */
-function renderSalesExtracted(hasValues, profile) {
+async function renderSalesExtracted(hasValues, profile) {
   const container = document.getElementById('salesExtracted');
   const table = document.getElementById('salesTable');
   container.style.display = 'block';
   const noExt = document.getElementById('salesNoExtracted');
   if (noExt) noExt.style.display = 'none';
 
+  // 算定件数(kpiCounts)取得: 当該 store/month に既に書込済みならsanteisuu行へ件数列を追加する。
+  // 取得失敗・未書込はfail-soft（金額のみの従来表示にフォールバック。追加クエリはdoc.get()1回のみ）
+  let kpiCounts = null;
+  try {
+    const kpiMonth = document.getElementById('salesMonth')?.value;
+    const kpiDeptId = document.getElementById('salesDept')?.value;
+    if (kpiMonth && kpiDeptId) {
+      const kcSnap = await db.collection('salesData').doc(`${kpiMonth}_${kpiDeptId}`).get();
+      if (kcSnap.exists) {
+        const kcData = kcSnap.data();
+        if (kcData && kcData.kpiCounts && kcData.kpiCounts.items) kpiCounts = kcData.kpiCounts;
+      }
+    }
+  } catch (kpiErr) {
+    console.warn('kpiCounts取得エラー(件数列なしで継続):', kpiErr);
+  }
+  const hasKpi = !!kpiCounts;
+
   // 丸数字変換（1→①, 2→②, ... 20→⑳）
   const circleNum = n => ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'][n-1] || `(${n})`;
 
-  /** 1行分のHTML（統一キーid, ラベル, 単位, affectsTech, calc, num=行番号, formula=計算式文字列） */
-  function rowHtml(id, label, unit, affectsTech, calcFlag, isDerive, num, formula) {
+  /** kpiCounts.items[canon] から件数セルのHTMLを組み立てる。approx(divide_yen)は≈付き+title、divideは÷点数のtitle */
+  function buildCountCell(canon) {
+    if (!kpiCounts) return '';
+    const item = kpiCounts.items[canon];
+    if (!item || item.count === null || item.count === undefined) return '';
+    const countStr = item.count.toLocaleString();
+    if (item.approx) {
+      return `<span title="金額÷固定単価（介護518/379/342単位×10円）の近似・従来スプシ方式" style="color:#e67e22;cursor:help;">≈${countStr}</span>`;
+    }
+    if (item.method === 'divide') {
+      return `<span title="÷点数" style="cursor:help;">${countStr}</span>`;
+    }
+    return `<span>${countStr}</span>`;
+  }
+
+  /** 1行分のHTML（統一キーid, ラベル, 単位, affectsTech, calc, num=行番号, formula=計算式文字列, countCell=件数列HTML(hasKpi時のみ描画)） */
+  function rowHtml(id, label, unit, affectsTech, calcFlag, isDerive, num, formula, countCell) {
     const val = salesExtractedData[id];
     const borderColor = val !== null && val !== undefined ? '#2ecc71' : '#e74c3c';
     const bgColor = val !== null && val !== undefined ? '#e8f8f5' : '#fef9e7';
@@ -5103,13 +5139,17 @@ function renderSalesExtracted(hasValues, profile) {
     const onblurExtra = affectsTech ? ';recalcSalesTech()' : '';
     const numBadge = num ? `<span style="color:#1a5276;font-weight:700;font-size:18px;margin-right:4px;">${circleNum(num)}</span>` : '';
     const formulaBadge = formula ? `<span style="color:#7f8c8d;font-size:13px;margin-left:6px;">${formula}</span>` : '';
+    const countTd = hasKpi ? `<td style="padding:4px 6px;text-align:right;font-size:16px;color:#1a5276;">${countCell != null ? countCell : ''}</td>` : '';
     return `<tr style="background:${bgColor}">
       <td style="padding:6px 8px;font-size:20px;white-space:nowrap;">${numBadge}${label}${formulaBadge} <span style="color:#999;font-size:17px;">${unit}</span></td>
       <td style="padding:4px 6px;"><input type="text" id="sales_${id}" value="${val!=null?val.toLocaleString():''}" data-raw="${val!=null?val:''}" style="width:100%;padding:4px 6px;border:1px solid ${borderColor};border-radius:3px;text-align:right;font-size:23px;font-weight:600;box-sizing:border-box;" ${disabledAttr} onfocus="this.value=this.dataset.raw" onblur="this.dataset.raw=this.value.replace(/,/g,'');this.value=this.dataset.raw?parseInt(this.dataset.raw).toLocaleString():''${onblurExtra}"></td>
+      ${countTd}
     </tr>`;
   }
 
-  let html = '<colgroup><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">数値</th></tr></thead><tbody>';
+  let html = hasKpi
+    ? '<colgroup><col style="width:140px"><col style="width:130px"><col style="width:90px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">数値</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:15px;">件数</th></tr></thead><tbody>'
+    : '<colgroup><col style="width:140px"><col style="width:130px"></colgroup><thead><tr><th style="text-align:left;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">項目</th><th style="text-align:right;padding:6px 8px;background:#1a5276;color:#fff;font-size:20px;">数値</th></tr></thead><tbody>';
 
   if (!profile || Object.keys(profile.fields).length === 0) {
     // 汎用フォールバック: 従来の SALES_ITEMS で描画（番号付き）
@@ -5152,11 +5192,12 @@ function renderSalesExtracted(hasValues, profile) {
     if (santeiFields && santeiFields.length > 0) {
       const isPharmyKin = profile.id === 'pharmy';
       const santeiHeaderNote = isPharmyKin
-        ? ' <span style="font-size:12px;font-weight:400;color:#e67e22;">⚠ このレセコン（ファーミー日計表）では件数は取得不可（金額のみ）</span>'
+        ? ' <span style="font-size:12px;font-weight:400;color:#e67e22;">⚠ このレセコン（ファーミー日計表）では件数は概算（金額÷固定単価・従来スプシ方式）</span>'
         : '';
-      html += `<tr><td colspan="2" style="padding:8px 8px 4px;font-size:14px;font-weight:700;color:#1a5276;background:#eaf2f8;border-top:2px solid #3498db;">算定件数（コンクール用）${santeiHeaderNote}</td></tr>`;
+      const santeiColspan = hasKpi ? 3 : 2;
+      html += `<tr><td colspan="${santeiColspan}" style="padding:8px 8px 4px;font-size:14px;font-weight:700;color:#1a5276;background:#eaf2f8;border-top:2px solid #3498db;">算定件数（コンクール用）${santeiHeaderNote}</td></tr>`;
       santeiFields.forEach(f => {
-        html += rowHtml(f.id, f.label, f.displayUnit || f.unit, false, false, false, null, null);
+        html += rowHtml(f.id, f.label, f.displayUnit || f.unit, false, false, false, null, null, hasKpi ? buildCountCell(f.id) : null);
       });
     }
   }
@@ -5166,6 +5207,13 @@ function renderSalesExtracted(hasValues, profile) {
 
   if (!hasValues) {
     container.insertAdjacentHTML('afterbegin', '<div style="background:#fdebd0;padding:8px 16px;border-radius:4px;margin-bottom:8px;color:#e67e22;font-size:12px;">⚠ 自動抽出できませんでした。PDFの形式が異なる可能性があります。手動で数値を入力してください。</div>');
+  }
+
+  // 算定件数の脚注（kpiCounts書込済みの月のみ表示。再描画のたびに置き換える＝重複挿入を防ぐ）
+  const existingKpiFootnote = document.getElementById('salesKpiCountsFootnote');
+  if (existingKpiFootnote) existingKpiFootnote.remove();
+  if (hasKpi && kpiCounts.computedAt) {
+    container.insertAdjacentHTML('beforeend', `<div id="salesKpiCountsFootnote" style="font-size:11px;color:#888;margin-top:4px;padding:0 8px;">算定件数: kpi_counts.mjs による算出（computedAt: ${kpiCounts.computedAt}）</div>`);
   }
 
   document.getElementById('salesSubmitBtn').style.display = 'inline-block';

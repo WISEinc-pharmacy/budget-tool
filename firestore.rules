@@ -9,6 +9,8 @@ service cloud.firestore {
     function role() { return hasUserDoc() ? get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role : ''; }
     function isStaff() { return role() in ['admin', 'editor', 'tax_advisor']; }
     function isEditor() { return role() in ['admin', 'editor']; }
+    function isAdminRole() { return role() == 'admin'; }
+    function isSelf(email) { return hasUserDoc() && request.auth.token.email == email; }
     // 役員・管理部・学術・全体・会社合計 は staff 専用（FY{年}_{部門ID} / FY{年}_company_total）
     function isAdminOnlyDoc(docId) { return docId.matches('.*_(yakuin|kanribu|gakujutsu|all|company_total)$'); }
     function canReadBudgetDoc(docId) {
@@ -18,8 +20,15 @@ service cloud.firestore {
         || (role() == 'viewer_gakujutsu' && docId.matches('.*_gakujutsu$'));
     }
 
+    // users: role自己昇格の穴を閉塞（2026-09-17 T-20260917-003・INC-376派生）。
+    // 読取は従来どおり全ログインユーザー（権限管理画面の一覧表示・自分のロール参照のため）。
+    // 書込（役割の作成・変更・削除）はadminのみ。本人が自分自身のusersドキュメントを書換えることは
+    // （adminであっても）不可＝自己昇格・自己降格・自己削除を構造的に禁止する。
+    // 匿名バッチワーカーはusersを書かない設計（tmp_fix_iidabashi_user.mjs等の一回限りの手動修正は
+    // 今後Admin SDK（サービスアカウント）で行うこと＝クライアントSDKの匿名認証は使わない）。
     match /users/{email} {
-      allow read, write: if signedIn();
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn() && isAdminRole() && !isSelf(email);
     }
     // 予実データ: 読取はロール別（2026-09-09 INC-376: 店舗閲覧が役員・管理部・学術を閲覧できていた）。
     // 書込は admin/editor と匿名バッチ（freee取込）のみ
@@ -33,8 +42,17 @@ service cloud.firestore {
       allow list: if signedIn() && canReadBudgetDoc(doc);
       allow write: if signedIn() && (isAnon() || isEditor());
     }
+    // 提出データ（保険合計PDF等）。作成は全ログインユーザー・匿名バッチ可（店舗の月次提出・kpi_counts.mjs等の匿名書込を維持）。
+    // 更新・削除は「admin/editor」または「本人（submittedBy一致）」のみ（2026-09-17 T-20260917-003。
+    // 山内さん指示: 提出者本人の修正は煩わしくならないよう admin/editor 限定にはしない）。
+    // isAnon()は既存の匿名バッチ（kpi_counts.mjs等がkpiCountsフィールドをmerge更新）を壊さないための例外。
+    // submittedByが未記録の旧データ（フィールドなし）はadmin/editorのみ更新・削除可（フェイルセーフ）。
+    function isSalesOwner() { return resource.data.submittedBy is string && resource.data.submittedBy == request.auth.token.email; }
     match /salesData/{doc} {
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && (isAnon() || isEditor() || isSalesOwner());
+      allow delete: if request.auth != null && (isEditor() || isSalesOwner());
     }
     // PDFチャンク保存サブコレクション（budget-tool pdfChunks方式・2026-08-06追加）
     match /salesData/{docId}/pdfChunks/{chunkId} {
@@ -63,9 +81,15 @@ service cloud.firestore {
     match /keiei_monthly/{doc} {
       allow read, write: if request.auth != null;
     }
-    // 在宅内訳月次データ（homecareData・2026-08-07追加）
+    // 在宅内訳月次データ（homecareData・2026-08-07追加）。
+    // 更新・削除は「admin/editor」または「本人（uploadedBy=uid一致）」のみ（2026-09-17 T-20260917-003・salesDataと同方針）。
+    // uploadedByが未記録の旧データはadmin/editorのみ（フェイルセーフ）。homecare_recompute.mjs等の匿名バッチ書込を維持するためisAnon()例外あり。
+    function isHomecareOwner() { return resource.data.uploadedBy is string && resource.data.uploadedBy == request.auth.uid; }
     match /homecareData/{docId} {
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && (isAnon() || isEditor() || isHomecareOwner());
+      allow delete: if request.auth != null && (isEditor() || isHomecareOwner());
     }
     // 在宅内訳CSV 行データ（homecareRows・識別子除去済み・INC-403・2026-09-16追加）
     // 施設別集計(homecareData)の元になる行データを保持し、式修正後も再集計できるようにする。

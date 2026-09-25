@@ -5276,16 +5276,12 @@ async function submitSalesData() {
       try {
         btn.textContent = 'PDF保存中...';
 
-        // base64変換: spread引数展開はサイズ上限でRangeErrorになるため使わない
-        // (String.fromCharCode(...大きな配列) はコールスタック上限を超える)
+        // base64変換: チャンク単位でbtoa処理（O(n^2)の文字列連結を回避）
         const uint8 = new Uint8Array(salesPdfArrayBuffer);
-        const SUB = 8192;
-        const binParts = [];
-        for (let i = 0; i < uint8.length; i += SUB) {
-          let bin = '';
-          const part = uint8.subarray(i, i + SUB);
-          for (let j = 0; j < part.length; j++) bin += String.fromCharCode(part[j]);
-          binParts.push(bin);
+        const BYTES_PER_CHUNK = 186000; // ~186KBバイナリ → ~248KB base64
+        let fullB64 = '';
+        for (let i = 0; i < uint8.length; i += BYTES_PER_CHUNK) {
+          fullB64 += btoa(String.fromCharCode(...uint8.slice(i, i + BYTES_PER_CHUNK)));
         }
 
         // base64を250,000文字単位でFirestoreチャンクに分割（1ドキュメント上限1MBの安全マージン）
@@ -5540,7 +5536,6 @@ async function loadLaborData(forceRefresh) {
         holidays,
         updatedAt: months.length > 0 ? months[months.length - 1].updatedAt : null,
       };
-        const fullB64 = btoa(binParts.join(''));
     } catch (e) {
       // Firestoreが空 or ルール未設定 → 旧JSON fallback
       console.warn('Firestore労務データ取得失敗、JSONフォールバック:', e.message);
@@ -5569,14 +5564,6 @@ async function loadLaborData(forceRefresh) {
     const m = ((start - 1 + (i < 0 ? i + 12 : i)) % 12) + 1;
     const baseYear = i < 0 ? year - 1 : year;
     const y = (start + (i < 0 ? i + 12 : i) > 12) ? baseYear + 1 : baseYear;
-        try {
-          await db.collection('salesData').doc(docId).update({
-            backupStatus: 'pdf_save_failed',
-            pdfSaveError: String(pdfErr.message).slice(0, 200),
-          });
-        } catch (statusErr) {
-          console.error('PDF失敗ステータスの記録にも失敗:', statusErr.message);
-        }
     return `${y}-${String(m).padStart(2, '0')}`;
   }
 

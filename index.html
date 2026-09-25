@@ -584,6 +584,12 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <p><strong>CSVファイル:</strong></p>
     <input type="file" id="importFile" accept=".csv" style="margin-bottom:8px">
     <div id="importResult"></div>
+    <div id="importUnmapped"></div>
+    <!-- 保存データ(importRows)からの再集計（判例162・INC-403同型是正・2026-09-17） -->
+    <div style="margin:8px 0">
+      <button onclick="recomputeGenericFromRows()" style="padding:4px 10px;font-size:12px;border:1px solid #1a5276;border-radius:4px;background:#fff;color:#1a5276;cursor:pointer">保存データから再集計</button>
+      <span id="importRecalcStatus" style="font-size:12px;color:#555;margin-left:6px"></span>
+    </div>
     <div class="btn-group">
       <button class="btn btn-secondary" onclick="closeImportModal()">閉じる</button>
       <button class="btn btn-import" onclick="doImport()">インポート実行</button>
@@ -615,6 +621,11 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <input type="file" id="freeeFiles" accept=".csv" multiple style="margin-bottom:8px">
       <div id="freeePreview" style="margin:8px 0"></div>
       <div id="freeeResult"></div>
+      <!-- 保存データ(importRows)からの再集計（判例162・INC-403同型是正・2026-09-17。現在選択中の部門×年度が対象） -->
+      <div style="margin:8px 0">
+        <button onclick="recomputeFreeeplFromRows()" style="padding:4px 10px;font-size:12px;border:1px solid #1a5276;border-radius:4px;background:#fff;color:#1a5276;cursor:pointer">保存データから再集計（現在の部門・年度）</button>
+        <span id="freeeRecalcStatus" style="font-size:12px;color:#555;margin-left:6px"></span>
+      </div>
     </details>
     <div class="btn-group">
       <button class="btn btn-secondary" onclick="closeFreeeModal()">閉じる</button>
@@ -1023,7 +1034,21 @@ async function loadAllFromFirestore() {
 }
 
 // ===== 認証 =====
-function doLogin() { auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e => alert('ログインに失敗しました: ' + e.message)); }
+// 2026-09-24 T-20260924-020: PDF Drive直送化のため drive.file スコープを追加し、
+// signInWithPopupの結果からOAuth accessTokenを取得してdriveAccessTokenに保持する。
+function doLogin() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.addScope('https://www.googleapis.com/auth/drive.file');
+  auth.signInWithPopup(provider)
+    .then(result => {
+      const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
+      if (credential && credential.accessToken) {
+        driveAccessToken = credential.accessToken;
+        driveAccessTokenExpiresAt = Date.now() + 55 * 60 * 1000;
+      }
+    })
+    .catch(e => alert('ログインに失敗しました: ' + e.message));
+}
 function doLogout() { auth.signOut(); }
 
 auth.onAuthStateChanged(async (user) => {
@@ -3189,33 +3214,219 @@ function findItemByName(name) {
   return null;
 }
 
+// ===== importRows: 汎用CSV取込・freee PL CSV取込の元データ保存（判例162・INC-403同型是正・2026-09-17）=====
+// 背景: 従来はCSVを科目マッピングして集計値だけ保存し、未マッピング行・元の列を捨てていた（設計憲法1/13/14/15条違反）。
+// homecareRows(INC-403・saveHomecareData/loadHomecareRowsAll)と同型: 元CSVの全行を保存し、集計は
+// computeActualFromRows()という純関数でいつでも再計算できるようにする（未マッピング行も捨てずunmappedに残す）。
+// 保存形式: 各行を[rawLineText]という1要素配列にして保存する（列解釈は再計算時にcomputeActualFromRows側で行うため、
+// 生のCSV行テキストをそのまま保持するのが最も安全にフル情報を残せる。parseFreeeCSVの多階層パース(L0〜L4)を
+// 壊さず再利用できる）。generic/freeeplの取込粒度は年度(FY)単位のため、yearMonthには'FY2026'のようなFYコードを入れる
+// （homecareRowsは月単位のため'YYYYMM'。粒度が異なる点はこのブロックのコメントと報告に明記する）。
+const IMPORT_ROWS_CHUNK_SIZE = 500;
+const IMPORT_ROWS_CHUNK_MAX_BYTES = 900 * 1024;
+
+function importRowsDocId(kind, store, yearMonth) { return kind + '_' + store + '_' + yearMonth; }
+
+async function sha256Hex(text) {
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * importRows/{kind}_{store}_{yearMonth} へ元CSV全行を保存する（500行または900KBのいずれか超過でchunksサブコレクションへ分割）。
+ * @param {string} kind 'generic' | 'freeepl'
+ * @param {string} store 部門ID（freeeplのcompany_total含む）
+ * @param {string} yearMonth FYコード（例: 'FY2026'）
+ * @param {{fileName:?string, rawLines:string[], csvHeader:string[]}} data
+ */
+async function saveImportRows(kind, store, yearMonth, { fileName, rawLines, csvHeader }) {
+  const docId = importRowsDocId(kind, store, yearMonth);
+  const rows = rawLines.map(l => [l]); // 1行1要素配列。元CSVの全行全列を欠落なく保持する
+  const rowCount = rows.length;
+  const fullText = rawLines.join('\n');
+  const sha256 = await sha256Hex(fullText);
+  const uploadedAt = firebase.firestore.FieldValue.serverTimestamp();
+  const uploadedBy = auth.currentUser ? (auth.currentUser.email || auth.currentUser.uid) : 'unknown';
+  const rowsRef = db.collection('importRows').doc(docId);
+  const chunks = [];
+  let cur = [], curBytes = 0;
+  for (const row of rows) {
+    const rowBytes = new TextEncoder().encode(JSON.stringify(row)).length;
+    if (cur.length >= IMPORT_ROWS_CHUNK_SIZE || (curBytes + rowBytes) > IMPORT_ROWS_CHUNK_MAX_BYTES) {
+      chunks.push(cur); cur = []; curBytes = 0;
+    }
+    cur.push(row); curBytes += rowBytes;
+  }
+  if (cur.length || chunks.length === 0) chunks.push(cur);
+  const chunked = chunks.length > 1;
+  const base = {
+    kind, store, yearMonth, fileName: fileName || null, csvHeader: csvHeader || [],
+    rowCount, chunkCount: chunked ? chunks.length : 0, sha256, uploadedAt, uploadedBy,
+    importedTotalsVersion: 1,
+  };
+  if (!chunked) {
+    await rowsRef.set({ ...base, rows: chunks[0] || [], chunked: false });
+    const oldChunks = await rowsRef.collection('chunks').get();
+    await Promise.all(oldChunks.docs.map(d => d.ref.delete()));
+  } else {
+    await rowsRef.set({ ...base, rows: [], chunked: true });
+    const writes = chunks.map((chunkRows, n) => rowsRef.collection('chunks').doc(String(n)).set({ chunkIndex: n, rows: chunkRows }));
+    await Promise.all(writes);
+    const existingChunks = await rowsRef.collection('chunks').get();
+    const stale = existingChunks.docs.filter(d => Number(d.id) >= chunks.length);
+    await Promise.all(stale.map(d => d.ref.delete()));
+  }
+  return docId;
+}
+
+/** importRows/{kind}_{store}_{yearMonth} を全行分読み出す（chunked=trueならchunksサブコレクションを連結）。未保存ならnullを返す */
+async function loadImportRowsAll(kind, store, yearMonth) {
+  const docId = importRowsDocId(kind, store, yearMonth);
+  const ref = db.collection('importRows').doc(docId);
+  const doc = await ref.get();
+  if (!doc.exists) return null;
+  const data = doc.data();
+  if (!data.chunked) return { docId, header: data.csvHeader || [], rows: data.rows || [], meta: data };
+  const chunksSnap = await ref.collection('chunks').get();
+  const chunkDocs = chunksSnap.docs.slice().sort((a, b) => (a.data().chunkIndex || 0) - (b.data().chunkIndex || 0));
+  const rows = [];
+  chunkDocs.forEach(d => rows.push(...(d.data().rows || [])));
+  return { docId, header: data.csvHeader || [], rows, meta: data };
+}
+
+// ===== 汎用CSV取込: 行データからの集計を純関数として分離（判例162・2026-09-17）=====
+// doImport()の取込ロジック本体をここへ切り出したもの。挙動は変更しない（同じ入力に対し常に同じ結果を返す）。
+// mapping = { target: 'budget' | 'actual' }
+function computeGenericFromLines(lines, mapping) {
+  const target = mapping && mapping.target;
+  const values = {}; // { itemId: [12] }
+  const annualInputs = {}; // { itemId: number }（target==='budget'のときのみ意味を持つ）
+  const unmapped = []; // 捨てずに記録する未マッピング行（INC-403同型是正）
+  let matched = 0;
+  lines.forEach((line, idx) => {
+    if (!line || !line.trim()) return;
+    if (line.startsWith('【') || line.startsWith('"科目"') || line.startsWith('科目')) return;
+    const cols = parseCSVLine(line);
+    if (cols.length < 2) return;
+    const itemName = cols[0].replace(/^"|"$/g, '');
+    const item = findItemByName(itemName);
+    if (!item) {
+      const isH = ITEMS.some(it => it.type === 'header' && it.name === itemName);
+      if (!isH && itemName) unmapped.push({ row: idx, reason: itemName });
+      return;
+    }
+    if (item.type === 'calc') return;
+    if (!values[item.id]) values[item.id] = new Array(12).fill(0);
+    if (cols.length >= 14) {
+      for (let m = 0; m < 12; m++) { const cv = cols[m + 2]; if (cv !== '' && cv !== undefined) values[item.id][m] = parseInt(cv) || 0; }
+      if (target === 'budget') { const ac = cols[1]; if (ac !== '' && ac !== undefined) annualInputs[item.id] = parseInt(ac) || 0; }
+    } else if (cols.length >= 2) {
+      const ac = cols[1];
+      if (ac === '' || ac === undefined) return;
+      const ann = parseInt(ac) || 0;
+      if (target === 'budget') annualInputs[item.id] = ann;
+      for (let m = 0; m < 12; m++) values[item.id][m] = Math.round(ann / 12);
+      const t = values[item.id].reduce((s, v) => s + v, 0);
+      values[item.id][11] += ann - t;
+    }
+    matched++;
+  });
+  return { values, annualInputs, unmapped, matched };
+}
+
+/**
+ * importRows（元CSV全行データ）から集計を再計算する純関数（判例162・2026-09-17）。
+ * doImport()・doFreeeImport()の取込ロジック本体を切り出したもの。同じ入力に対し常に同じ結果を返す。
+ * @param {string} kind 'generic' | 'freeepl'
+ * @param {Array<Array<string>>} rows importRowsのrows（各要素は[rawLineText]の1要素配列）
+ * @param {Object} mapping generic時のみ使用。{ target: 'budget'|'actual' }
+ */
+function computeActualFromRows(kind, rows, mapping) {
+  const lines = rows.map(r => (Array.isArray(r) ? r[0] : r));
+  if (kind === 'generic') return computeGenericFromLines(lines, mapping || {});
+  if (kind === 'freeepl') {
+    const result = computeFreeeplFromLines(lines);
+    if (!result) return null;
+    return { ...result, unmapped: (result.unmappedL2 || []).map(reason => ({ row: null, reason })) };
+  }
+  throw new Error('computeActualFromRows: unknown kind ' + kind);
+}
+
+function renderUnmappedList(containerEl, unmapped) {
+  if (!containerEl) return;
+  if (!unmapped || !unmapped.length) { containerEl.innerHTML = ''; return; }
+  containerEl.innerHTML = '<div class="import-result error" style="margin-top:4px">未マッピング一覧（' + unmapped.length + '件・捨てずに保存済みのCSV原本から再確認できます）: ' +
+    unmapped.map(u => (u.row !== null && u.row !== undefined ? '#' + u.row + ' ' : '') + u.reason).join(', ') + '</div>';
+}
+
 function doImport() {
   const fileInput=document.getElementById('importFile'), resultDiv=document.getElementById('importResult');
   const target=document.querySelector('input[name="importTarget"]:checked').value;
   if(!fileInput.files.length){resultDiv.innerHTML='<div class="import-result error">ファイルを選択してください</div>';return;}
+  const file = fileInput.files[0];
+  const store_ = target==='budget'?D().budget:D().actual;
+  const deptId = currentDeptId();
+  const fy = getFiscalYear();
   const reader=new FileReader();
-  reader.onload=function(e){
-    const text=e.target.result.replace(/^\uFEFF/,'');
-    const lines=text.split(/\r?\n/).filter(l=>l.trim());
-    let matched=0,skipped=0,skippedNames=[];
-    const store=target==='budget'?D().budget:D().actual;
-    for(const line of lines){
-      if(line.startsWith('【')||line.startsWith('"科目"')||line.startsWith('科目')) continue;
-      const cols=parseCSVLine(line); if(cols.length<2) continue;
-      const itemName=cols[0].replace(/^"|"$/g,'');
-      const item=findItemByName(itemName);
-      if(!item){const isH=ITEMS.some(it=>it.type==='header'&&it.name===itemName);if(!isH&&itemName){skipped++;skippedNames.push(itemName);}continue;}
-      if(item.type==='calc') continue;
-      if(cols.length>=14){for(let m=0;m<12;m++){const cv=cols[m+2];if(cv!==''&&cv!==undefined)store[item.id][m]=parseInt(cv)||0;}if(target==='budget'){const ac=cols[1];if(ac!==''&&ac!==undefined)D().annualInputs[item.id]=parseInt(ac)||0;}}
-      else if(cols.length>=2){const ac=cols[1];if(ac===''||ac===undefined)continue;const ann=parseInt(ac)||0;if(target==='budget'){D().annualInputs[item.id]=ann;for(let m=0;m<12;m++)store[item.id][m]=Math.round(ann/12);const t=store[item.id].reduce((s,v)=>s+v,0);store[item.id][11]+=ann-t;}else{for(let m=0;m<12;m++)store[item.id][m]=Math.round(ann/12);const t=store[item.id].reduce((s,v)=>s+v,0);store[item.id][11]+=ann-t;}}
-      matched++;
+  reader.onload=async function(e){
+    const text=e.target.result.replace(/^﻿/,'');
+    const rawLines = text.split(/\r?\n/);
+    const agg = computeGenericFromLines(rawLines, { target });
+    for (const [itemId, vals] of Object.entries(agg.values)) {
+      if (!store_[itemId]) continue;
+      for (let m = 0; m < 12; m++) store_[itemId][m] = vals[m];
+    }
+    if (target === 'budget') {
+      for (const [itemId, ann] of Object.entries(agg.annualInputs)) D().annualInputs[itemId] = ann;
     }
     scheduleSave(); renderCurrentTab();
-    let msg=`<div class="import-result success">${matched}件インポート（${target==='budget'?'予算':'実績'}）</div>`;
-    if(skipped>0) msg+=`<div class="import-result error" style="margin-top:4px">スキップ: ${skippedNames.join(', ')}</div>`;
+    let msg=`<div class="import-result success">${agg.matched}件インポート（${target==='budget'?'予算':'実績'}）</div>`;
     resultDiv.innerHTML=msg;
+    renderUnmappedList(document.getElementById('importUnmapped'), agg.unmapped);
+    // importRows保存（元CSV全行。失敗しても取込結果表示はブロックしない＝集計保存優先はhomecareRowsと同方針）
+    try {
+      const headerLine = rawLines.find(l => l.startsWith('"科目"') || l.startsWith('科目'));
+      // storeキーにtargetを含める（budget/actualは別CSVでも同一store+FYになりうるため、同居させるとimportRowsが
+      // 互いを上書きしてしまう。判例162実装時に発見・2026-09-17）
+      await saveImportRows('generic', deptId + '_' + target, 'FY' + fy, {
+        fileName: file.name, rawLines, csvHeader: headerLine ? parseCSVLine(headerLine) : [],
+      });
+    } catch (rowsErr) {
+      console.warn('[importRows] 行データの保存に失敗しました（集計は保存済み）:', rowsErr);
+    }
   };
-  reader.readAsText(fileInput.files[0],'UTF-8');
+  reader.readAsText(file,'UTF-8');
+}
+
+// 保存済み行データ(importRows/generic)から現在の部門×年度×インポート先を再集計するボタン（判例162・2026-09-17）
+async function recomputeGenericFromRows() {
+  const target = document.querySelector('input[name="importTarget"]:checked').value;
+  const deptId = currentDeptId();
+  const fy = getFiscalYear();
+  const statusEl = document.getElementById('importRecalcStatus');
+  if (statusEl) { statusEl.textContent = '再集計中...'; statusEl.style.color = '#555'; }
+  try {
+    const saved = await loadImportRowsAll('generic', deptId + '_' + target, 'FY' + fy);
+    if (!saved || !saved.rows || !saved.rows.length) {
+      if (statusEl) { statusEl.textContent = '❌ 保存済み行データがありません（この部門・年度はimportRows未保存）'; statusEl.style.color = '#e74c3c'; }
+      return;
+    }
+    const agg = computeActualFromRows('generic', saved.rows, { target });
+    const store_ = target === 'budget' ? D().budget : D().actual;
+    for (const [itemId, vals] of Object.entries(agg.values)) {
+      if (!store_[itemId]) continue;
+      for (let m = 0; m < 12; m++) store_[itemId][m] = vals[m];
+    }
+    if (target === 'budget') {
+      for (const [itemId, ann] of Object.entries(agg.annualInputs)) D().annualInputs[itemId] = ann;
+    }
+    scheduleSave(); renderCurrentTab();
+    renderUnmappedList(document.getElementById('importUnmapped'), agg.unmapped);
+    if (statusEl) { statusEl.textContent = '✅ 再集計完了（' + agg.matched + '件・' + saved.rows.length + '行から再生成）'; statusEl.style.color = '#27ae60'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '❌ 再集計失敗: ' + e.message; statusEl.style.color = '#e74c3c'; }
+  }
 }
 
 // ===== Freee P/L CSV 一括取込 =====
@@ -3448,6 +3659,7 @@ async function parseFreeeFiles() {
     const parsed = parseFreeeCSV(text);
     if (parsed) {
       parsed.fileName = file.name;
+      parsed.rawLines = text.split(/\r?\n/); // importRows保存用（元CSV全行。判例162・2026-09-17）
       freeeParsedData.push(parsed);
     }
   }
@@ -3606,8 +3818,13 @@ function readFileAsText(file) {
   });
 }
 
+// computeFreeeplFromLines: parseFreeeCSV()の本体を行配列受け取りに切り出したもの（判例162・2026-09-17）。
+// importRowsに保存した生のCSV行から同一ロジックで再計算できるようにするための分離。挙動は変更しない。
 function parseFreeeCSV(text) {
   const lines = text.split(/\r?\n/);
+  return computeFreeeplFromLines(lines);
+}
+function computeFreeeplFromLines(lines) {
   if (!lines[0] || !lines[0].includes('月次推移')) return null;
 
   // CSVタイトルから年度を自動検出（「期間：2025年02月～」→ 2025）
@@ -3932,6 +4149,18 @@ async function doFreeeImport() {
     try {
       await saveDeptToFirestoreWithFY(d.deptId, d.targetFY, d.monthValues);
       importedEntries.push(d);
+      // importRows保存（元CSV全行。判例162・INC-403同型是正・2026-09-17）。
+      // 集計(budgetData)の保存に失敗させないよう、このブロックの失敗はconsole.warnに留める（homecareRowsと同方針）
+      try {
+        if (d.rawLines) {
+          await saveImportRows('freeepl', d.deptId, 'FY' + d.targetFY, {
+            fileName: d.fileName || null, rawLines: d.rawLines,
+            csvHeader: d.rawLines[1] ? parseCSVLine(d.rawLines[1]) : [],
+          });
+        }
+      } catch (rowsErr) {
+        console.warn('[importRows] freeepl行データの保存に失敗しました（集計は保存済み）:', rowsErr);
+      }
     } catch (e) {
       saveErrors.push(`${d.deptName}(${d.targetFY}): ${e.message}`);
     }
@@ -4028,6 +4257,44 @@ async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
   }
   await db.collection('budgetData').doc(did).set(data);
   delete midtermCache[fiscalYear]; // 実績更新 → 中期計画の着地予想キャッシュを無効化（次回表示時に再計算）
+}
+
+// 保存済み行データ(importRows/freeepl)から現在の部門×年度を再集計するボタン（判例162・2026-09-17）
+// 制約: freee取込はファイルごとに部門・年度が異なりうるため、このボタンは「現在選択中の部門(currentDeptId)×
+// 現在の表示年度(getFiscalYear)」1件のみを対象にする（company_total・他年度の一括再集計は対象外。親への報告に明記）。
+async function recomputeFreeeplFromRows() {
+  if (userRole !== 'admin' && userRole !== 'tax_advisor') { alert('管理者または税理士のみ使用できます'); return; }
+  const deptId = currentDeptId();
+  const fy = getFiscalYear();
+  const statusEl = document.getElementById('freeeRecalcStatus');
+  if (statusEl) { statusEl.textContent = '再集計中...'; statusEl.style.color = '#555'; }
+  try {
+    const saved = await loadImportRowsAll('freeepl', deptId, 'FY' + fy);
+    if (!saved || !saved.rows || !saved.rows.length) {
+      if (statusEl) { statusEl.textContent = '❌ 保存済み行データがありません（この部門・年度はimportRows未保存）'; statusEl.style.color = '#e74c3c'; }
+      return;
+    }
+    const agg = computeActualFromRows('freeepl', saved.rows, {});
+    if (!agg || !agg.monthValues) {
+      if (statusEl) { statusEl.textContent = '❌ 集計に失敗しました（保存データがfreee形式CSVと認識できません）'; statusEl.style.color = '#e74c3c'; }
+      return;
+    }
+    await saveDeptToFirestoreWithFY(deptId, fy, agg.monthValues);
+    if (deptId === currentDeptId() && fy === getFiscalYear()) {
+      initDeptData(deptId);
+      const store = allData[deptId].actual;
+      ITEMS.forEach(it => { if (store[it.id]) store[it.id] = new Array(12).fill(0); });
+      for (const [itemId, vals] of Object.entries(agg.monthValues)) {
+        if (!store[itemId]) continue;
+        for (let m = 0; m < 12; m++) store[itemId][m] = vals[m];
+      }
+      renderCurrentTab();
+    }
+    const unmappedMsg = agg.unmapped && agg.unmapped.length ? '（未マッピング' + agg.unmapped.length + '件: ' + agg.unmapped.map(u => u.reason).join(', ') + '）' : '';
+    if (statusEl) { statusEl.textContent = '✅ 再集計完了（' + saved.rows.length + '行から再生成）' + unmappedMsg; statusEl.style.color = '#27ae60'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '❌ 再集計失敗: ' + e.message; statusEl.style.color = '#e74c3c'; }
+  }
 }
 
 // ===== タブ =====
@@ -4498,7 +4765,7 @@ const RECEIPT_PROFILES = {
 };
 
 // deptId → profileId マッピング (§1 レセコンマスタ)
-// 未登録のdeptId(越谷koshigaya・清瀬kiyose等)はnullを返す → 汎用フォールバック
+// 未登録のdeptId(清瀬kiyose等)はnullを返す → 汎用フォールバック
 const STORE_PROFILE = {
   adachi:     'elysia',
   kashiwa:    'pharmy',
@@ -4506,7 +4773,8 @@ const STORE_PROFILE = {
   abiko:      'pharmy',
   nagareyama: 'pharnes',
   ai_chozai:  'pharmaseed',
-  // koshigaya・kiyose: レセコン未定のため意図的に未登録（汎用フォールバック）
+  koshigaya:  'pharmy', // 2026-09-24 T-20260924-023・越谷の帳票=pharmy「日計表（調剤種別合計）」実測
+  // kiyose: レセコン未定のため意図的に未登録（汎用フォールバック）
 };
 
 /** deptIdからprofileを返す。未登録またはfieldsが空ならnull（汎用フォールバック） */
@@ -4538,6 +4806,117 @@ let salesExtractedData = {};
 let salesPdfArrayBuffer = null; // PDF読み取り時に保持
 let _salesPdfViewerReady = false;  // pdfviewer.html のロード完了フラグ
 let _pendingSalesPdfData = null;   // ビューア未準備時の一時保存
+
+// 店舗 → Google Drive「保険合計」フォルダID（2026-09-24 T-20260924-020: PDF保管先をFirestoreチャンクから
+// Drive正本方式へ切替。転記元: wise/AI_secretary_reika/sync_sales_to_drive.mjs の DEPT_DRIVE_FOLDERS（実測転記）。
+// koshigayaは親実測で確認（「越谷）保険合計」フォルダ）。kiyose（開局前）/yakuin（PDF提出なし）は
+// フォルダ未登録のためマッピングなし（アップロード時はfail-softでスキップ）。
+const DEPT_DRIVE_FOLDERS = {
+  kashiwa:     '1sV0-XwzjGCAS1kNxfTvSrH6W1-1dilrl',
+  adachi:      '1h4ZmHbZ7B_Fw0i1QhpY3Q3yKIKz7MkQm',
+  nagareyama:  '1CsmIPvuHb0bJyNF-uYLhcwOJSaS6d-So',
+  ai_chozai:   '10BoZpViL76FRSeA0aQetj3Rya7xecLU6',
+  abiko:       '1XaNVnkR3m5CwxkmFx7NC4rBKjsC_kWkp',
+  sakuradai:   '11eJxVeaKbB26ZwKJa6kPj6VSwiqVAA4F',
+  koshigaya:   '12U-Eq7J9tIz1S0Wx6SzRc08QYsmSj51l',
+};
+
+// Google Drive アップロード用 OAuth accessToken（drive.fileスコープ）。Firebase Authは
+// signInWithPopupのOAuth accessTokenをセッションに永続化しないため、モジュール変数で保持し
+// 期限切れ時はensureDriveAccessToken()で再取得する（doLoginのcredentialから初回取得）。
+let driveAccessToken = null;
+let driveAccessTokenExpiresAt = 0;
+
+// 有効なDrive accessTokenを返す。無い/期限切れなら再度signInWithPopupしてscope付きトークンを
+// 取得し直す（リロード後はFirebase IDトークンはpersistするがOAuth accessTokenは保持されないため、
+// PDFアップロード直前に必ずこれを通す設計。§2.1）。
+async function ensureDriveAccessToken() {
+  if (driveAccessToken && Date.now() < driveAccessTokenExpiresAt) return driveAccessToken;
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.addScope('https://www.googleapis.com/auth/drive.file');
+  if (currentUser?.email) provider.setCustomParameters({ login_hint: currentUser.email });
+  const result = await auth.signInWithPopup(provider);
+  const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
+  if (!credential || !credential.accessToken) throw new Error('Google Drive アクセストークンの取得に失敗しました');
+  driveAccessToken = credential.accessToken;
+  driveAccessTokenExpiresAt = Date.now() + 55 * 60 * 1000;
+  return driveAccessToken;
+}
+
+// multipart/related ボディ組立（Drive files.create 用）。ArrayBufferはコピーせずBlobパートとして渡す。
+function buildDriveMultipartBody(boundary, metadata, arrayBuffer, mimeType) {
+  const enc = new TextEncoder();
+  const head = enc.encode(
+    `--${boundary}\r\n` +
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+    `${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: ${mimeType}\r\n\r\n`
+  );
+  const tail = enc.encode(`\r\n--${boundary}--`);
+  return new Blob([head, arrayBuffer, tail], { type: `multipart/related; boundary=${boundary}` });
+}
+
+// 新規PDFをDriveの指定フォルダへアップロード（multipart）。{id, webViewLink, headRevisionId} を返す。
+async function uploadNewFileToDrive(folderId, fileName, arrayBuffer) {
+  const token = await ensureDriveAccessToken();
+  const boundary = 'wise_budget_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+  const metadata = { name: fileName, parents: [folderId] };
+  const body = buildDriveMultipartBody(boundary, metadata, arrayBuffer, 'application/pdf');
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink,headRevisionId', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body,
+  });
+  if (!res.ok) throw new Error(`Drive アップロード失敗 (${res.status}): ${(await res.text()).slice(0, 300)}`);
+  return res.json();
+}
+
+// 既存Driveファイルへ新しいリビジョンとして上書き（訂正再提出用・uploadType=media）。
+async function updateFileInDrive(fileId, arrayBuffer) {
+  const token = await ensureDriveAccessToken();
+  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&fields=id,webViewLink,headRevisionId`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/pdf' },
+    body: arrayBuffer,
+  });
+  if (!res.ok) throw new Error(`Drive更新失敗 (${res.status}): ${(await res.text()).slice(0, 300)}`);
+  return res.json();
+}
+
+// 直前にアップロードしたリビジョンを自動削除対象から外す（keepForever:true）。失敗してもfail-soft（呼び出し側でcatch）。
+async function keepDriveRevisionForever(fileId, revisionId) {
+  const token = await ensureDriveAccessToken();
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/revisions/${revisionId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keepForever: true }),
+  });
+  if (!res.ok) throw new Error(`keepForever設定失敗 (${res.status}): ${(await res.text()).slice(0, 300)}`);
+}
+
+// PDF保存方式の切替フラグ（2026-09-24 T-20260924-020 第2工程・親ゲート判定）。
+// 既定=false（従来のFirestore pdfChunks分割保存＝現行本番と同じ挙動）。山内さんが実機で
+// 同意画面・実アップロードを確認するまで既定は反転しない（別工程）。
+// 有効化: URL `?pdfDrive=1`（読めたらlocalStorageへも永続化）。解除: `?pdfDrive=0`。
+// URLパラメータが無ければlocalStorageの保存値 → 無ければ既定値の順で判定する。
+const PDF_DRIVE_DIRECT_DEFAULT = false;
+function isPdfDriveDirectEnabled() {
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.has('pdfDrive')) {
+      const enabled = params.get('pdfDrive') === '1';
+      localStorage.setItem('pdfDrive', enabled ? '1' : '0');
+      return enabled;
+    }
+    const stored = localStorage.getItem('pdfDrive');
+    if (stored === '1') return true;
+    if (stored === '0') return false;
+  } catch (e) {
+    console.warn('pdfDriveフラグ判定エラー（既定値を使用）:', e.message);
+  }
+  return PDF_DRIVE_DIRECT_DEFAULT;
+}
 
 // pdfviewer.html がロード完了したことを受信し、待機中のPDFデータがあれば送信する
 window.addEventListener('message', (e) => {
@@ -4864,9 +5243,12 @@ function extractSalesValues(text) {
   );
 
   // 技術料（末尾の集計行「技術料 XX 円 XX%」）
+  // 2026-09-24 T-20260924-023: 否定後読みで「調剤技術料」行への誤マッチを防止
+  // （旧正規表現は先頭一致のため「調剤技術料 xxx円」にも先にマッチしていた）
+  // ※本関数(extractSalesValues)は現状どこからも呼ばれていない未使用コード（Grep実測済み）
   salesExtractedData.techFee = num(
-    /技[術衍]料\s+([0-9,.]+)\s*[円内PIF]\s*[\d.]+\s*%/,
-    /技[術衍]料\s*\n?\s*([0-9,.]+)/
+    /(?<!調[剤劑])技[術衍]料\s+([0-9,.]+)\s*[円内PIF]\s*[\d.]+\s*%/,
+    /(?<!調[剤劑])技[術衍]料\s*\n?\s*([0-9,.]+)/
   );
 
   // 調剤技術料・薬学管理料（足立店など「技術料」欄が無いPDF用）
@@ -4953,6 +5335,12 @@ function computeTechFee(data, profile) {
     return data;
   }
   // 汎用フォールバック: dispensingTechFee + pharmacyMgmtFee（従来ロジック）
+  // 2026-09-24 T-20260924-023: techFeeが既に正の値で取得済み（Gemini直読み等）なら上書きしない。
+  // 未登録プロファイルのdeptで techFee が null/0/NaN のときだけ合算値を補完する
+  // （旧実装は無条件上書きしており、越谷でGemini抽出済みの techFee 493,260 が
+  //  d+p=471,530 で誤って潰れていた＝薬剤調製加算17,780・薬学管理料加算3,950が脱落）
+  const existingTechFee = toInt(data.techFee);
+  if (existingTechFee != null && existingTechFee > 0) return data;
   const d = toInt(data.dispensingTechFee), p = toInt(data.pharmacyMgmtFee);
   if (d != null && p != null) data.techFee = d + p;
   return data;
@@ -5224,10 +5612,27 @@ async function submitSalesData() {
   const [y, m] = month.split('-');
   if (!confirm(`📅 提出先: ${deptName} / ${y}年${parseInt(m)}月\n\n年月に間違いはありませんか？`)) return;
 
-  // 既存データの重複チェック
+  // 既存データの確認（2026-09-24 T-20260924-020 第2工程: PDF保存方式はフラグで切替。
+  // Drive直送モード=訂正再提出を許可し訂正理由を確認したうえでDriveへ新リビジョンとして保存。
+  // 従来モード(フラグOFF・既定)=HEADの挙動を維持し「上書き不可・先に削除」でブロックする）
   const docId = `${month}_${deptId}`;
   const existingDoc = await db.collection('salesData').doc(docId).get();
-  if (existingDoc.exists) {
+  const driveDirectMode = isPdfDriveDirectEnabled();
+  let isCorrection = false;
+  let existingData = null;
+  let existingDriveFileId = null;
+  let correctionReason = null;
+  if (driveDirectMode) {
+    isCorrection = existingDoc.exists;
+    existingData = isCorrection ? existingDoc.data() : null;
+    existingDriveFileId = existingData?.driveFileId || null;
+    if (isCorrection) {
+      correctionReason = prompt(`⚠ ${deptName} ${y}年${parseInt(m)}月 のデータは既に提出済みです。\n\n数値・PDFを訂正して再提出します。訂正理由を入力してください（キャンセルで中止）:`);
+      if (correctionReason === null) return;
+      correctionReason = correctionReason.trim();
+      if (!correctionReason) { alert('訂正理由を入力してください。'); return; }
+    }
+  } else if (existingDoc.exists) {
     alert(`⚠ ${deptName} ${y}年${parseInt(m)}月 のデータは既に提出済みです。\n\n上書きはできません。先に提出済みデータ一覧から削除してから、再度アップロードしてください。`);
     return;
   }
@@ -5270,19 +5675,89 @@ async function submitSalesData() {
       }
     }
 
-    // Step 2: PDFをチャンク分割して pdfChunks サブコレクションに保存（fail-soft）
-    // PDF保存が失敗しても数値データは保存済み。alertのみ出して継続する。
-    if (salesPdfArrayBuffer) {
+    // Step 2: PDF保存（2026-09-24 T-20260924-020 第2工程・フラグ切替）。
+    // driveDirectMode=true → Google Driveへ直接アップロード（§Task1・親ゲート後に既定反転予定）。
+    // driveDirectMode=false（既定・現行本番と同じ挙動）→ 従来のFirestore pdfChunks分割保存。
+    if (salesPdfArrayBuffer && driveDirectMode) {
+      try {
+        btn.textContent = 'Drive保存中...';
+
+        const folderId = DEPT_DRIVE_FOLDERS[deptId];
+        if (!folderId) throw new Error(`Driveフォルダ未登録: ${deptId}（越谷/清瀬/役員など未整備の部門の可能性）`);
+
+        const arrayBufferForUpload = salesPdfArrayBuffer.slice(0); // fetchのbody消費でグローバル変数を壊さない
+
+        let driveResult;
+        let versionEntry;
+        if (isCorrection && existingDriveFileId) {
+          // 訂正再提出: 既存Driveファイルへ新リビジョンとして上書き
+          driveResult = await updateFileInDrive(existingDriveFileId, arrayBufferForUpload);
+          versionEntry = {
+            driveRevisionId: driveResult.headRevisionId || null,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: currentUser?.email || 'unknown',
+            reason: correctionReason,
+          };
+        } else {
+          // 新規提出、または訂正だが旧レコードにdriveFileIdが無い（pdfChunks方式からの未移行分）→ 新規作成
+          driveResult = await uploadNewFileToDrive(folderId, renamedFileName, arrayBufferForUpload);
+          versionEntry = {
+            driveRevisionId: driveResult.headRevisionId || null,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: currentUser?.email || 'unknown',
+            reason: isCorrection ? (correctionReason || 'correction_no_prior_drive_file') : 'initial',
+          };
+        }
+
+        // 自動削除対象から外す（失敗してもfail-soft・アップロード自体は成功しているため継続）
+        if (driveResult.headRevisionId) {
+          try { await keepDriveRevisionForever(driveResult.id, driveResult.headRevisionId); }
+          catch (keepErr) { console.warn('keepForever設定失敗（続行）:', keepErr.message); }
+        }
+
+        await db.collection('salesData').doc(docId).update({
+          driveFileId: driveResult.id,
+          driveViewUrl: driveResult.webViewLink || `https://drive.google.com/file/d/${driveResult.id}/view`,
+          pdfFileName: renamedFileName,
+          backupStatus: 'completed',
+          backupSource: 'drive_direct',
+          versions: firebase.firestore.FieldValue.arrayUnion(versionEntry),
+        });
+
+        console.log(`Drive保存完了: ${renamedFileName} (${driveResult.id})`);
+      } catch (pdfErr) {
+        console.error('Drive保存エラー（数値データは保存済み）:', pdfErr.message);
+        try {
+          await db.collection('salesData').doc(docId).update({
+            backupStatus: 'pdf_save_failed',
+            pdfSaveError: String(pdfErr.message).slice(0, 200),
+          });
+        } catch (statusErr) {
+          console.error('PDF失敗ステータスの記録にも失敗:', statusErr.message);
+        }
+        alert('数値データは提出完了しました。\n\n⚠ PDFの保存でエラーが発生しました: ' + pdfErr.message + '\n\nPDFは元ファイルをお手元に保管してください。管理者にご連絡いただければ再保存できます。');
+      }
+    } else if (salesPdfArrayBuffer) {
+      // 従来方式（フラグOFF・既定）: Firestore pdfChunksサブコレクションへ分割保存（fail-soft）。
+      // HEAD(git show HEAD:index.html)の実装を復元。ただしHEAD側はadfd50fのパッチ誤爬(diff適用ズレ)により
+      // `const fullB64 = btoa(binParts.join(''));` の行がloadLaborData内へ誤挿入され、本来の位置(本ブロック)に
+      // 存在せずfullB64参照がReferenceErrorになっていた（2026-09-24実測・working treeでは既に混入分は除去済み）。
+      // ここでは正しい位置にfullB64定義を置いて復元する。
       try {
         btn.textContent = 'PDF保存中...';
 
-        // base64変換: チャンク単位でbtoa処理（O(n^2)の文字列連結を回避）
+        // base64変換: spread引数展開はサイズ上限でRangeErrorになるため使わない
+        // (String.fromCharCode(...大きな配列) はコールスタック上限を超える)
         const uint8 = new Uint8Array(salesPdfArrayBuffer);
-        const BYTES_PER_CHUNK = 186000; // ~186KBバイナリ → ~248KB base64
-        let fullB64 = '';
-        for (let i = 0; i < uint8.length; i += BYTES_PER_CHUNK) {
-          fullB64 += btoa(String.fromCharCode(...uint8.slice(i, i + BYTES_PER_CHUNK)));
+        const SUB = 8192;
+        const binParts = [];
+        for (let i = 0; i < uint8.length; i += SUB) {
+          let bin = '';
+          const part = uint8.subarray(i, i + SUB);
+          for (let j = 0; j < part.length; j++) bin += String.fromCharCode(part[j]);
+          binParts.push(bin);
         }
+        const fullB64 = btoa(binParts.join(''));
 
         // base64を250,000文字単位でFirestoreチャンクに分割（1ドキュメント上限1MBの安全マージン）
         const B64_CHUNK_SIZE = 250000;
@@ -5293,7 +5768,7 @@ async function submitSalesData() {
 
         const chunksRef = db.collection('salesData').doc(docId).collection('pdfChunks');
 
-        // 既存チャンク削除（再提出の場合）
+        // 既存チャンク削除（再提出の場合。フラグOFF時は既存提出があると上に到達しないが念のため踏襲）
         const existingSnap = await chunksRef.get();
         const delOps = [];
         existingSnap.forEach(c => delOps.push(c.ref.delete()));
@@ -5311,6 +5786,14 @@ async function submitSalesData() {
         console.log(`PDF保存完了: ${b64Chunks.length}チャンク, ${(uint8.length / 1024).toFixed(0)}KB`);
       } catch (pdfErr) {
         console.error('PDF保存エラー（数値データは保存済み）:', pdfErr.message);
+        try {
+          await db.collection('salesData').doc(docId).update({
+            backupStatus: 'pdf_save_failed',
+            pdfSaveError: String(pdfErr.message).slice(0, 200),
+          });
+        } catch (statusErr) {
+          console.error('PDF失敗ステータスの記録にも失敗:', statusErr.message);
+        }
         alert('数値データは提出完了しました。\n\n⚠ PDFの保存でエラーが発生しました: ' + pdfErr.message + '\n\nPDFは元ファイルをお手元に保管してください。管理者にご連絡いただければ再保存できます。');
       }
     }

@@ -101,5 +101,37 @@ service cloud.firestore {
         allow read, write: if request.auth != null;
       }
     }
+    // freee API月次取込 原文保存（freeeRawMonthly・判例162/INC-403同型是正・2026-09-17追加）
+    // 部門別/月別の trial_pl balances行を集計に潰す前に保持する。
+    // 読取: budgetDataと同条件（store/dept単位のdocIdを使うためcanReadBudgetDocを流用）。
+    // 書込: 匿名バッチ（freee_import_worker.mjs）のみ（editor以上への手動上書きも許可）。
+    match /freeeRawMonthly/{docId} {
+      allow get: if signedIn() && canReadBudgetDoc(docId);
+      allow list: if signedIn() && (isAnon() || isStaff());
+      allow write: if signedIn() && (isAnon() || isEditor());
+      match /chunks/{chunkId} {
+        allow get: if signedIn() && canReadBudgetDoc(docId);
+        allow list: if signedIn() && (isAnon() || isStaff());
+        allow write: if signedIn() && (isAnon() || isEditor());
+      }
+    }
+    // KOT 従業員別月次行（kot_monthly/{ym}/employeeRows サブコレクション・判例162/INC-403同型是正・2026-09-17追加）
+    // 氏名を含まない（employeeKeyのみ）。kot_monthlyドキュメントと同じ認証条件。
+    match /kot_monthly/{ym}/employeeRows/{chunkId} {
+      allow read, write: if request.auth != null;
+    }
+    // 汎用CSV/freee PL CSV 取込時の全行データ（importRows・判例162/INC-403同型是正・2026-09-17追加）
+    // 集計値に潰す前の元CSV行を保持し、マッピング修正後も再集計できるようにする。
+    // budgetDataと同条件（読取はロール別・書込は匿名バッチ/editor）。
+    match /importRows/{docId} {
+      allow get: if signedIn() && canReadBudgetDoc(docId);
+      allow list: if signedIn() && (isAnon() || isStaff());
+      allow write: if signedIn() && (isAnon() || isEditor());
+      match /chunks/{chunkId} {
+        allow get: if signedIn() && canReadBudgetDoc(docId);
+        allow list: if signedIn() && (isAnon() || isStaff());
+        allow write: if signedIn() && (isAnon() || isEditor());
+      }
+    }
   }
 }

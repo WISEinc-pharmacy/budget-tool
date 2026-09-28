@@ -3370,7 +3370,7 @@ function doImport() {
   const fy = getFiscalYear();
   const reader=new FileReader();
   reader.onload=async function(e){
-    const text=e.target.result.replace(/^﻿/,'');
+    const text=e.target.result.replace(/^\uFEFF/,'');
     const rawLines = text.split(/\r?\n/);
     const agg = computeGenericFromLines(rawLines, { target });
     for (const [itemId, vals] of Object.entries(agg.values)) {

@@ -34,22 +34,12 @@ service cloud.firestore {
     // 確認するget（index.html:1147 checkUserRole内、ログイン毎に必ず実行される）にそのまま使うと
     // 「存在確認のgetそのもの」がpermission-deniedで例外化する鶏と卵問題になる（doc.exists判定に到達できない）。
     // 直接のemail一致判定なら未登録でもget自体は許可され、doc.exists===falseが正しく返る。
-    // ⚠️[severity:high・2026-10-08レビュー再評価] index.html:1150のブートストラップ分岐（doc未登録→
+    // [2026-10-08 第2版レビューで実装確認・解消済み] index.html:1150のブートストラップ分岐（doc未登録→
     // db.collection('users').get()で全件list→空なら最初のユーザーをadmin自動登録、空でなければ
-    // signOut+alert）はこのlist()に依存している。
-    // 本ルール変更後、未登録ユーザーは1147のgetまでは成功するが、1150のlist()がisAdminRole()=false
-    // （未登録=role未確定のため）でpermission-deniedとなり、「空でなければ」の判定に到達せず例外化する。
-    // checkUserRole()（index.html:1146-1169）はtry/catchを持たないため、この例外はonAuthStateChanged
-    // （index.html:1079）内で未処理のPromise rejectionとなり、「アクセス権がありません」alertに届かず
-    // 画面が無反応のまま凍結する（単なる「拒否」ではなくUIフリーズ＝severity high）。
-    // usersコレクションが完全に空の真の初回起動でも同じくlist()が拒否され、クライアント側の
-    // 自動admin登録フローが到達不能になる（＝初回ブートストラップはAdmin SDK/Cloud Functionでの
-    // 手動投入が必須という運用前提に切り替わる）。
-    // 【rulesのみでは解決不可】list()をadmin以外にも開けば直るが、それは2026-10-08本日実施した
-    // INC-473由来のセキュリティ修正（全ログインユーザーが全users一覧をlist()で読めた穴を閉じた変更）
-    // を後退させてしまう。恒久対応はindex.html側にtry/catch（permission-deniedを「未登録=拒否」に
-    // 正しくフォールバックさせる）を実装すること（今回のタスク範囲外・index.html未修正。本番反映ゲート前に
-    // 山内さんの判断と併せて必ず解消する。詳細は報告のopenQuestions参照）。
+    // signOut+alert）はこのlist()に依存するが、index.html:1153-1155で既にtry/catchが実装済み
+    // （permission-deniedを捕捉し、snap={empty:false}として「未登録＝アクセス拒否」の既存分岐へ
+    // 正しくフォールバックする）。本ルール変更後も未処理のPromise rejection・UIフリーズは発生しない
+    // （旧コメントはindex.html側の対応状況の記載漏れ。2026-10-08 index.html実測で確認済み）。
     match /users/{email} {
       allow get: if signedIn() && (request.auth.token.email == email || isAdminRole());
       allow list: if signedIn() && isAdminRole();
@@ -73,15 +63,25 @@ service cloud.firestore {
     // isAnon()は既存の匿名バッチ（kpi_counts.mjs等がkpiCountsフィールドをmerge更新）を壊さないための例外。
     // submittedByが未記録の旧データ（フィールドなし）はadmin/editorのみ更新・削除可（フェイルセーフ）。
     function isSalesOwner() { return resource.data.submittedBy is string && resource.data.submittedBy == request.auth.token.email; }
+    // 2026-10-08 第2版レビュー(反証[high])是正: createにhasUserDoc()を追加（未登録Google遮断）し、
+    // submittedByがクライアント入力値でなりすまし可能だった穴を閉じる（request.resource.data.submittedByを
+    // 本人emailに固定）。submitSalesData()（index.html:5822-5833, 5789 docId生成）は毎回
+    // submittedBy: currentUser.email を含めてset()するため実装と一致（実測済み）。
     match /salesData/{doc} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null && (isAnon() || isEditor() || isSalesOwner());
-      allow delete: if request.auth != null && (isEditor() || isSalesOwner());
+      allow read: if isAnon() || hasUserDoc();
+      allow create: if hasUserDoc() && request.resource.data.submittedBy == request.auth.token.email;
+      allow update: if isAnon() || (hasUserDoc() && (isEditor() || isSalesOwner()));
+      allow delete: if hasUserDoc() && (isEditor() || isSalesOwner());
     }
-    // PDFチャンク保存サブコレクション（budget-tool pdfChunks方式・2026-08-06追加）
+    // PDFチャンク保存サブコレクション（budget-tool pdfChunks方式・2026-08-06追加）。
+    // 2026-10-08 第2版レビュー是正: 親salesDataのisSalesOwner/isEditorを継承しておらず、登録済みの
+    // 任意ロールが他店舗のpdfChunksを直接create/update/deleteできた穴（反証[medium]）を閉じる。
+    // readはsync_sales_to_drive.mjs（匿名・live・チャンク結合用のGETのみ）を維持するためisAnon()を残すが、
+    // 同スクリプトはpdfChunksへのDELETE呼出を一切行わないため実測済み、deleteにisAnon()は付けない。
     match /salesData/{docId}/pdfChunks/{chunkId} {
-      allow read, write: if request.auth != null;
+      allow read: if isAnon() || hasUserDoc();
+      allow create, update: if hasUserDoc() && (isEditor() || get(/databases/$(database)/documents/salesData/$(docId)).data.submittedBy == request.auth.token.email);
+      allow delete: if hasUserDoc() && (isEditor() || get(/databases/$(database)/documents/salesData/$(docId)).data.submittedBy == request.auth.token.email);
     }
     // config: 2026-10-08見直し（INC-473派生の最小ルール修正）。従来は`request.auth != null`
     // （=signedIn()と同義）で一括readを許可しており、GoogleAuthProviderにhdドメイン制限が無いため
@@ -99,44 +99,82 @@ service cloud.firestore {
     match /config/{doc} {
       allow get: if hasUserDoc();
     }
+    // 2026-10-08 第2版レビュー是正: createにhasUserDoc()+所有者/editor限定を追加。index.htmlの
+    // deleteSalesData()（6084-6095）はcanEdit(admin/editor)||isOwner(submittedBy一致)をUIで確認した後に
+    // 同一docId（salesData側と共有）でこのキューへset()するため、ルール側も同条件のget()参照で揃える
+    // （旧版はrequest.auth!=nullのみで、登録済み任意ロールが他部門のdriveFileIdを直接投入できた・反証[high]）。
+    // update追加は、同一月・部門で削除→再提出→再削除が短時間に起きた場合に備える（反証[medium]）。
+    // read/deleteのisAnon()はsync_sales_to_drive.mjs（匿名・live・30分毎・list+delete）を維持するため。
     match /salesDeleteQueue/{docId} {
-      allow read, write: if request.auth != null;
+      allow read: if isAnon() || hasUserDoc();
+      allow create, update: if hasUserDoc() && (isEditor() || get(/databases/$(database)/documents/salesData/$(docId)).data.submittedBy == request.auth.token.email);
+      allow delete: if isAnon() || hasUserDoc();
     }
+    // 2026-10-08 第2版レビュー是正: index.htmlのUIガード（exportCSV=admin/editor/tax_advisor≒isStaff、
+    // renderExportLogs=admin限定）をrulesにも反映。棚卸しで匿名クライアント0件のためisAnon()は付けない。
     match /exportLogs/{doc} {
-      allow read, write: if request.auth != null;
+      allow create: if hasUserDoc() && isStaff();
+      allow get, list: if hasUserDoc() && isAdminRole();
     }
+    // 2026-10-08 第2版レビュー是正: readはindex.html全6ロール（laborタブ）とfreelance_guard.mjs
+    // （匿名・live・月次実行="Freelance_Guard_Monthly"・GET）を維持するためisAnon()併記。
+    // writeの実書込元(sync_to_firebase.mjs/freelance_import.mjs)はAdmin SDKでrulesを通らないため、
+    // isStaff()制限はclient-SDK経由の誤書込みを防ぐ防御的措置であり既存運用に影響しない。
+    // 店舗別フィルタ非対称（viewerが他店舗分も取得可能）はドキュメント構造由来でrulesのみでは解決不可
+    // （index.html:6172-3に自己言及コメントあり・本タスク範囲外）。
     match /kot_monthly/{doc} {
-      allow read, write: if request.auth != null;
+      allow read: if isAnon() || hasUserDoc();
+      allow write: if hasUserDoc() && isStaff();
     }
+    // 2026-10-08 第2版レビュー是正: 全社共通値（店舗別フィールドなし）のため非対称問題は無く、
+    // 匿名クライアント0件のためisAnon()不要。writeはAdmin SDK(sync_to_firebase.mjs)がrulesを通らないため
+    // isStaff()制限は防御的措置。
     match /kot_summary/{doc} {
-      allow read, write: if request.auth != null;
+      allow read: if hasUserDoc();
+      allow write: if hasUserDoc() && isStaff();
     }
-    // freee API月次取込の依頼キュー（UI=Google認証ユーザーが作成、ワーカー=匿名認証が処理）
+    // freee API月次取込の依頼キュー（UI=Google認証ユーザーが作成、ワーカー=freee_import_worker.mjsが処理。
+    // 2026-09-17 Admin SDK移行済み・匿名認証ではない。rulesを通らないため本ルールには無関係）。
+    // 2026-10-08 第2版レビュー是正: index.htmlのUIガード（requestFreeeApiImport・3722: admin/tax_advisor限定、
+    // editorは明示的に除外）をrulesにも反映。list/update/deleteはどのクライアントにも観測されないため許可しない。
     match /freee_import_requests/{doc} {
-      allow read, write: if request.auth != null;
+      allow get: if hasUserDoc() && role() in ['admin', 'tax_advisor'];
+      allow create: if hasUserDoc() && role() in ['admin', 'tax_advisor'];
     }
-    // 人時生産性 月次記録（keiei_report/monthly_productivity.mjs書込。2026-08-03追加・未デプロイ）
+    // 人時生産性 月次記録（keiei_report/monthly_productivity.mjs書込。2026-08-03追加・未デプロイ）。
+    // 2026-10-08 第2版レビュー是正: 唯一のクライアントはschtasks登録0件のoneoffで、liveの匿名クライアントが
+    // 存在しないためisAnon()は付けない。index.html側にこのコレクションへの参照は無く、staff限定としても実害なし。
     match /keiei_monthly/{doc} {
-      allow read, write: if request.auth != null;
+      allow read: if hasUserDoc() && isStaff();
+      allow write: if hasUserDoc() && isStaff();
     }
     // 在宅内訳月次データ（homecareData・2026-08-07追加）。
     // 更新・削除は「admin/editor」または「本人（uploadedBy=uid一致）」のみ（2026-09-17 T-20260917-003・salesDataと同方針）。
-    // uploadedByが未記録の旧データはadmin/editorのみ（フェイルセーフ）。homecare_recompute.mjs等の匿名バッチ書込を維持するためisAnon()例外あり。
+    // uploadedByが未記録の旧データはadmin/editorのみ（フェイルセーフ）。
+    // 2026-10-08 第2版: homecare_recompute.mjs は手動ツールで homecareRows 読取が本版で DENY になるため isAnon() 例外を撤去。同スクリプトは第3版で Admin SDK（wise/common/firestore_admin.mjs）へ移行するまで実行不可。
     function isHomecareOwner() { return resource.data.uploadedBy is string && resource.data.uploadedBy == request.auth.uid; }
+    // 2026-10-08 第2版レビュー是正: createにhasUserDoc()を追加（未登録Google遮断）し、uploadedByが
+    // クライアント入力値でなりすまし可能だった穴を閉じる（反証[high]）。saveHomecareData(6843)・
+    // reportNoHomecare(6917)はいずれも uploadedBy: auth.currentUser.uid をcreate時に必ず含めるため実装と一致
+    // （実測済み。recomputeHomecareFromRows(7242-7247)はmerge:trueのupdateでuploadedByを含めず
+    // recomputedByのみ書くが、既存docへのmergeのためcreate条件は適用されない）。
+    // update の isAnon() 例外（homecare_recompute.mjs）は2026-10-08 第2版で撤去（上記コメント参照）。deleteには元々isAnon()を付けていない。
     match /homecareData/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null && (isAnon() || isEditor() || isHomecareOwner());
-      allow delete: if request.auth != null && (isEditor() || isHomecareOwner());
+      allow read: if hasUserDoc();
+      allow create: if hasUserDoc() && request.resource.data.uploadedBy == request.auth.uid;
+      allow update: if hasUserDoc() && (isEditor() || isHomecareOwner());
+      allow delete: if hasUserDoc() && (isEditor() || isHomecareOwner());
     }
     // 在宅内訳CSV 行データ（homecareRows・識別子除去済み・INC-403・2026-09-16追加）
     // 施設別集計(homecareData)の元になる行データを保持し、式修正後も再集計できるようにする。
     // homecareDataと同条件（認証済みユーザーなら読み書き可＝uploaderロールもCSV取込で書込む）。
+    // 2026-10-08 第2版レビュー是正: hasUserDoc()を追加するのみの最小修正（未登録Google遮断）。
+    // owner/editor限定の新設はスコープ外（homecareRowsには元々所有者条件が無く、新設は別途山内さん判断）。
     match /homecareRows/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if hasUserDoc();
       // 1MB制限を超える行数はchunksサブコレクションへ分割保存する
       match /chunks/{chunkId} {
-        allow read, write: if request.auth != null;
+        allow read, write: if hasUserDoc();
       }
     }
     // freee API月次取込 原文保存（freeeRawMonthly・判例162/INC-403同型是正・2026-09-17追加）
@@ -154,9 +192,13 @@ service cloud.firestore {
       }
     }
     // KOT 従業員別月次行（kot_monthly/{ym}/employeeRows サブコレクション・判例162/INC-403同型是正・2026-09-17追加）
-    // 氏名を含まない（employeeKeyのみ）。kot_monthlyドキュメントと同じ認証条件。
+    // 氏名を含まない（employeeKeyのみ）。2026-10-08 第2版レビュー是正: readはkot_monthly本体と同じ
+    // 全ロール許可を維持しhasUserDoc()のみ追加（読取クライアントはwise配下で0件確認済みのため実害は低いが
+    // 未登録のみ閉じる最小対応）。writeはAdmin SDK(sync_to_firebase.mjs)のみでrulesを通らないため
+    // isStaff()制限は防御的措置。
     match /kot_monthly/{ym}/employeeRows/{chunkId} {
-      allow read, write: if request.auth != null;
+      allow read: if hasUserDoc();
+      allow write: if hasUserDoc() && isStaff();
     }
     // 汎用CSV/freee PL CSV 取込時の全行データ（importRows・判例162/INC-403同型是正・2026-09-17追加）
     // 集計値に潰す前の元CSV行を保持し、マッピング修正後も再集計できるようにする。

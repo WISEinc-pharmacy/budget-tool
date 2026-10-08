@@ -38,6 +38,46 @@ function roleMocks(email, role) {
 const google = email => ({ uid: 'u_' + email.split('@')[0], token: { email, firebase: { sign_in_provider: 'google.com' } } });
 const anon = { uid: 'anon1', token: { firebase: { sign_in_provider: 'anonymous' } } };
 
+// ── v2テスト拡張（2026-10-08・第2版rules反証修正の検証）: 任意パス対応の汎用ヘルパー ──
+// 由来: C:/Users/WISE-Yamauchi/.claude/projects/.../tool-results/bc9u6n7sf.txt の
+// 「=== TEST CASES (61)」を第2版firestore.rulesの最終形に合わせて取り込み、反証修正（submittedBy/uploadedBy
+// なりすまし防止・salesDeleteQueue所有者チェック・pdfChunks所有者継承）の検証ケースを追加するために導入。
+// tcGeneric()は `${DB}/${collection}/${docId}` の2階層固定（HARNESS GAPS記載）のため、
+// salesData/{docId}/pdfChunks/{chunkId} 等の3階層パスを直接表現できる本ヘルパーを別途追加する
+// （既存のtc()/tcGeneric()・legacyTestCases/newTestCasesは一切変更しない）。
+//
+// actor: 'anon' | { email, role }（role===null は users/{email} 未登録＝hasUserDoc()=false を表す。
+//   role省略時も null 扱いにする＝HARNESS GAPS記載の「roleを明示しないと誤動作する」注意点への対応）
+// path: 完全パス文字列（P()で組み立てる）
+// resourceData: 既存ドキュメントの状態（`resource.data`。get/update/delete判定・isSalesOwner等の既存データ所有者チェック用）
+// requestResourceData: create/updateで書き込まれる新データ（`request.resource.data`。submittedBy/uploadedByの
+//   なりすまし検証はこちらを使う。resourceDataとは別のRules変数のため取り違えないこと）
+// extraMocks: get()/exists()の追加functionMocks（roleMocksと合成。親ドキュメント参照の所有者チェック=
+//   get(/databases/$(database)/documents/salesData/$(docId)) 等に使う。docMock()で組み立てる）
+function tcPath({ expectation, path, method, actor, resourceData, requestResourceData, extraMocks }) {
+  const isAnonActor = actor === 'anon';
+  const auth = isAnonActor ? anon : google(actor.email);
+  const t = { expectation, request: { auth, path, method } };
+  const mocks = [];
+  if (!isAnonActor) mocks.push(...roleMocks(actor.email, actor.role === undefined ? null : actor.role));
+  if (extraMocks) mocks.push(...extraMocks);
+  if (mocks.length) t.functionMocks = mocks;
+  if (resourceData) t.resource = { data: resourceData };
+  if (requestResourceData) t.request.resource = { data: requestResourceData };
+  return t;
+}
+// 未登録Googleアカウント用ヘルパ（usersドキュメント未作成＝role:nullを明示。existing tc()のgoogle(email)+role:nullパターンと同義）
+const unregisteredGoogle = email => ({ email, role: null });
+// get()/exists()の任意パスモック（親ドキュメント参照の所有者チェック用。data=nullなら「ドキュメント無し」を表す）
+function docMock(path, data) {
+  return [
+    { function: 'exists', args: [{ exactValue: path }], result: { value: data !== null } },
+    { function: 'get', args: [{ exactValue: path }], result: { value: data === null ? null : { data } } },
+  ];
+}
+// フルパス組立（DB起点・任意階層）
+const P = (...segs) => `${DB}/${segs.join('/')}`;
+
 // budgetData用（既存26件・INC-376封じ込め時に9/9実行してPASS済み）
 function tc(expectation, method, docId, auth, email, role) {
   const t = { expectation, request: { auth, path: `${DB}/budgetData/${docId}`, method } };
@@ -83,7 +123,7 @@ const legacyTestCases = [
   tc('ALLOW', 'update', 'FY2026_adachi', anon),
   tc('DENY',  'get', 'FY2026_kashiwa', google('stranger@example.com'), 'stranger@example.com', null),
   { expectation: 'DENY', request: { auth: null, path: `${DB}/budgetData/FY2026_kashiwa`, method: 'get' } },
-  { expectation: 'ALLOW', request: { auth: google(V), path: `${DB}/salesData/2026-08_adachi`, method: 'get' } },
+  { expectation: 'ALLOW', request: { auth: google(V), path: `${DB}/salesData/2026-08_adachi`, method: 'get' }, functionMocks: roleMocks(V, 'viewer') }, // 第2版でsalesData readがhasUserDoc()を評価するため追加
 ];
 
 // ── 新規（2026-09-17 T-20260917-003）: users自己昇格穴の閉塞・uploader廃止・salesData/homecareData提出者本人操作 ──
@@ -118,18 +158,156 @@ const newTestCases = [
     resourceData: { submittedBy: V } }), // 他人の提出データ削除→拒否
   tcGeneric({ expectation: 'DENY', collection: 'salesData', docId: '2026-08_kashiwa', method: 'delete', email: V, role: 'viewer',
     resourceData: { submittedBy: null } }), // submittedBy未記録の旧データ（フェイルセーフ）はviewer本人でも削除不可
-  tcGeneric({ expectation: 'ALLOW', collection: 'salesData', docId: '2026-08_kashiwa', method: 'create', email: V, role: 'viewer' }), // 新規提出（create）は誰でも可（旧仕様維持）
+  tcGeneric({ expectation: 'DENY', collection: 'salesData', docId: '2026-08_kashiwa', method: 'create', email: V, role: 'viewer' }), // 第2版: request.resource.data.submittedBy 未指定は DENY（旧仕様=誰でも可→なりすまし防止のため変更。ALLOW版はv2TestCases L199参照）
 
-  // --- homecareData: uploadedBy(uid一致) or admin/editor のみ更新可。匿名バッチ(homecare_recompute.mjs)は維持 ---
-  tcGeneric({ expectation: 'ALLOW', collection: 'homecareData', docId: 'kashiwa_2026-08', method: 'update',
-    resourceData: { uploadedBy: 'u_someone' } }), // 匿名バッチ（homecare_recompute.mjs）→許可
+  // --- homecareData: uploadedBy(uid一致) or admin/editor のみ更新可。第2版で isAnon 撤去＝匿名は DENY（homecare_recompute.mjsは第3版でAdmin SDKへ） ---
+  tcGeneric({ expectation: 'DENY', collection: 'homecareData', docId: 'kashiwa_2026-08', method: 'update',
+    resourceData: { uploadedBy: 'u_someone' } }), // 第2版で isAnon 撤去＝匿名は DENY（homecare_recompute.mjsは第3版でAdmin SDKへ）
   tcGeneric({ expectation: 'ALLOW', collection: 'homecareData', docId: 'kashiwa_2026-08', method: 'update', email: V, role: 'viewer',
     resourceData: { uploadedBy: 'u_' + V.split('@')[0] } }), // 提出者本人（uid一致）による更新→許可
   tcGeneric({ expectation: 'DENY', collection: 'homecareData', docId: 'kashiwa_2026-08', method: 'update', email: UP, role: 'viewer',
     resourceData: { uploadedBy: 'u_' + V.split('@')[0] } }), // 別store viewerによる更新→拒否
 ];
 
-const testCases = [...legacyTestCases, ...newTestCases];
+// ── v2（2026-10-08・第2版firestore.rules反証修正の検証）: tool-results/bc9u6n7sf.txt「TEST CASES(61)」を
+// 第2版の最終ルールに合わせて取り込み、反証[high]/[medium]修正（salesData/homecareData createのなりすまし防止、
+// pdfChunks/salesDeleteQueueの所有者チェック継承）の検証ケースを追加したもの。61件からの変更点は各行のコメントに明記する。
+// 2026-10-08 第2版で salesData create(viewer) と homecareData update(匿名) の2件を新仕様に合わせて DENY 化
+const EDITOR = { email: 'editor1@wise-jmco.com', role: 'editor' }; // 61件のうちeditorアクターが未定義だったため追加（任意のemailで role を明示的にモック）
+const OUTSIDER = 'outsider@example.com'; // 未登録Google用の任意メール（users未登録を表す）
+const v2TestCases = [
+  // --- users（61-#1〜#6。users rulesは本タスク範囲外だが既存の2026-10-08版と整合することを確認） ---
+  tcPath({ expectation: 'ALLOW', path: P('users', V), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#1 本人get
+  tcPath({ expectation: 'DENY', path: P('users', UP), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#2 viewerが他人(UP)をget
+  tcPath({ expectation: 'DENY', path: P('users', 'dummy'), method: 'list', actor: { email: V, role: 'viewer' } }), // 61-#3 viewerのlist
+  tcPath({ expectation: 'ALLOW', path: P('users', 'dummy'), method: 'list', actor: { email: A, role: 'admin' } }), // 61-#4 adminのlist
+  tcPath({ expectation: 'ALLOW', path: P('users', OUTSIDER), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#5 未登録Googleの自分自身get（鶏と卵対策）
+  tcPath({ expectation: 'DENY', path: P('users', 'dummy'), method: 'list', actor: unregisteredGoogle(OUTSIDER) }), // 61-#6 未登録Googleのlist
+
+  // --- config/gemini（61-#7〜#8 + N: 匿名get→DENYを追加。config ruleにisAnon()は無いため） ---
+  tcPath({ expectation: 'DENY', path: P('config', 'gemini'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#7
+  tcPath({ expectation: 'ALLOW', path: P('config', 'gemini'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#8
+  tcPath({ expectation: 'DENY', path: P('config', 'gemini'), method: 'get', actor: 'anon' }), // 追加: config/{doc}はhasUserDoc()のみでisAnon()を含まないためDENY
+
+  // --- salesData（61-#9〜#13 + create所有者チェック追加分） ---
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#9
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#10
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa'), method: 'create', actor: unregisteredGoogle(OUTSIDER), requestResourceData: { submittedBy: OUTSIDER } }), // 61-#11
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa'), method: 'get', actor: 'anon' }), // 61-#12
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa'), method: 'create', actor: 'anon' }), // 61-#13
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa'), method: 'update', actor: 'anon' }), // 追加: updateはisAnon()単独で許可（kpi_counts.mjs等）。resourceData不要（isAnon()が||の左辺で短絡）
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa'), method: 'create', actor: { email: V, role: 'viewer' }, requestResourceData: { submittedBy: V } }), // 追加（反証[high]是正の検証）: submittedBy本人→ALLOW
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa'), method: 'create', actor: { email: V, role: 'viewer' }, requestResourceData: { submittedBy: UP } }), // 追加（反証[high]是正の検証）: submittedByが他人のアドレス→DENY（なりすまし拒否）
+
+  // --- salesData/{docId}/pdfChunks/{chunkId}（61-#14〜#17 + 所有者継承チェック追加分） ---
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#14
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#15
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'delete', actor: 'anon' }), // 61-#16 を第2版に合わせてALLOW→DENYへ訂正。firestore.rules:84のdelete条件にisAnon()は無い（反証[low]是正=sync_sales_to_drive.mjsはpdfChunksをdelete呼出しない実測に基づく）
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'create', actor: 'anon' }), // 61-#17
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'get', actor: 'anon' }), // 追加: readはisAnon()併記のためALLOW（sync_sales_to_drive.mjsのチャンク結合GET）
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'create', actor: { email: V, role: 'viewer' }, extraMocks: docMock(P('salesData', '2026-08_kashiwa'), { submittedBy: V }) }), // 追加（反証[medium]是正の検証）: 親salesDataの提出者本人→ALLOW
+  tcPath({ expectation: 'DENY', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'create', actor: { email: UP, role: 'viewer' }, extraMocks: docMock(P('salesData', '2026-08_kashiwa'), { submittedBy: V }) }), // 追加（反証[medium]是正の検証）: 別の店舗viewer(UP)が他人(V)提出のpdfChunksへcreate→DENY
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'create', actor: EDITOR }), // 追加: editorはisEditor()で短絡許可（親get()のextraMocksは不要）
+
+  // --- salesDeleteQueue（61-#18〜#21 + 所有者チェック追加分） ---
+  tcPath({ expectation: 'ALLOW', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'create', actor: { email: V, role: 'viewer' }, extraMocks: docMock(P('salesData', '2026-08_kashiwa'), { submittedBy: V }) }), // 61-#18 を第2版に合わせてextraMocks追加（提出者本人でなければDENYになるため）
+  tcPath({ expectation: 'DENY', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'create', actor: unregisteredGoogle(OUTSIDER) }), // 61-#19
+  tcPath({ expectation: 'ALLOW', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'delete', actor: 'anon' }), // 61-#20
+  tcPath({ expectation: 'ALLOW', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'get', actor: 'anon' }), // 61-#21 訂正版（元の61-list表記ミスをALLOWへ修正。read側にisAnon()併記=firestore.rules:109）
+  tcPath({ expectation: 'DENY', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'create', actor: { email: UP, role: 'viewer' }, extraMocks: docMock(P('salesData', '2026-08_kashiwa'), { submittedBy: V }) }), // 追加（反証[high]是正の検証）: 他人(V)の提出データに対し別viewer(UP)がdelete queueをcreate→DENY
+  tcPath({ expectation: 'ALLOW', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'create', actor: EDITOR }), // 追加: editorはisEditor()で短絡許可→ALLOW
+
+  // --- exportLogs（61-#22〜#28） ---
+  tcPath({ expectation: 'ALLOW', path: P('exportLogs', 'log1'), method: 'create', actor: EDITOR }), // 61-#22
+  tcPath({ expectation: 'ALLOW', path: P('exportLogs', 'log1'), method: 'create', actor: { email: T, role: 'tax_advisor' } }), // 61-#23
+  tcPath({ expectation: 'DENY', path: P('exportLogs', 'log1'), method: 'create', actor: { email: V, role: 'viewer' } }), // 61-#24
+  tcPath({ expectation: 'DENY', path: P('exportLogs', 'log1'), method: 'create', actor: unregisteredGoogle(OUTSIDER) }), // 61-#25
+  tcPath({ expectation: 'ALLOW', path: P('exportLogs', 'log1'), method: 'list', actor: { email: A, role: 'admin' } }), // 61-#26
+  tcPath({ expectation: 'DENY', path: P('exportLogs', 'log1'), method: 'list', actor: EDITOR }), // 61-#27
+  tcPath({ expectation: 'DENY', path: P('exportLogs', 'log1'), method: 'list', actor: 'anon' }), // 61-#28
+
+  // --- kot_monthly（61-#29〜#33 + editor write ALLOW追加） ---
+  tcPath({ expectation: 'ALLOW', path: P('kot_monthly', '2026-08'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#29
+  tcPath({ expectation: 'DENY', path: P('kot_monthly', '2026-08'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#30
+  tcPath({ expectation: 'ALLOW', path: P('kot_monthly', '2026-08'), method: 'get', actor: 'anon' }), // 61-#31
+  tcPath({ expectation: 'DENY', path: P('kot_monthly', '2026-08'), method: 'update', actor: 'anon' }), // 61-#32
+  tcPath({ expectation: 'DENY', path: P('kot_monthly', '2026-08'), method: 'update', actor: { email: V, role: 'viewer' } }), // 61-#33
+  tcPath({ expectation: 'ALLOW', path: P('kot_monthly', '2026-08'), method: 'update', actor: EDITOR }), // 追加: writeはisStaff()限定でeditorは含まれる→ALLOW
+
+  // --- kot_summary（61-#34〜#36） ---
+  tcPath({ expectation: 'ALLOW', path: P('kot_summary', 'employees'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#34
+  tcPath({ expectation: 'DENY', path: P('kot_summary', 'employees'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#35
+  tcPath({ expectation: 'DENY', path: P('kot_summary', 'employees'), method: 'get', actor: 'anon' }), // 61-#36
+
+  // --- kot_monthly/{ym}/employeeRows/{chunkId}（61-#37〜#39） ---
+  tcPath({ expectation: 'ALLOW', path: P('kot_monthly', '2026-08', 'employeeRows', 'chunk0'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#37
+  tcPath({ expectation: 'DENY', path: P('kot_monthly', '2026-08', 'employeeRows', 'chunk0'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#38
+  tcPath({ expectation: 'DENY', path: P('kot_monthly', '2026-08', 'employeeRows', 'chunk0'), method: 'update', actor: 'anon' }), // 61-#39
+
+  // --- freee_import_requests（61-#40〜#45） ---
+  tcPath({ expectation: 'ALLOW', path: P('freee_import_requests', 'req1'), method: 'get', actor: { email: A, role: 'admin' } }), // 61-#40
+  tcPath({ expectation: 'ALLOW', path: P('freee_import_requests', 'req1'), method: 'create', actor: { email: T, role: 'tax_advisor' } }), // 61-#41
+  tcPath({ expectation: 'DENY', path: P('freee_import_requests', 'req1'), method: 'create', actor: EDITOR }), // 61-#42
+  tcPath({ expectation: 'DENY', path: P('freee_import_requests', 'req1'), method: 'create', actor: { email: V, role: 'viewer' } }), // 61-#43
+  tcPath({ expectation: 'DENY', path: P('freee_import_requests', 'req1'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#44
+  tcPath({ expectation: 'DENY', path: P('freee_import_requests', 'req1'), method: 'create', actor: 'anon' }), // 61-#45
+
+  // --- keiei_monthly（61-#46〜#50 + editor get ALLOW追加） ---
+  tcPath({ expectation: 'ALLOW', path: P('keiei_monthly', '2026-08'), method: 'get', actor: { email: A, role: 'admin' } }), // 61-#46
+  tcPath({ expectation: 'ALLOW', path: P('keiei_monthly', '2026-08'), method: 'update', actor: EDITOR }), // 61-#47
+  tcPath({ expectation: 'DENY', path: P('keiei_monthly', '2026-08'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#48
+  tcPath({ expectation: 'DENY', path: P('keiei_monthly', '2026-08'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#49
+  tcPath({ expectation: 'DENY', path: P('keiei_monthly', '2026-08'), method: 'update', actor: 'anon' }), // 61-#50
+  tcPath({ expectation: 'ALLOW', path: P('keiei_monthly', '2026-08'), method: 'get', actor: EDITOR }), // 追加: readもisStaff()限定でeditorは含まれる→ALLOW
+
+  // --- homecareData（61-#51〜#56 + create所有者チェック追加分） ---
+  tcPath({ expectation: 'ALLOW', path: P('homecareData', 'kashiwa_2026-08'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#51
+  tcPath({ expectation: 'ALLOW', path: P('homecareData', 'kashiwa_2026-08'), method: 'create', actor: { email: G, role: 'viewer_gakujutsu' }, requestResourceData: { uploadedBy: google(G).uid } }), // 61-#52 を第2版に合わせてrequestResourceData追加（uploadedBy==auth.uid一致が必須のため）
+  tcPath({ expectation: 'DENY', path: P('homecareData', 'kashiwa_2026-08'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#53
+  tcPath({ expectation: 'DENY', path: P('homecareData', 'kashiwa_2026-08'), method: 'create', actor: unregisteredGoogle(OUTSIDER), requestResourceData: { uploadedBy: 'u_outsider' } }), // 61-#54
+  tcPath({ expectation: 'DENY', path: P('homecareData', 'kashiwa_2026-08'), method: 'get', actor: 'anon' }), // 61-#55
+  tcPath({ expectation: 'DENY', path: P('homecareData', 'kashiwa_2026-08'), method: 'update', actor: 'anon', resourceData: { uploadedBy: 'u_someone' } }), // 61-#56 を第2版で ALLOW→DENY に訂正: homecareData update の isAnon 撤去（homecare_recompute.mjsは第3版でAdmin SDK移行まで実行不可）
+  tcPath({ expectation: 'DENY', path: P('homecareData', 'kashiwa_2026-08'), method: 'create', actor: { email: G, role: 'viewer_gakujutsu' }, requestResourceData: { uploadedBy: 'u_someone_else' } }), // 追加（反証[high]是正の検証）: uploadedByが自分のuidと不一致→DENY（なりすまし拒否）
+
+  // --- homecareRows/{docId}(+chunks)（61-#57〜#61） ---
+  tcPath({ expectation: 'ALLOW', path: P('homecareRows', 'kashiwa_2026-08'), method: 'get', actor: { email: V, role: 'viewer' } }), // 61-#57
+  tcPath({ expectation: 'ALLOW', path: P('homecareRows', 'kashiwa_2026-08'), method: 'update', actor: { email: V, role: 'viewer' } }), // 61-#58
+  tcPath({ expectation: 'DENY', path: P('homecareRows', 'kashiwa_2026-08'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }), // 61-#59
+  tcPath({ expectation: 'DENY', path: P('homecareRows', 'kashiwa_2026-08'), method: 'update', actor: unregisteredGoogle(OUTSIDER) }), // 61-#60
+  tcPath({ expectation: 'DENY', path: P('homecareRows', 'kashiwa_2026-08'), method: 'get', actor: 'anon' }), // 61-#61
+
+  // --- 2026-10-08 追加（未網羅テストの補完） ---
+  // kot_summary write（firestore.rules:134 write: hasUserDoc() && isStaff()）
+  tcPath({ expectation: 'ALLOW', path: P('kot_summary', 'employees'), method: 'update', actor: EDITOR }),
+  tcPath({ expectation: 'DENY', path: P('kot_summary', 'employees'), method: 'update', actor: { email: V, role: 'viewer' } }),
+  tcPath({ expectation: 'DENY', path: P('kot_summary', 'employees'), method: 'update', actor: 'anon' }),
+
+  // homecareData delete（firestore.rules:165 delete: hasUserDoc() && (isEditor() || isHomecareOwner())）
+  tcPath({ expectation: 'ALLOW', path: P('homecareData', 'kashiwa_2026-08'), method: 'delete', actor: EDITOR }),
+  tcPath({ expectation: 'ALLOW', path: P('homecareData', 'kashiwa_2026-08'), method: 'delete', actor: { email: V, role: 'viewer' }, resourceData: { uploadedBy: google(V).uid } }), // 本人（uploadedBy=uid一致）
+  tcPath({ expectation: 'DENY', path: P('homecareData', 'kashiwa_2026-08'), method: 'delete', actor: { email: V, role: 'viewer' }, resourceData: { uploadedBy: 'u_someone' } }), // 別人の viewer
+  tcPath({ expectation: 'DENY', path: P('homecareData', 'kashiwa_2026-08'), method: 'delete', actor: unregisteredGoogle(OUTSIDER), resourceData: { uploadedBy: 'u_someone' } }),
+
+  // pdfChunks delete（firestore.rules:84）
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'delete', actor: EDITOR }),
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'delete', actor: { email: V, role: 'viewer' }, extraMocks: docMock(P('salesData', '2026-08_kashiwa'), { submittedBy: V }) }), // 提出者本人
+
+  // salesDeleteQueue get/delete（firestore.rules:109,111 read/delete: hasUserDoc() || isAnon()）
+  tcPath({ expectation: 'ALLOW', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'get', actor: { email: V, role: 'viewer' } }),
+  tcPath({ expectation: 'ALLOW', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'delete', actor: { email: V, role: 'viewer' } }),
+  tcPath({ expectation: 'DENY', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'get', actor: unregisteredGoogle(OUTSIDER) }),
+  tcPath({ expectation: 'DENY', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'delete', actor: unregisteredGoogle(OUTSIDER) }),
+
+  // kot_monthly/{ym}/employeeRows write（firestore.rules:200 write: hasUserDoc() && isStaff()）
+  tcPath({ expectation: 'ALLOW', path: P('kot_monthly', '2026-08', 'employeeRows', 'chunk0'), method: 'update', actor: EDITOR }),
+  tcPath({ expectation: 'DENY', path: P('kot_monthly', '2026-08', 'employeeRows', 'chunk0'), method: 'update', actor: { email: V, role: 'viewer' } }),
+
+  // method:'update' 版の補完
+  tcPath({ expectation: 'ALLOW', path: P('salesData', '2026-08_kashiwa', 'pdfChunks', 'chunk0'), method: 'update', actor: { email: V, role: 'viewer' }, extraMocks: docMock(P('salesData', '2026-08_kashiwa'), { submittedBy: V }) }), // 提出者本人
+  tcPath({ expectation: 'ALLOW', path: P('salesDeleteQueue', '2026-08_kashiwa'), method: 'update', actor: EDITOR }),
+];
+
+const testCases = [...legacyTestCases, ...newTestCases, ...v2TestCases];
 
 if (cmd === 'backup') {
   const rel = await currentRelease();

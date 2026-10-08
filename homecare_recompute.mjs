@@ -15,6 +15,8 @@
  *   node homecare_recompute.mjs --store kashiwa --month 2026-08 --dry-run
  *   node homecare_recompute.mjs --store kashiwa --month 2026-08 --write   # 実際にhomecareDataへ書込み
  */
+// ⚠️ 2026-10-08: firestore.rules 第2版で匿名アクセス（homecareRows read / homecareData create・update）は DENY。
+// 実行前に Admin SDK（wise/common/firestore_admin.mjs）への移行が必要（第3版タスク）。
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';

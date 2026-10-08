@@ -140,6 +140,9 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 .role-badge.viewer_gakujutsu { background: #2980b9; color: #fff; }
 .role-badge.admin { background: #e74c3c; color: #fff; }
 .role-badge.tax_advisor { background: #f39c12; color: #fff; }
+/* 表示確認モード（admin専用・2026-10-08） */
+#previewRoleControl select { font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid #e67e22; color: #e67e22; background: #fff; font-weight: 600; }
+.preview-mode-banner { display: none; align-items: center; justify-content: center; gap: 12px; background: #e67e22; color: #fff; font-weight: 700; font-size: 13px; padding: 8px 16px; }
 .save-status { font-size: 11px; color: #999; margin-left: 12px; }
 .current-dept-label { padding: 10px 24px; font-size: 18px; font-weight: 700; color: #1a5276; display: flex; align-items: center; gap: 12px; }
 .mode-indicator { font-size: 12px; padding: 3px 10px; border-radius: 4px; font-weight: 600; }
@@ -154,7 +157,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
   /* 中期計画印刷時は @page を JS 動的スタイルで A4 portrait に上書きするため landscape はデフォルト扱い */
   @page { size: landscape; margin: 6mm; }
   body { font-size: 10px; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  #loginScreen, .header, .user-bar, .dept-bar, .tab-bar, .toolbar, .legend, .modal-overlay, .mode-indicator { display: none !important; }
+  #loginScreen, .header, .user-bar, .dept-bar, .tab-bar, .toolbar, .legend, .modal-overlay, .mode-indicator, .preview-mode-banner { display: none !important; }
   button { display: none !important; } /* 表内ボタン（←引継等）の印刷映り込み防止 */
   #mainApp { display: block !important; }
   .tab-content { display: none !important; }
@@ -250,6 +253,11 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 
 <div id="mainApp" style="display:none">
 
+<div id="previewModeBanner" class="preview-mode-banner">
+  <span id="previewModeBannerText"></span>
+  <button class="btn" onclick="exitPreviewRole()" style="background:#fff;color:#e67e22;font-weight:700;padding:3px 14px;border-radius:4px">通常表示に戻す</button>
+</div>
+
 <div class="header">
   <h1>予実管理ダッシュボード <span class="save-status" id="saveStatus"></span></h1>
   <div class="header-actions">
@@ -279,6 +287,16 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
     <img id="userPhoto" src="" alt="">
     <span id="userName"></span>
     <span class="role-badge" id="roleBadge"></span>
+    <span id="previewRoleControl" style="display:none">
+      <select id="previewRoleSelect" onchange="onPreviewRoleSelectChange(this)" title="表示確認モード：選択したロールとして画面がどう見えるかを確認します（保存・取込・エクスポート等は実行されません）">
+        <option value="">👁 通常表示（管理者）</option>
+        <option value="viewer">店舗スタッフとして見る</option>
+        <option value="viewer_kanribu">管理部として見る</option>
+        <option value="viewer_gakujutsu">学術として見る</option>
+        <option value="tax_advisor">税理士として見る</option>
+        <option value="editor">編集者として見る</option>
+      </select>
+    </span>
   </div>
   <div>
     <button class="btn btn-secondary" onclick="openAdminModal()" id="btnAdmin" style="display:none;font-size:11px;padding:4px 10px;">権限管理</button>
@@ -704,6 +722,12 @@ const db = firebase.firestore();
 // Firebase Storage不使用（PDFはFirestoreにBase64保存）
 let currentUser = null;
 let userRole = 'viewer';
+// ===== 表示確認モード（店舗スタッフ等として見る・admin専用・2026-10-08）=====
+// 本物の権限は realUserRole に保持する。確認モード中は userRole に simulatedRole を代入し、
+// 既存のロール判定（直接比較・isViewerRole・isStaffRole・isItemVisible等77箇所）をそのまま流用する。
+// Firestore側のアクセス制御（セキュリティルール）には影響しない＝表示レイヤーの確認専用（notCovered参照）。
+let realUserRole = null;
+let simulatedRole = null; // null=通常表示。確認モード中は 'viewer' 等
 
 // ===== 部門定義 =====
 const DEPTS = [
@@ -934,6 +958,7 @@ function docId(deptId) { return `FY${getFiscalYear()}_${deptId}`; }
 function showSaveStatus(s, t) { const el = document.getElementById('saveStatus'); el.textContent = t; el.className = 'save-status ' + s; if (s === 'saved') setTimeout(() => el.textContent = '', 2000); }
 
 async function saveToFirestore() {
+  if (simulatedRole) return; // 表示確認モード中は保存しない（デバウンス経由で無警告のalertが出ないよう静かに中断）
   if (isViewerRole(userRole) || userRole === 'tax_advisor') return;
   if (currentDeptId() === 'all') { await saveAllBudgetToFirestore(); return; } // 全体はbudgetのみmerge保存（中期計画のannualInputsを壊さない）
   showSaveStatus('saving', '保存中...');
@@ -1122,7 +1147,12 @@ async function checkUserRole(user) {
   const doc = await db.collection('users').doc(user.email).get();
   if (doc.exists) { userRole = doc.data().role || 'viewer'; }
   else {
-    const snap = await db.collection('users').get();
+    // 2026-10-08: firestore.rules で users の list を admin 限定にしたため、未登録ユーザーの list は
+    // permission-denied になる。例外で凍結させず「未登録＝アクセス拒否」の既存分岐へ合流させる。
+    // （usersが空の初回ブートストラップはこの経路では到達不能＝初回adminは管理者側で投入する運用）
+    let snap = null;
+    try { snap = await db.collection('users').get(); }
+    catch (e) { if (e && e.code === 'permission-denied') snap = { empty: false }; else throw e; }
     if (snap.empty) {
       // 最初のユーザーは管理者として自動登録
       userRole = 'admin';
@@ -1134,6 +1164,10 @@ async function checkUserRole(user) {
       return;
     }
   }
+  // 表示確認モード: 実権限をrealUserRoleへ退避。checkUserRoleが再実行される経路（将来の再認証等）で
+  // 確認モード中（simulatedRole有効）なら、userRoleを実権限で上書きした直後にsimulatedRoleを再適用する。
+  realUserRole = userRole;
+  if (simulatedRole) userRole = simulatedRole;
   const badge = document.getElementById('roleBadge');
   badge.textContent = getRoleLabel(userRole);
   badge.className = 'role-badge ' + userRole;
@@ -1155,6 +1189,81 @@ function applyPermissions() {
   document.getElementById('btnFreee').style.display = userRole === 'tax_advisor' ? '' : 'none';
   document.getElementById('tabMidterm').style.display = canEdit ? '' : 'none';
   document.getElementById('tabKessanCheck').style.display = userRole === 'admin' ? '' : 'none';
+  // 表示確認モード入口: 実権限がadminのときだけ表示（確認モード中もセレクトは隠さない＝realUserRoleで判定）
+  const previewControl = document.getElementById('previewRoleControl');
+  if (previewControl) previewControl.style.display = (realUserRole === 'admin') ? '' : 'none';
+}
+
+// ===== 表示確認モード本体 =====
+// admin が userRole を一時的に差し替えて「店舗スタッフ等からどう見えるか」を自分の画面で確認する機能。
+// 実際の保存・取込・エクスポート・権限管理等の操作は、確認モード中は simulatedRole の値に関わらず常に禁止する
+// （blockedInPreview参照。中身は見た目の確認のみで、実データへは一切書き込ませない）。
+function previewableRoles() { return ['viewer', 'viewer_kanribu', 'viewer_gakujutsu', 'tax_advisor', 'editor']; }
+
+// 書込系・取込系・エクスポート・権限管理・DL履歴の関数の先頭で呼ぶ。確認モード中なら常にtrueを返しブロックする。
+function blockedInPreview(msg) {
+  if (!simulatedRole) return false;
+  alert(msg || '表示確認モード中はこの操作はできません。画面上部の「通常表示に戻す」を押してから操作してください。');
+  return true;
+}
+
+// 敵対的レビュー指摘(Medium・line 1205): 確認モードへの切替えはモーダルの開閉状態を変更しておらず、
+// 開いたままのモーダル(特にCSV/Freee取込)が確認モード下に残留する経路になっていた。入口で必ず全モーダルを閉じる。
+function closeAllModalsForPreview() {
+  document.querySelectorAll('.modal-overlay.show').forEach(el => el.classList.remove('show'));
+}
+
+function enterPreviewRole(role) {
+  if (realUserRole !== 'admin') return; // 実権限がadmin以外では使用不可（入口UIも非表示）
+  if (!previewableRoles().includes(role)) return;
+  closeAllModalsForPreview();
+  simulatedRole = role;
+  userRole = role;
+  editMode = false; // 確認モードは常に閲覧として扱う（編集中インジケータの矛盾防止・toggleEditModeも確認モード中は再入不可）
+  applyPermissions();
+  updateModeUI();
+  updatePreviewBanner();
+  // 中期計画・決算照合はナビボタンのみで制御されており、renderMidtermTable/loadKessanData自体にロール判定が無い。
+  // 確認先ロールで非許可のタブに残留したまま再描画すると、admin専用データがそのまま出続けてしまうため
+  // 切替時に安全なタブへ強制退避する（switchTab内でrenderDeptBar/renderCurrentTabも実行される）。
+  const canSeeAdminTabs = (role === 'admin' || role === 'editor');
+  const canSeeKessan = (role === 'admin');
+  if ((currentTab === 'midterm' && !canSeeAdminTabs) || (currentTab === 'kessanCheck' && !canSeeKessan)) {
+    switchTab('budget');
+  } else {
+    renderDeptBar();
+    renderCurrentTab();
+  }
+}
+
+function exitPreviewRole() {
+  if (!simulatedRole) return;
+  simulatedRole = null;
+  userRole = realUserRole;
+  applyPermissions();
+  updateModeUI();
+  updatePreviewBanner();
+  renderDeptBar();
+  renderCurrentTab();
+}
+
+function onPreviewRoleSelectChange(sel) {
+  const v = sel.value;
+  if (!v) { exitPreviewRole(); } else { enterPreviewRole(v); }
+}
+
+function updatePreviewBanner() {
+  const banner = document.getElementById('previewModeBanner');
+  const sel = document.getElementById('previewRoleSelect');
+  if (sel) sel.value = simulatedRole || '';
+  if (!banner) return;
+  if (simulatedRole) {
+    const textEl = document.getElementById('previewModeBannerText');
+    if (textEl) textEl.textContent = '👁 表示確認モード: ' + getRoleLabel(simulatedRole) + ' として表示中 ｜ 実際の権限: ' + getRoleLabel(realUserRole);
+    banner.style.display = 'flex';
+  } else {
+    banner.style.display = 'none';
+  }
 }
 
 // ===== 印刷 =====
@@ -1390,9 +1499,14 @@ function openHelpModal() {
 function closeHelpModal() { document.getElementById('helpModal').classList.remove('show'); }
 
 // ===== 権限管理 =====
-function openAdminModal() { document.getElementById('adminModal').classList.add('show'); renderUserList(); }
+function openAdminModal() {
+  if (blockedInPreview('表示確認モード中は権限管理を開けません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
+  if (userRole !== 'admin') { alert('権限管理には管理者権限が必要です'); return; }
+  document.getElementById('adminModal').classList.add('show'); renderUserList();
+}
 function closeAdminModal() { document.getElementById('adminModal').classList.remove('show'); }
 async function addUser() {
+  if (blockedInPreview()) return;
   const email = document.getElementById('addUserEmail').value.trim();
   const role = document.getElementById('addUserRole').value;
   if (!email) return;
@@ -1401,12 +1515,13 @@ async function addUser() {
   renderUserList();
 }
 async function removeUser(email) {
+  if (blockedInPreview()) return;
   if (email === currentUser.email) { alert('自分は削除できません'); return; }
   if (!confirm(email + ' を削除しますか？')) return;
   await db.collection('users').doc(email).delete();
   renderUserList();
 }
-async function changeRole(email, newRole) { await db.collection('users').doc(email).update({ role: newRole }); renderUserList(); }
+async function changeRole(email, newRole) { if (blockedInPreview()) return; await db.collection('users').doc(email).update({ role: newRole }); renderUserList(); }
 async function renderUserList() {
   const snap = await db.collection('users').get();
   let html = '<table style="width:100%;min-width:auto;font-size:12px"><tr><th style="text-align:left">メール</th><th>権限</th><th>操作</th></tr>';
@@ -2539,6 +2654,7 @@ function scheduleMidtermSave(fy, deptId) {
 }
 
 async function saveMidtermDept(fy, deptId, includeBudget) {
+  if (simulatedRole) return; // 表示確認モード中は保存しない
   if (isViewerRole(userRole) || userRole === 'tax_advisor') return;
   const st = midtermCache[fy] && midtermCache[fy][deptId];
   if (!st) return;
@@ -2603,6 +2719,9 @@ function midtermBaseAnnual(prevFY, itemId) {
 }
 
 function applyBulkPct(fy) {
+  // 敵対的レビュー指摘(Medium・line 2709): editModeはただのグローバル変数でconsoleから書換え可能。
+  // canEditMidterm()の役割判定だけに頼らず、ここでも確認モード中は明示的にブロックする(多重防御)。
+  if (blockedInPreview()) return;
   if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
   const pct = parseFloat(document.getElementById(`bulkPct${fy}`).value);
   if (!pct || pct <= 0) { alert('前年比%を入力してください（例: 120）'); return; }
@@ -2623,6 +2742,7 @@ function applyBulkPct(fy) {
 
 // 差分をなくす: 全体モードの全体入力値を各部門の積み上げ合計で上書き（差分=0に）
 function eliminateMidtermDiff(fy) {
+  if (blockedInPreview()) return;
   if (currentDeptId() !== 'all') { alert('全体モードでのみ使用できます'); return; }
   if (!editMode || (userRole !== 'admin' && userRole !== 'editor')) { alert('編集権限がありません'); return; }
   const fyLabel2 = `FY${fy}`;
@@ -2649,6 +2769,8 @@ function eliminateMidtermDiff(fy) {
 
 // 計画年の年間額を月次予算へ展開（配分パターン・初月比率は当年度予算の設定を引き継ぐ）
 async function expandPlanToMonthly(fy) {
+  // 敵対的レビュー指摘(Medium・2026-10-08 fix2): editModeグローバル変数のconsole書換え対策として多重防御。
+  if (blockedInPreview()) return;
   if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
   const ys = getMidtermYears();
   const deptId = currentDeptId();
@@ -2701,6 +2823,8 @@ function getAssistBaseVec(fy) {
 }
 
 function openAssistModal(fy) {
+  // 敵対的レビュー指摘(Medium・2026-10-08 fix2): editModeグローバル変数のconsole書換え対策として多重防御。
+  if (blockedInPreview()) return;
   if (!canEditMidterm()) { alert('編集モードで1つの部門を選択してください'); return; }
   const base = getAssistBaseVec(fy);
   if (!base) { alert('データ読込前です。少し待って再実行してください'); return; }
@@ -2787,6 +2911,8 @@ function renderAssistPreview() {
 }
 
 function applyAssist() {
+  // 敵対的レビュー指摘(Medium・2026-10-08 fix2): editModeグローバル変数のconsole書換え対策として多重防御。
+  if (blockedInPreview()) return;
   if (assistFY === null) return;
   const r = computeAssist(assistFY);
   if (!r) return;
@@ -2861,6 +2987,7 @@ document.addEventListener('keydown', e => {
 
 // ===== バージョン履歴（Firestore） =====
 async function saveVersion() {
+  if (simulatedRole) return; // 2026-10-08 Codex所見5: 表示確認モード中は履歴スナップショットも書かない（userRole===viewer判定は模擬ロールが非viewerのとき素通りする）
   if (userRole === 'viewer' || !isSingleDept()) return;
   const deptId = currentDeptId();
   const d = allData[deptId];
@@ -2887,8 +3014,13 @@ async function saveVersion() {
 }
 
 function openHistoryModal() {
+  // 2026-10-08修正: 旧実装は履歴ボタンにロールガードが無く、renderHistoryListがadminOnly部門も含め
+  // 全部門を無条件取得していたため、確認モード(simulatedRole)でも実viewerの体験と一致しない見え方になっていた。
+  // 対策はブロックではなくスコープ限定: renderHistoryListをgetVisibleDepts()境界で絞ることで、
+  // 確認モード中もuserRole(=simulatedRole)に応じた正しい可視範囲がそのまま表示されるようにした
+  // （userRoleを参照するだけで自然に反映される＝個別のpreview分岐は不要）。
   document.getElementById('historyModal').classList.add('show');
-  document.getElementById('historyDeptName').textContent = `${getFiscalYear()}年度 全部門`;
+  document.getElementById('historyDeptName').textContent = isStaffRole() ? `${getFiscalYear()}年度 全部門` : `${getFiscalYear()}年度 閲覧可能部門`;
   renderHistoryList();
 }
 
@@ -2900,9 +3032,12 @@ async function renderHistoryList() {
   try {
     const fy = getFiscalYear();
     const prefix = `FY${fy}_`;
-    // 全部門の履歴を取得してマージ
+    // 2026-10-08修正: 可視部門(getVisibleDepts)のみ取得してマージ。旧実装はDEPTS全件(adminOnly含む)を
+    // 無条件に走査しており、(a)viewer/viewer_kanribu/viewer_gakujutsuがadminOnly部門でFirestore
+    // permission-deniedを受けてループ全体が例外停止し自分の部門分すら「読み込みエラー」になる、
+    // (b)確認モード中はadmin本人の実トークンでadminOnly部門のメタデータまで取得できてしまう、の2点の問題があった。
     const allVersions = [];
-    for (const dept of DEPTS) {
+    for (const dept of getVisibleDepts()) {
       const did = prefix + dept.id;
       const snap = await db.collection('budgetData').doc(did).collection('versions').orderBy('savedAt','desc').limit(10).get();
       snap.forEach(doc => {
@@ -2937,6 +3072,12 @@ async function renderHistoryList() {
 }
 
 async function restoreVersion(deptId, dId, versionId) {
+  if (blockedInPreview()) return;
+  // 2026-10-08修正: canRestore(renderHistoryList側)はボタンの表示/非表示のみの制御で、関数本体には
+  // ロール判定が無くconsoleから任意deptId/versionIdで直接呼べていた。saveVersion等と同型の関数先頭ガードを追加。
+  if (!(userRole === 'admin' || userRole === 'editor')) { alert('復元は管理者・編集者のみ可能です'); return; }
+  // 2026-10-08 Codex所見6: 取得元(dId)と復元先(deptId)は renderHistoryList では常に docId(deptId) で一致するが、関数単体では別々に信用していた。別部門・別年度の履歴を他部門へ上書きできる経路を閉じる。
+  if (dId !== docId(deptId)) { alert('復元対象の年度・部門と履歴の年度・部門が一致しません'); return; }
   if (!confirm('この時点のデータに復元しますか？現在のデータは上書きされます。')) return;
   try {
     const doc = await db.collection('budgetData').doc(dId).collection('versions').doc(versionId).get();
@@ -2944,15 +3085,27 @@ async function restoreVersion(deptId, dId, versionId) {
     const v = doc.data();
     takeSnapshot();
     restoreSnapshot(deptId, v);
-    scheduleSave();
+    // 2026-10-08修正(反証指摘high×2): 旧実装はscheduleSave()を呼んでいたが、
+    // (1)editMode=falseの閲覧モード中はscheduleSave()が `if (!editMode) return;` で即returnし
+    // Firestoreへ一切保存されないまま「復元しました」という偽の成功表示になっていた。
+    // (2)editMode=true時もsaveToFirestore()はcurrentDeptId()(ツールバーで選択中の部門)を保存対象にするため、
+    // 履歴モーダルが複数部門を横断表示する現仕様(renderHistoryList@getVisibleDepts)では、復元対象の
+    // deptIdと選択中部門が食い違う場合に無関係な部門が保存され、復元内容自体はFirestoreへ保存されない。
+    // editMode/currentDeptIdに依存しない専用の永続化経路（restoreVersionに渡されたdeptIdをそのまま
+    // saveDeptToFirestoreへ渡す）に変更。
+    showSaveStatus('saving', '保存中...');
+    await saveDeptToFirestore(deptId);
+    delete midtermCache[getFiscalYear()]; // 月次更新 → 中期計画の年間集計キャッシュを無効化
+    showSaveStatus('saved', '保存しました');
     renderCurrentTab();
     closeHistoryModal();
     alert('復元しました');
-  } catch(e) { alert('復元エラー: ' + e.message); }
+  } catch(e) { showSaveStatus('error', '保存エラー: ' + e.message); alert('復元エラー: ' + e.message); }
 }
 
 // ===== 編集モード =====
 function toggleEditMode() {
+  if (simulatedRole) { alert('表示確認モード中は編集モードに入れません。画面上部の「通常表示に戻す」を押してから操作してください。'); return; }
   if (!editMode) {
     // 編集モードに入る
     if (userRole === 'viewer') { alert('閲覧権限では編集できません'); return; }
@@ -3015,6 +3168,8 @@ function onDistChange(id,v) { takeSnapshot(); D().distMethod[id]=v; if(D().annua
 function onBudgetCellChange(id,m,v) { takeSnapshot(); D().budget[id][m]=parseComma(v)||0; if(m===0&&D().annualInputs[id]&&D().distMethod[id]!=='flat') distributeMonths(currentDeptId(),id); renderBudgetTable(); scheduleSave(); }
 function onActualCellChange(id,m,v) { takeSnapshot(); D().actual[id][m]=parseComma(v)||0; renderActualTable(); scheduleSave(); }
 async function copyPrevMonthBudget(m) {
+  // 敵対的レビュー指摘(Medium・line 2709系): editModeグローバル変数のconsole書換え対策として多重防御。
+  if (blockedInPreview()) return;
   if (!editMode || !isSingleDept() || (userRole !== 'admin' && userRole !== 'editor')) { alert('編集権限がありません'); return; }
   // 引継は年度最初の月（m===0）のみ対応。複写元=前年度最終月（budget配列 index 11）
   if (m !== 0) return;
@@ -3060,6 +3215,7 @@ async function updateHeaders() {
   renderCurrentTab();
 }
 function doRecalc() {
+  if (blockedInPreview()) return;
   if (!isSingleDept()) { alert('複数部門選択中は再計算できません。1つの部門を選択してください。'); return; }
   ITEMS.forEach(it => { if (it.type==='input'&&D().annualInputs[it.id]) distributeMonths(currentDeptId(),it.id); });
   recalcDept(currentDeptId()); scheduleSave(); renderCurrentTab(); alert('再計算しました');
@@ -3109,6 +3265,7 @@ function calcRatioAnnual(it, store) {
 }
 
 function clearAll() {
+  if (blockedInPreview()) return;
   if (!isSingleDept()) { alert('複数部門選択中はクリアできません。1つの部門を選択してください。'); return; }
   const deptName = DEPTS.find(d=>d.id===currentDeptId())?.name;
   if (!confirm(`「${deptName}」のデータをクリアしますか？`)) return;
@@ -3118,6 +3275,7 @@ function clearAll() {
 
 // ===== CSV =====
 function exportCSV(mode) {
+  if (blockedInPreview('表示確認モード中はCSVエクスポートできません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
   if (isViewerRole(userRole)) { alert('エクスポート権限がありません'); return; }
   const data = getBudgetActual();
   const months = getMonthHeaders();
@@ -3165,6 +3323,7 @@ function exportCSV(mode) {
 
 // ===== エクスポート履歴 =====
 function openExportLogModal() {
+  if (blockedInPreview('表示確認モード中はDL履歴を開けません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
   if (userRole !== 'admin') return;
   document.getElementById('exportLogModal').classList.add('show');
   renderExportLogs();
@@ -3192,6 +3351,7 @@ async function renderExportLogs() {
 
 // ===== CSVインポート =====
 function openImportModal() {
+  if (blockedInPreview('表示確認モード中はCSVインポートできません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
   if (!isSingleDept()) { alert('複数部門選択中はインポートできません。1つの部門を選択してください。'); return; }
   document.getElementById('importModal').classList.add('show');
   document.getElementById('importResult').innerHTML = '';
@@ -3361,6 +3521,9 @@ function renderUnmappedList(containerEl, unmapped) {
 }
 
 function doImport() {
+  // 敵対的レビュー指摘(High・line 3667系): openImportModalはblockedInPreview済みだが実行関数側が未ガードで、
+  // モーダルを開いたまま確認モードへ切替えると実データ保存まで到達できてしまっていた。実行関数側にも防御を入れる。
+  if (blockedInPreview('表示確認モード中はCSVインポートの実行はできません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
   const fileInput=document.getElementById('importFile'), resultDiv=document.getElementById('importResult');
   const target=document.querySelector('input[name="importTarget"]:checked').value;
   if(!fileInput.files.length){resultDiv.innerHTML='<div class="import-result error">ファイルを選択してください</div>';return;}
@@ -3477,6 +3640,7 @@ const FREEE_SUB_MAP = {
 let freeeParsedData = []; // [{deptId, deptName, monthData: {itemId: [12values]}}]
 
 function openFreeeModal() {
+  if (blockedInPreview('表示確認モード中はFreee取込を開けません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
   if (userRole !== 'admin' && userRole !== 'tax_advisor') { alert('管理者または税理士のみ使用できます'); return; }
   document.getElementById('freeeModal').classList.add('show');
   document.getElementById('freeePreview').innerHTML = '';
@@ -3552,6 +3716,9 @@ async function freeeMonthHasData(ym) {
   return false;
 }
 async function requestFreeeApiImport() {
+  // 敵対的レビュー指摘(High・line 3667): 確認モード中はuserRoleがsimulatedRole(tax_advisor等)に差し替わり、
+  // 下のロール判定だけでは実行をブロックできない(admin本人がtax_advisor確認モードのままFreee取込キューへ実書込できていた)。
+  if (blockedInPreview('表示確認モード中はFreee取込の実行はできません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
   if (userRole !== 'admin' && userRole !== 'tax_advisor') { alert('管理者または税理士のみ使用できます'); return; }
   const startYm = document.getElementById('freeeApiMonthStart').value;
   const endYm = document.getElementById('freeeApiMonthEnd').value;
@@ -4107,6 +4274,8 @@ function computeFreeeplFromLines(lines) {
 }
 
 async function doFreeeImport() {
+  // 敵対的レビュー指摘(High・line 3667系): openFreeeModalはblockedInPreview済みだが実行関数側が未ガードだった。
+  if (blockedInPreview('表示確認モード中はFreee取込の実行はできません。画面上部の「通常表示に戻す」を押してから操作してください。')) return;
   if (freeeParsedData.length === 0) return;
   const resultDiv = document.getElementById('freeeResult');
   const btn = document.getElementById('btnFreeeExec');
@@ -4263,6 +4432,7 @@ async function saveDeptToFirestoreWithFY(deptId, fiscalYear, monthValues) {
 // 制約: freee取込はファイルごとに部門・年度が異なりうるため、このボタンは「現在選択中の部門(currentDeptId)×
 // 現在の表示年度(getFiscalYear)」1件のみを対象にする（company_total・他年度の一括再集計は対象外。親への報告に明記）。
 async function recomputeFreeeplFromRows() {
+  if (blockedInPreview()) return;
   if (userRole !== 'admin' && userRole !== 'tax_advisor') { alert('管理者または税理士のみ使用できます'); return; }
   const deptId = currentDeptId();
   const fy = getFiscalYear();
@@ -5544,6 +5714,7 @@ async function renderSalesExtracted(hasValues, profile) {
 }
 
 async function submitSalesData() {
+  if (blockedInPreview()) return; // 2026-10-08 Codex所見5: 表示確認モード中の売上提出(実書込)を遮断
   const month = document.getElementById('salesMonth').value;
   const deptId = document.getElementById('salesDept').value;
   const deptName = DEPTS.find(d => d.id === deptId)?.name || deptId;
@@ -5822,13 +5993,18 @@ async function renderSalesHistory() {
   try {
     // source:'server' でキャッシュを使わず必ずサーバーから取得（リロード後の消失を防ぐ）
     const snap = await db.collection('salesData').orderBy('month', 'desc').limit(30).get({source: 'server'});
-    if (snap.empty) { table.innerHTML = '<tr><td style="padding:12px;color:#999;">まだデータがありません</td></tr>'; return; }
+    // 敵対的レビュー指摘(High・line 5938): 提出履歴は部門フィルタが一切無く全部門(他店舗の技術料/薬剤料実額・提出者名)が
+    // 無条件表示されていた。他タブと同じgetVisibleDepts()境界を適用する（viewer_kanribu/viewer_gakujutsuは対象店舗が
+    // 無いため0件になる。viewer(店舗)は既存仕様どおり8店舗とも閲覧可能=新規制限ではない）。
+    const visibleDeptIdsForSales = getVisibleDepts().map(d => d.id);
+    const rows = snap.docs.filter(doc => visibleDeptIdsForSales.includes(doc.data().deptId));
+    if (rows.length === 0) { table.innerHTML = '<tr><td style="padding:12px;color:#999;">まだデータがありません</td></tr>'; return; }
 
     let html = '<thead><tr><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">月</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">部門</th><th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:left;">レセコン</th>';
     SALES_ITEMS.forEach(item => { html += `<th style="padding:6px 10px;background:#1a5276;color:#fff;text-align:right;">${item.name}</th>`; });
     html += '<th style="padding:6px 10px;background:#1a5276;color:#fff;">PDF</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出者</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">提出日</th><th style="padding:6px 10px;background:#1a5276;color:#fff;">操作</th></tr></thead><tbody>';
 
-    snap.forEach(doc => {
+    rows.forEach(doc => {
       const d = doc.data();
       // P5: receiptSystem表示（旧データはprofileIdからも補完）
       const receiptSysLabel = d.receiptSystem || (d.profileId ? (RECEIPT_PROFILES[d.profileId]?.name || d.profileId) : '—');
@@ -5900,6 +6076,7 @@ async function viewSalesPdf(docId) {
 // Firestoreルール側（firestore.rules salesData.allow delete）でも同条件を強制しているため、ここでの判定は
 // UI上の早期リターン（不要な確認ダイアログを出さない）目的で、最終防衛はルール側。
 async function deleteSalesData(docId, deptName, month) {
+  if (blockedInPreview()) return;
   try {
     // Driveバックアップの有無・提出者チェックのため先にdocを取得
     const doc = await db.collection('salesData').doc(docId).get();
@@ -5989,6 +6166,17 @@ function fmtFreelanceStatus(ym) {
 let laborDataCache = null;
 let laborChartInstance = null;
 
+// 敵対的レビュー指摘(Medium・2026-10-08 fix2): realUserRole(表示確認モードの影響を受けない真の権限)基準で、
+// 閲覧対象外店舗のdivisions(残業時間・人数の生データ)をキャッシュ時点で除外する対象店舗名を返す。
+// nullなら絞込み不要(全店舗閲覧可)。viewer_kanribu/viewer_gakujutsuはKOTマッピングが無いため空配列=常に0件。
+// ※Firestoreルール(kot_monthly/kot_summaryはrequest.auth!=nullのみで許可)自体はindex.html以外のファイルの
+// scope外のため未対応。直接Firestoreクエリでの抽出まではこの対策では防げない(根本対応は別途rules改修が必要)。
+function visibleKotNamesForRealRole() {
+  if (realUserRole === 'admin' || realUserRole === 'editor' || realUserRole === 'tax_advisor') return null;
+  if (realUserRole === 'viewer_kanribu' || realUserRole === 'viewer_gakujutsu') return [];
+  return DEPTS.filter(d => !d.adminOnly).map(d => DEPT_TO_KOT[d.id]).filter(Boolean); // viewer(店舗)
+}
+
 async function loadLaborData(forceRefresh) {
   const summaryEl = document.getElementById('laborSummary');
   const tableEl = document.getElementById('laborTable');
@@ -5999,7 +6187,12 @@ async function loadLaborData(forceRefresh) {
     try {
       // Firestoreから取得
       const monthSnap = await db.collection('kot_monthly').orderBy('yearMonth', 'desc').limit(12).get();
-      const months = monthSnap.docs.map(d => d.data()).reverse(); // 古い順に
+      const rawMonths = monthSnap.docs.map(d => d.data()).reverse(); // 古い順に
+      // キャッシュへ保持する前にrealUserRole基準でdivisionsを絞る（コンソール抽出でも非表示店舗の生データが出ないように）
+      const visibleKotNames = visibleKotNamesForRealRole();
+      const months = visibleKotNames === null
+        ? rawMonths
+        : rawMonths.map(m => ({ ...m, divisions: (m.divisions || []).filter(div => visibleKotNames.includes(div.name)) }));
 
       const empDoc = await db.collection('kot_summary').doc('employees').get();
       const employees = empDoc.exists ? empDoc.data() : { totalCount: 0, pharmacistCount: 0 };
@@ -6066,12 +6259,13 @@ async function loadLaborData(forceRefresh) {
     ? filteredMonths[0].yearMonth
     : `${filteredMonths[0].yearMonth} 〜 ${filteredMonths[filteredMonths.length - 1].yearMonth}`;
 
-  // 選択中の部門に対応するKOT店舗名を取得
+  // 選択中の部門に対応するKOT店舗名を取得（マッピング無し=役員/管理部/学術選択時は空配列）
+  // 敵対的レビュー指摘(High・line 6186): DEPT_TO_KOTに管理部/学術のエントリが無いため selectedKotNames=[] の時
+  // 旧実装は「未フィルタ=全社表示」にフォールバックし、viewer_kanribu/viewer_gakujutsu(選択肢が管理部/学術固定)に
+  // 全8店舗分の残業時間・人数が丸ごと見えていた。フォールバックを廃止し、常にselectedKotNamesでフィルタする
+  // (空配列なら0件=対象データ無し。admin/editorが役員等adminOnly部門を選んだ場合も同様に0件表示になる)。
   const selectedKotNames = selectedDepts.map(id => DEPT_TO_KOT[id]).filter(Boolean);
-  const isFiltered = selectedKotNames.length > 0;
-  const filterLabel = isFiltered
-    ? selectedDepts.map(id => DEPTS.find(d => d.id === id)?.name).filter(Boolean).join('・')
-    : '全社';
+  const filterLabel = selectedDepts.map(id => DEPTS.find(d => d.id === id)?.name).filter(Boolean).join('・') || '全社';
 
   let totalOvertime = 0;
   let totalActive = 0;
@@ -6079,8 +6273,8 @@ async function loadLaborData(forceRefresh) {
 
   for (const m of filteredMonths) {
     for (const div of (m.divisions || [])) {
-      // 部門フィルタ: 店舗が選択されている場合は該当店舗のみ集計
-      if (isFiltered && !selectedKotNames.includes(div.name)) continue;
+      // 部門フィルタ: 常に適用。マッピング無し部門選択時はselectedKotNamesが空配列になり常に0件
+      if (!selectedKotNames.includes(div.name)) continue;
       if (!divAgg[div.name]) divAgg[div.name] = { count: 0, overtime: 0, months: 0 };
       divAgg[div.name].count += div.count;
       divAgg[div.name].overtime += div.overtimeHours;
@@ -6094,9 +6288,9 @@ async function loadLaborData(forceRefresh) {
   const avgActive = filteredMonths.length > 0 ? Math.round(totalActive / filteredMonths.length) : 0;
   const avgPerPerson = avgActive > 0 ? Math.round(avgMonthlyOvertime / avgActive * 10) / 10 : 0;
 
-  // サマリーカード
+  // サマリーカード（常に選択部門でフィルタした値を表示。全社headcountへのフォールバックは廃止=上記Highの修正の一部）
   summaryEl.innerHTML = [
-    { label: isFiltered ? filterLabel : '従業員数', value: isFiltered ? `${avgActive}名` : `${employees.totalCount}名`, sub: isFiltered ? `月平均人数` : `薬剤師${employees.pharmacistCount}名` },
+    { label: filterLabel, value: `${avgActive}名`, sub: `月平均人数` },
     { label: '月平均残業/人', value: `${avgPerPerson}h`, sub: `${filterLabel}月間合計${avgMonthlyOvertime}h` },
     { label: '有給取得率', value: `${holidays.rate}%`, sub: `平均${holidays.avgObtained}日/年` },
     { label: '表示期間', value: `${filteredMonths.length}ヶ月`, sub: periodLabel },
@@ -6153,19 +6347,17 @@ function renderLaborChart(months, kotNameFilter) {
   if (months.length < 2) { canvas.style.display = 'none'; return; }
   canvas.style.display = 'block';
 
-  const isFiltered = kotNameFilter && kotNameFilter.length > 0;
+  // 常にkotNameFilterで絞る（空配列なら0件）。旧実装はkotNameFilter=[]のとき
+  // m.totalOvertimeHours/m.avgOvertimeHours(全社集計フィールド)へフォールバックし、
+  // viewer_kanribu/viewer_gakujutsuに全社残業トレンドが見えていた=上記Highの修正の一部。
   // 「2026年2月, 3月, …, 2027年1月」形式（年が変わる最初の月だけ年を付ける。旧: "02"等の数字のみで判読不能）
   const labels = months.map((m, i) => {
     const [y, mo] = m.yearMonth.split('-');
     const prevY = i > 0 ? months[i - 1].yearMonth.split('-')[0] : null;
     return (y !== prevY ? y + '年' : '') + parseInt(mo, 10) + '月';
   });
-  const overtimeData = months.map(m => {
-    if (!isFiltered) return m.totalOvertimeHours || 0;
-    return (m.divisions || []).filter(d => kotNameFilter.includes(d.name)).reduce((s, d) => s + d.overtimeHours, 0);
-  });
+  const overtimeData = months.map(m => (m.divisions || []).filter(d => kotNameFilter.includes(d.name)).reduce((s, d) => s + d.overtimeHours, 0));
   const perPersonData = months.map((m, i) => {
-    if (!isFiltered) return m.avgOvertimeHours || 0;
     const divs = (m.divisions || []).filter(d => kotNameFilter.includes(d.name));
     const count = divs.reduce((s, d) => s + d.count, 0);
     return count > 0 ? Math.round(overtimeData[i] / count * 10) / 10 : 0;
@@ -6613,6 +6805,7 @@ async function saveHomecareRows(docId, { store, yearMonth, profile, header, rows
 
 // Firestoreに保存
 async function saveHomecareData() {
+  if (blockedInPreview()) return; // 2026-10-08 Codex所見5: 表示確認モード中の在宅データ保存(実書込)を遮断
   const store = document.getElementById('homecareStore').value;
   const month = document.getElementById('homecareMonth').value;
   if (!store || !month) {
@@ -6690,6 +6883,7 @@ async function saveHomecareData() {
 // 区分は「外来店舗か否か」ではなく「在宅患者の有無」。在宅患者がいない店舗・月はCSV提出の代わりにこのボタンで報告する。
 // homecareData/{store}_{yyyymm} に noHomecare:true・facilities:[]・totals:{} を保存（店舗閲覧者も操作可。uploaderロールは2026-09-15判例168で廃止）
 async function reportNoHomecare() {
+  if (blockedInPreview()) return; // 2026-10-08 Codex所見5: 表示確認モード中の在宅なし報告(実書込)を遮断
   const store = document.getElementById('homecareStore').value;
   const month = document.getElementById('homecareMonth').value;
   const statusEl = document.getElementById('homecareNoneStatus');
@@ -6735,9 +6929,30 @@ async function reportNoHomecare() {
 
 // 在宅内訳タブ — Firestoreデータ閲覧
 async function loadHomecareView() {
-  const store = document.getElementById('homecareViewStore').value;
+  const storeSelect = document.getElementById('homecareViewStore');
+  // 敵対的レビュー指摘(High・line 6887): 在宅内訳タブは他タブと違いgetVisibleDepts()による部門フィルタが無く、
+  // 「全店舗」選択で8店舗全部のデータがどのロールでも無条件取得できていた。他タブと同じ可視部門境界を適用する。
+  // viewer(店舗)は既存仕様どおり8店舗とも閲覧可能(他タブと同じ範囲・新規制限ではない)。
+  // viewer_kanribu/viewer_gakujutsuは対象店舗が無いため以後0件になる(=本来あるべき姿)。
+  const ALL_HOMECARE_STORE_IDS = DEPTS.filter(d => !d.adminOnly).map(d => d.id);
+  const visibleStoreIds = ALL_HOMECARE_STORE_IDS.filter(id => getVisibleDepts().some(d => d.id === id));
+  const canViewAllStores = visibleStoreIds.length === ALL_HOMECARE_STORE_IDS.length;
+  Array.from(storeSelect.options).forEach(opt => {
+    if (opt.value === '') { opt.hidden = !canViewAllStores; return; } // 「全店舗」は全店舗閲覧可の権限のみ
+    opt.hidden = !visibleStoreIds.includes(opt.value);
+  });
+  let store = storeSelect.value;
+  if (store && !visibleStoreIds.includes(store)) store = '';
+  if (!store && !canViewAllStores) {
+    store = visibleStoreIds[0] || '';
+    storeSelect.value = store;
+  }
   const month = document.getElementById('homecareViewMonth').value;
   const result = document.getElementById('homecareViewResult');
+  if (visibleStoreIds.length === 0) {
+    result.innerHTML = '<p style="color:#999">この権限では在宅内訳データを表示できません</p>';
+    return;
+  }
   result.innerHTML = '<p style="color:#999">読み込み中...</p>';
   try {
     if (month && store) {
@@ -6750,13 +6965,14 @@ async function loadHomecareView() {
       }
       await renderHomecareView(result, [doc.data()]);
     } else if (month && !store) {
-      // 月のみ指定 → その月の全店舗を取得
+      // 月のみ指定 → その月の全店舗を取得（可視店舗のみに二重フィルタ・防御の多重化）
       const snap = await db.collection('homecareData').where('yearMonth', '==', month).get();
-      if (snap.empty) {
+      const docs = snap.docs.map(d => d.data()).filter(d => visibleStoreIds.includes(d.store));
+      if (docs.length === 0) {
         result.innerHTML = '<p style="color:#999">データがありません</p>';
         return;
       }
-      await renderHomecareView(result, snap.docs.map(d => d.data()));
+      await renderHomecareView(result, docs);
     } else if (store && !month) {
       // 店舗のみ指定 → 「項目×月」「施設×月」の推移表（月ブロック縦積みは見づらい・2026-08-12山内さん指示で元スプシ形式の月横並びに変更）
       // orderByを外しwhere単独+クライアントソートにすることで複合インデックス不要
@@ -6768,13 +6984,14 @@ async function loadHomecareView() {
       const docs = snap.docs.map(d => d.data()).sort((a, b) => a.yearMonth.localeCompare(b.yearMonth)).slice(-12);
       renderHomecareStoreMatrix(result, docs);
     } else {
-      // 全指定なし → 店舗×月の推移表
+      // 全指定なし → 店舗×月の推移表（可視店舗のみに二重フィルタ・防御の多重化）
       const snap = await db.collection('homecareData').get();
-      if (snap.empty) {
+      const docs = snap.docs.map(d => d.data()).filter(d => visibleStoreIds.includes(d.store));
+      if (docs.length === 0) {
         result.innerHTML = '<p style="color:#999">データがありません</p>';
         return;
       }
-      renderHomecareAllMatrix(result, snap.docs.map(d => d.data()));
+      renderHomecareAllMatrix(result, docs);
     }
   } catch(e) {
     result.innerHTML = '<p style="color:#e74c3c">エラー: ' + e.message + '</p>';
@@ -7005,6 +7222,7 @@ async function renderHomecareView(container, dataList) {
 // 式修正（INC-399等）後の再提出を不要にする: 保存済み行があれば、その時点の最新ロジック(computeHomecareTotalsFromRows)で
 // facilities/totalsだけを作り直してhomecareDataへ上書きする（行データ自体・noHomecare等の他フィールドは変更しない）。
 async function recomputeHomecareFromRows(store, yearMonth) {
+  if (blockedInPreview()) return;
   if (userRole !== 'admin' && userRole !== 'editor') { alert('編集権限がありません'); return; }
   const docId = store + '_' + yearMonth.replace('-', '');
   const statusEl = document.getElementById('hcRecalcStatus-' + docId);

@@ -21,13 +21,38 @@ service cloud.firestore {
     }
 
     // users: role自己昇格の穴を閉塞（2026-09-17 T-20260917-003・INC-376派生）。
-    // 読取は従来どおり全ログインユーザー（権限管理画面の一覧表示・自分のロール参照のため）。
+    // 読取は2026-10-08で見直し: get（本人 or admin）/ list（admin限定）に分離（INC-473派生の最小ルール修正）。
+    // 従来は全ログインユーザーにread一括許可していたため、console等から直接呼べば非adminでも
+    // 全ユーザーのメール＋ロールをlist()で取得できた（権限管理画面のUIゲートはindex.html側のみで
+    // Firestoreルール自体には無かった）。get（自分のロール参照用）は本人のみ維持。
     // 書込（役割の作成・変更・削除）はadminのみ。本人が自分自身のusersドキュメントを書換えることは
     // （adminであっても）不可＝自己昇格・自己降格・自己削除を構造的に禁止する。
     // 匿名バッチワーカーはusersを書かない設計（tmp_fix_iidabashi_user.mjs等の一回限りの手動修正は
     // 今後Admin SDK（サービスアカウント）で行うこと＝クライアントSDKの匿名認証は使わない）。
+    // get条件は既存isSelf()を使わず request.auth.token.email==email を直接比較する（意図的な差異）。
+    // isSelf()はhasUserDoc()（=exists(/users/{自分})）に依存するため、未登録ユーザーが自分のdoc未存在を
+    // 確認するget（index.html:1147 checkUserRole内、ログイン毎に必ず実行される）にそのまま使うと
+    // 「存在確認のgetそのもの」がpermission-deniedで例外化する鶏と卵問題になる（doc.exists判定に到達できない）。
+    // 直接のemail一致判定なら未登録でもget自体は許可され、doc.exists===falseが正しく返る。
+    // ⚠️[severity:high・2026-10-08レビュー再評価] index.html:1150のブートストラップ分岐（doc未登録→
+    // db.collection('users').get()で全件list→空なら最初のユーザーをadmin自動登録、空でなければ
+    // signOut+alert）はこのlist()に依存している。
+    // 本ルール変更後、未登録ユーザーは1147のgetまでは成功するが、1150のlist()がisAdminRole()=false
+    // （未登録=role未確定のため）でpermission-deniedとなり、「空でなければ」の判定に到達せず例外化する。
+    // checkUserRole()（index.html:1146-1169）はtry/catchを持たないため、この例外はonAuthStateChanged
+    // （index.html:1079）内で未処理のPromise rejectionとなり、「アクセス権がありません」alertに届かず
+    // 画面が無反応のまま凍結する（単なる「拒否」ではなくUIフリーズ＝severity high）。
+    // usersコレクションが完全に空の真の初回起動でも同じくlist()が拒否され、クライアント側の
+    // 自動admin登録フローが到達不能になる（＝初回ブートストラップはAdmin SDK/Cloud Functionでの
+    // 手動投入が必須という運用前提に切り替わる）。
+    // 【rulesのみでは解決不可】list()をadmin以外にも開けば直るが、それは2026-10-08本日実施した
+    // INC-473由来のセキュリティ修正（全ログインユーザーが全users一覧をlist()で読めた穴を閉じた変更）
+    // を後退させてしまう。恒久対応はindex.html側にtry/catch（permission-deniedを「未登録=拒否」に
+    // 正しくフォールバックさせる）を実装すること（今回のタスク範囲外・index.html未修正。本番反映ゲート前に
+    // 山内さんの判断と併せて必ず解消する。詳細は報告のopenQuestions参照）。
     match /users/{email} {
-      allow read: if signedIn();
+      allow get: if signedIn() && (request.auth.token.email == email || isAdminRole());
+      allow list: if signedIn() && isAdminRole();
       allow create, update, delete: if signedIn() && isAdminRole() && !isSelf(email);
     }
     // 予実データ: 読取はロール別（2026-09-09 INC-376: 店舗閲覧が役員・管理部・学術を閲覧できていた）。
@@ -58,8 +83,21 @@ service cloud.firestore {
     match /salesData/{docId}/pdfChunks/{chunkId} {
       allow read, write: if request.auth != null;
     }
+    // config: 2026-10-08見直し（INC-473派生の最小ルール修正）。従来は`request.auth != null`
+    // （=signedIn()と同義）で一括readを許可しており、GoogleAuthProviderにhdドメイン制限が無いため
+    // wise-jmco.com外の未登録Googleアカウントでもログインボタンを押せばconfig/geminiのAPIキーを
+    // 直接Firestoreから読める構造だった（checkUserRole側の拒否より前に読める）。
+    // access_control（強制ログアウトキルスイッチ）・gemini（PDF読取APIキー。viewerのデータ取込タブ含め
+    // 全ロールが機能上必要）はいずれも登録済みの6ロール全員が引き続き必要なため、ロール別の絞り込み
+    // （isStaff()等）はしない。hasUserDoc()はrole()が参照する既存の内部特権getと同じ判定で、
+    // 6ロールいずれも自分のusersドキュメントを持つ前提のため機能上の挙動は変えず、
+    // 「signedInだがusersドキュメントが無い（未登録）」アカウントのみを遮断する。
+    // listはクライアント側で使用していないため許可しない（get限定）。
+    // ⚠️残存リスク: 登録済みの全ロール（viewer含む）はconfig/geminiのAPIキーを従来通り読める
+    // （Firestore経由・ブラウザNetworkタブ経由の両方）。根本解決にはCloud Functions等での
+    // サーバ側プロキシ化が必要だが、これは最小ルール差分の範囲を超えるため別途山内さんの判断が必要（openQuestions参照）。
     match /config/{doc} {
-      allow read: if request.auth != null;
+      allow get: if hasUserDoc();
     }
     match /salesDeleteQueue/{docId} {
       allow read, write: if request.auth != null;

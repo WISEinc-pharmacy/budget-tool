@@ -5101,6 +5101,9 @@ window.addEventListener('message', (e) => {
 });
 
 // 月選択セレクトへ直近12か月を追加する共通関数（営業報告PDF・在宅内訳CSVで同一の組立関数を使う。Bot UIモーダル一貫性の原則）
+// 2026-10-13: 既定選択を「前月」に変更。提出は常に前月分だが、従来は当月(i=0)が初期選択になっていたため
+// 当月名義のまま誤提出する事故が3件発生した（越谷9月分→2026-10名義／柏さくら台9月分→柏2026-10名義／我孫子10月分と9月分の取り違え）。
+// 当月は選択肢として残し（index 0）、必要なときは手動で選べるようにする。
 function populateRecentMonthOptions(sel) {
   if (!sel || sel.tagName !== 'SELECT' || sel.options.length > 0) return;
   const now = new Date();
@@ -5110,6 +5113,44 @@ function populateRecentMonthOptions(sel) {
     const label = `${d.getFullYear()}年${d.getMonth()+1}月`;
     sel.add(new Option(label, val));
   }
+  // 既定値=前月（index 1）。optionsが1個しかない特殊ケース（12か月ループが壊れた場合の防御）では既定値変更をスキップする。
+  if (sel.options.length > 1) sel.selectedIndex = 1;
+}
+
+// 選択月の文字列（YYYY-MM）が日本時間基準の「当月以降」かどうかを判定する。
+// 提出は常に前月分のため、当月以降が選ばれていたら前月との取り違えの疑いがある（2026-10-13 INC対策）。
+function isMonthCurrentOrFutureJST(monthStr) {
+  if (!monthStr) return false;
+  const parts = monthStr.split('-').map(Number);
+  const y = parts[0], m = parts[1];
+  if (!y || !m) return false;
+  // ブラウザのローカルタイムゾーンに依存せず、UTC+9固定でJSTの「今日」を算出する。
+  const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const curY = jstNow.getUTCFullYear();
+  const curM = jstNow.getUTCMonth() + 1;
+  return (y > curY) || (y === curY && m >= curM);
+}
+
+// YYYY-MM文字列を「YYYY年M月」表記へ変換する（提出確認ダイアログの文言で使用）。
+function monthValueToLabel(monthStr) {
+  const parts = (monthStr || '').split('-').map(Number);
+  const y = parts[0], m = parts[1];
+  if (!y || !m) return monthStr || '';
+  return `${y}年${m}月`;
+}
+
+// 提出系3経路（売上PDF・在宅内訳CSV・在宅患者なし報告）で共通使用する確認ガード。
+// 選択月が当月以降のときだけconfirm()を出し、キャンセルならfalseを返す（呼び出し側はfalseで提出を中止する）。
+function confirmIfCurrentOrFutureMonth(monthStr) {
+  if (!isMonthCurrentOrFutureJST(monthStr)) return true;
+  const label = monthValueToLabel(monthStr);
+  const parts = monthStr.split('-').map(Number);
+  const prevD = new Date(parts[0], parts[1] - 2, 1); // 選択月の1か月前
+  const prevLabel = `${prevD.getFullYear()}年${prevD.getMonth()+1}月`;
+  return confirm(
+    `選択中の月「${label}」はまだ終わっていません。先月分（${prevLabel}）の提出ではありませんか？\n\n` +
+    `このまま「${label}」として提出する場合のみ OK を押してください。`
+  );
 }
 
 function initSalesSelectors() {
@@ -5720,6 +5761,9 @@ async function submitSalesData() {
   const deptName = DEPTS.find(d => d.id === deptId)?.name || deptId;
 
   if (!month || !deptId) { alert('月と部門を選択してください'); return; }
+
+  // 2026-10-13: 当月以降が選択されたままの誤提出ガード（INC: 10/13 越谷・柏さくら台で当月名義の前月分誤提出）
+  if (!confirmIfCurrentOrFutureMonth(month)) return;
 
   // P2: プロファイル取得（値の収集に使用）
   const profile = getProfileForDept(deptId);
@@ -6812,6 +6856,8 @@ async function saveHomecareData() {
     alert('店舗と年月を選択してください');
     return;
   }
+  // 2026-10-13: 当月以降が選択されたままの誤提出ガード（INC: 10/13 我孫子で当月「在宅患者なし」直後に前月CSVを提出）
+  if (!confirmIfCurrentOrFutureMonth(month)) return;
   if (!_homecareResult) {
     alert('CSVファイルを先に選択してください');
     return;
@@ -6891,6 +6937,8 @@ async function reportNoHomecare() {
     alert('店舗と年月を選択してください');
     return;
   }
+  // 2026-10-13: 当月以降が選択されたままの誤報告ガード（INC: 10/13 我孫子で当月「在宅患者なし」直後に前月CSVを提出）
+  if (!confirmIfCurrentOrFutureMonth(month)) return;
   const storeName = (DEPTS.find(d => d.id === store) || {}).name || store;
   const docId = store + '_' + month.replace('-', '');
   try {

@@ -51,6 +51,16 @@ export function judgeReconcile({ tech, techFee, times, visitCount, insTotal, tot
   return { status, label, techFeePoints, diff, diffPercent, timesMatch, insDiffPercent };
 }
 
+// 2026-10-13: techBreakdown===false（例: elysia=介護保険 居宅療養管理指導の単位のみで医療保険の技術料内訳が無い）
+// のdocはtechFeeとの突合対象外とする（INC-401）。judgeReconcile自体（pharmy用の既存条件）は変えず、
+// 呼び出し側の分岐をここに切り出してテスト可能にする（index.htmlの_hcJudge呼び出し側と同型のロジック）。
+export function judgeReconcileWithBreakdown({ techBreakdown, ...params }) {
+  if (techBreakdown === false) {
+    return { status: 'excluded', label: '対象外（技術料内訳なし' + (params.techLabel ? '・' + params.techLabel : '・介護保険') + '）' };
+  }
+  return judgeReconcile(params);
+}
+
 // 対象店舗（HOMECARE_STORE_LABELS＝DEPTS.filter(!adminOnly) と同一。index.html L700-712準拠）
 const STORES = [
   ['kashiwa', '柏'], ['adachi', '足立'], ['nagareyama', 'ながれやま'], ['ai_chozai', 'アイ調剤'],
@@ -101,15 +111,20 @@ async function fetchMonthData(db, month) {
     const t = hc.totals || {};
     const noHomecare = !!hc.noHomecare;
     const hasSalesData = !!sv;
-    const j = judgeReconcile({
+    // 2026-10-13: techBreakdown===false（例: elysia=介護保険 居宅療養管理指導の単位のみで医療保険の技術料内訳が無い）
+    // のdocは、techFee（医療保険の調剤報酬技術料）との突合対象外とする。judgeReconcile自体（pharmy用の既存条件）は変えず、
+    // 呼び出し側で分岐する。未保存（pharmy等の旧data）はtechBreakdown省略＝true扱い。
+    const techBreakdown = hc.techBreakdown !== false;
+    const j = judgeReconcileWithBreakdown({
+      techBreakdown,
       tech: t.tech, techFee: sv ? sv.techFee : null,
       times: t.times, visitCount: sv ? sv.visitCount : null,
       insTotal: t.insTotal, totalInsurance: sv ? sv.totalInsurance : null,
-      noHomecare, hasSalesData,
+      noHomecare, hasSalesData, techLabel: hc.techLabel,
     });
     const isOld = typeof t.drugFee !== 'number';
     rows.push({
-      storeId, storeName, month, noHomecare,
+      storeId, storeName, month, noHomecare, techBreakdown,
       tech: t.tech, techFee: sv ? sv.techFee : null,
       times: t.times, visitCount: sv ? sv.visitCount : null,
       insTotal: t.insTotal, totalInsurance: sv ? sv.totalInsurance : null,
@@ -134,6 +149,10 @@ function buildMarkdown(month, rows) {
       md += `| ${r.storeName} | - | - | - | - | 在宅患者なし | - | - | - | - | - | - | - |\n`;
       return;
     }
+    if (r.judge && r.judge.status === 'excluded') {
+      md += `| ${r.storeName} | ${fmt(r.tech)} | - | - | - | ${r.judge.label} | ${fmt(r.times)} | - | - | ${fmt(r.insTotal)} | - | - | ${r.isOld ? '旧式' : '新式'} |\n`;
+      return;
+    }
     const j = r.judge;
     const timesMark = j.timesMatch === true ? '✓' : (j.timesMatch === false ? '✗' : '-');
     md += `| ${r.storeName} | ${fmt(r.tech)} | ${j.techFeePoints != null ? fmt(Math.round(j.techFeePoints)) : '-'} | ` +
@@ -148,6 +167,10 @@ function summarize(month, rows) {
   rows.forEach(r => {
     if (r.noData) { lines.push(`  ${r.storeName}: 未提出（施設データなし）`); return; }
     if (r.noHomecare) { lines.push(`  ${r.storeName}: 在宅患者なし`); return; }
+    if (r.judge && r.judge.status === 'excluded') {
+      lines.push(`  ${r.storeName}: tech=${fmt(r.tech)}点 → ${r.judge.label}`);
+      return;
+    }
     const j = r.judge;
     lines.push(
       `  ${r.storeName}: tech=${fmt(r.tech)}点 techFee/10=${j.techFeePoints != null ? fmt(Math.round(j.techFeePoints)) : '-'}点 ` +

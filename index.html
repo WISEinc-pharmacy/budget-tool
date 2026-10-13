@@ -6596,11 +6596,67 @@ const HOMECARE_CSV_PROFILES = {
   elysia: {
     name: 'シグマ エリシア',
     stores: ['adachi'],
-    // TODO(未対応・2026-08-11): 足立の在宅内訳CSVサンプル未確認のため列構造が不明。
-    // 実CSVを頂き次第、pharmyと同様の facility/patients/times/insTotal/tech内訳マッピングを実装する。
-    // salesData側のRECEIPT_PROFILES.elysia(L4201)は「売上PDF」の帳票列であり、在宅内訳CSVとは別帳票のため流用不可。
-    confirmed: false,
-    parse(_lines) { return null; }
+    // 2026-10-13: 足立SPスタッフ提供サンプル「施設集計(2026年09月01日)～(2026年09月30日).csv」で列構造確定。
+    // 列（ヘッダー1行・各フィールドは""で囲まれる。pharmyと違い単位行は無くi=1からデータ）:
+    // 0患者番号(識別子),1カナ氏名(識別子),2漢字氏名(識別子),3生年月日(識別子),4性別,
+    // 5管理フラグ(施設コード。6管理名と1:1対応を実データで確認済みのため別保存不要),
+    // 6管理名(施設名。"在宅"=施設所属なしの単独患者バケット),
+    // 7サービス内容(すべて「(予防)薬剤師居宅療養Ⅱn」系=居宅療養管理指導費のみ。基本/調剤等の区分なし),
+    // 8単位(その回の居宅療養管理指導費点数)→guidancePointsへ。9請求額,10入金額は実データの53%で単位と不一致
+    // （請求前/返戻等の状態差と推定・未確定のため集計に使わず素通し保存のみ）。11要介護度区分,12サービス提供日。
+    // ⚠️pharmyは「1行=1患者の月間集計済み」だが、このCSVは「1行=1回の訪問」(同一患者が月内に複数行)。
+    // そのままcomputeHomecareTotalsFromRows()へ渡すとg.patients++が来院回数になってしまうため、
+    // parse()内で施設+患者番号単位に事前集約し、1行=1患者/月の形にしてから渡す。
+    // ⚠️不明列・未確認（2026-10-13・山内さん/足立への確認待ち。推測で代入せず0固定）:
+    // 1) 基本点/時加算/調剤点/調加算に相当する列がこのCSVに無い。tech=guidancePointsの値のみ
+    //    （INC-399の式はtech=base+timeAdd+dispensing+dispAdd+guidanceだが他4項目が常に0のため結果的にguidance＝tech）。
+    // 2) 内服薬/内服外/材料点（薬剤料）に相当する列も無い。drugFee=0固定。
+    // 3) pharmyのcol12「保険計」に相当する列が無い。insuranceTotal=0固定
+    //    （プレビュー「保険計(点)」表示は常に0。tech+drugFee=insTotal/10の検算は機能しない）。
+    // 4) 居宅療養管理指導費（介護保険）と、既存のINC-401整合チェック(_hcJudge)が比較するtechFee（月計表の
+    //    調剤報酬技術料＝医療保険）は別勘定のため、整合チェックを適用すると恒常的に「乖離」判定になり得る。
+    // 2026-10-13: このCSV（介護保険 居宅療養管理指導の訪問明細）には医療保険の技術料内訳
+    // （基本/時間加算/調剤/調剤加算）・薬剤料・保険計の列が無いため、techは居宅療養の単位合計のみで、
+    // drugFee/insuranceTotalは常に0になる。INC-401整合チェック(_hcJudge)が比較するtechFee（医療保険の
+    // 調剤報酬技術料）とは別勘定のため、techBreakdown:falseで表示・整合チェックを対象外に切り替える。
+    techBreakdown: false,
+    techKind: 'kaigo_kyotaku',
+    techLabel: '介護保険 居宅療養管理指導（単位）',
+    confirmed: true,
+    parse(lines) {
+      const header = HOMECARE_ROWS_HEADER_PHARMY;
+      const strip = (s) => (s || '').replace(/^"|"$/g, '').trim();
+      const perPatient = new Map(); // key: facility + '\u0000' + patientId（施設+患者単位で月内複数行を事前集約）
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const cols = line.split(',').map(strip);
+        if (cols.length < 13) continue;
+        const patientId = cols[0];
+        if (!patientId) continue;
+        const facility = cols[6] || '（未分類）';
+        const units = parseInt(cols[8], 10) || 0;
+        const key = facility + '\u0000' + patientId;
+        if (!perPatient.has(key)) {
+          perPatient.set(key, {
+            facility, insuranceType: '', copayRatio: 0, visits: 0, copay: 0, careCopay: 0,
+            selectTherapy: 0, selfPayDrug: 0, billedAmount: 0, paidAmount: 0, unpaidAmount: 0,
+            insuranceTotal: 0, basePoints: 0, timePoints: 0, dispensingPoints: 0, dispensingAddPoints: 0,
+            guidancePoints: 0, oralMedPoints: 0, externalMedPoints: 0, materialPoints: 0
+          });
+        }
+        const p = perPatient.get(key);
+        p.visits += 1; // 回数（この患者の月内訪問回数=行数）
+        p.guidancePoints += units; // 居宅療養管理指導費の点数合計（上記不明列3の理由でtech=この値のみになる）
+        p.billedAmount += parseInt(cols[9], 10) || 0; // 素通し保存のみ（集計(REQUIRED)には使わない）
+        p.paidAmount += parseInt(cols[10], 10) || 0;  // 同上
+      }
+      if (perPatient.size === 0) return null;
+      const rows = Array.from(perPatient.values()).map(p => header.map(k => p[k]));
+      const agg = computeHomecareTotalsFromRows(header, rows, 'elysia');
+      if (!agg) return null;
+      return { sorted: agg.sorted, totals: agg.totals, header, rows };
+    }
   },
   pharnes: {
     name: 'ウィーメックス pharnes V-EX',
@@ -6677,12 +6733,20 @@ document.getElementById('homecareFileInput').addEventListener('change', function
     }
     _homecareResult = result;
     const { sorted, totals } = result;
+    // 2026-10-13: techBreakdown===false（例: elysia）は技術料内訳が無い帳票。ラベル・単位を変える（pharmy等は不変）
+    const _previewProfile = _getHomecareProfileForStore(store);
+    const previewTechBreakdown = !(_previewProfile && _previewProfile.techBreakdown === false);
+    const previewTechLabel = (_previewProfile && _previewProfile.techLabel) || '技術料';
+    const previewTechHeader = previewTechBreakdown ? '技術料合計(点)' : previewTechLabel + '(単位)';
     // プレビューテーブル描画
     let html = '<div style="margin-bottom:8px;font-size:13px;color:#555">';
     html += sorted.length + ' 施設 / ' + totals.patients.toLocaleString() + ' 患者（プレビュー）</div>';
+    if (!previewTechBreakdown) {
+      html += '<p style="color:#888;font-size:12px;margin:0 0 6px">※技術料内訳なし（' + previewTechLabel + '）。保険計(点)欄は「—（この帳票にはなし）」。</p>';
+    }
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap;min-width:700px">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';
-    ['施設名','患者数','回数','保険計(点)','技術料合計(点)','薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+    ['施設名','患者数','回数','保険計(点)',previewTechHeader,'薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
       html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
     });
     html += '</tr></thead><tbody>';
@@ -6692,7 +6756,7 @@ document.getElementById('homecareFileInput').addEventListener('change', function
       html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd">' + name + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.patients.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.times.toLocaleString() + '</td>';
-      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + Math.round(g.insTotal / 10).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (previewTechBreakdown ? Math.round(g.insTotal / 10).toLocaleString() : '—') + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.tech.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.drugFee.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.base.toLocaleString() + '</td>';
@@ -6705,7 +6769,7 @@ document.getElementById('homecareFileInput').addEventListener('change', function
     html += '<td style="padding:5px 10px;border-top:2px solid #1a5276">合計 (' + sorted.length + '施設)</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.patients.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.times.toLocaleString() + '</td>';
-    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + Math.round(totals.insTotal / 10).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (previewTechBreakdown ? Math.round(totals.insTotal / 10).toLocaleString() : '—') + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.tech.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.drugFee.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.base.toLocaleString() + '</td>';
@@ -6880,11 +6944,24 @@ async function saveHomecareData() {
       mergedFacilities = mergeHomecareFacilities(prevFacilities, newFacilities);
     }
     const mergedTotals = recalcHomecareTotals(mergedFacilities);
+    // 2026-10-13: プロファイルID＋技術料内訳の有無を保存docに含める（読む側が再解析せず判別できるように）。
+    // techBreakdown未指定（pharmy等）はtrue扱い（既存の挙動を変えない）。既存フィールドは削除・改名しない。
+    const _profileObjForSave = _getHomecareProfileForStore(store);
+    const _profileIdForSave = _profileObjForSave
+      ? Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === _profileObjForSave)
+      : null;
+    const _techBreakdownForSave = !(_profileObjForSave && _profileObjForSave.techBreakdown === false);
+    const _techKindForSave = (_profileObjForSave && _profileObjForSave.techKind) || null;
+    const _techLabelForSave = (_profileObjForSave && _profileObjForSave.techLabel) || null;
     await db.collection('homecareData').doc(docId).set({
       store,
       yearMonth: month,
       facilities: mergedFacilities,
       totals: mergedTotals,
+      profile: _profileIdForSave,
+      techBreakdown: _techBreakdownForSave,
+      techKind: _techKindForSave,
+      techLabel: _techLabelForSave,
       uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
       uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
     });
@@ -7118,6 +7195,10 @@ function renderHomecareStoreMatrix(container, docs) {
   html += '<tr style="background:#eaf2fb;font-weight:bold"><td style="padding:5px 10px;border-top:2px solid #1a5276">合計</td>' +
     docs.map(d => '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + _hcVal(d.totals, _homecareMetric).toLocaleString() + '</td>').join('') + '</tr>';
   html += '</tbody></table></div>';
+  // 2026-10-13: techBreakdown===false（技術料内訳なし。例: elysia）の月を含む場合、tech/insTotal指標に注記を出す
+  if ((_homecareMetric === 'tech' || _homecareMetric === 'insTotal') && docs.some(d => d.techBreakdown === false)) {
+    html += '<p style="color:#888;font-size:12px;margin-top:6px">※一部の月は技術料内訳なし（介護保険 居宅療養管理指導の単位のみ等）のため、「技術料(点)」は単位数・「保険計(点)」は「—」相当（0表示）になっています。</p>';
+  }
   container.innerHTML = html;
 }
 
@@ -7143,6 +7224,10 @@ function renderHomecareAllMatrix(container, docs) {
     html += '</tr>';
   });
   html += '</tbody></table></div>';
+  // 2026-10-13: techBreakdown===false（技術料内訳なし。例: elysia）の店舗月を含む場合、tech/insTotal指標に注記を出す
+  if ((_homecareMetric === 'tech' || _homecareMetric === 'insTotal') && docs.some(d => d.techBreakdown === false)) {
+    html += '<p style="color:#888;font-size:12px;margin-top:6px">※一部店舗・月は技術料内訳なし（介護保険 居宅療養管理指導の単位のみ等）のため、「技術料(点)」は単位数・「保険計(点)」は「—」相当（0表示）になっています。</p>';
+  }
   html += '<p style="color:#888;font-size:12px;margin-top:8px">店舗を選択すると、その店舗の項目別・施設別の月次推移を表示します。月も選択すると単月の施設明細を表示します。</p>';
   container.innerHTML = html;
 }
@@ -7182,10 +7267,17 @@ async function renderHomecareView(container, dataList) {
       html += '<p style="color:#888;font-size:13px;padding:8px 12px;background:#f7f7f7;border-radius:6px;display:inline-block">🚫 この月は「在宅患者なし」として報告されています。</p>';
       continue;
     }
+    // 2026-10-13: techBreakdown===false（例: elysia=介護保険 居宅療養管理指導の単位のみ）は技術料内訳が無い帳票。
+    // 表示ラベル・単位を変える（未保存＝省略時はtrue扱い。pharmy等の表示は不変）
+    const techBreakdown = data.techBreakdown !== false;
+    const techHeaderLabel = techBreakdown ? '技術料(点)' : (data.techLabel || '技術料') + '(単位)';
     html += '<h4 style="color:#1a5276;margin:16px 0 8px">' + storeLabel + ' ' + data.yearMonth + '</h4>';
+    if (!techBreakdown) {
+      html += '<p style="color:#888;font-size:12px;margin:0 0 6px">※技術料内訳なし（' + (data.techLabel || '介護保険 居宅療養管理指導の単位のみ') + '）。保険計(点)欄は「—（この帳票にはなし）」。</p>';
+    }
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';
-    ['施設名','患者数','回数','保険計(点)','技術料(点)','薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+    ['施設名','患者数','回数','保険計(点)',techHeaderLabel,'薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
       html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
     });
     html += '</tr></thead><tbody>';
@@ -7195,7 +7287,7 @@ async function renderHomecareView(container, dataList) {
       html += '<td style="padding:5px 10px;border-bottom:1px solid #ddd">' + f.name + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.patients||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.times||0).toLocaleString() + '</td>';
-      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + Math.round((f.insTotal||0)/10).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (techBreakdown ? Math.round((f.insTotal||0)/10).toLocaleString() : '—') + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.tech||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + _hcDash(f.drugFee) + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.base||0).toLocaleString() + '</td>';
@@ -7209,7 +7301,7 @@ async function renderHomecareView(container, dataList) {
     html += '<td style="padding:5px 10px;border-top:2px solid #1a5276">合計</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.patients||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.times||0).toLocaleString() + '</td>';
-    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + Math.round((t.insTotal||0)/10).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (techBreakdown ? Math.round((t.insTotal||0)/10).toLocaleString() : '—') + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.tech||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + _hcDash(t.drugFee) + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.base||0).toLocaleString() + '</td>';
@@ -7226,16 +7318,20 @@ async function renderHomecareView(container, dataList) {
     } catch (e) {
       console.warn('月計表突合の取得に失敗（表示は継続）:', e);
     }
-    const j = _hcJudge({
-      tech: t.tech, techFee: sv ? sv.techFee : null,
-      times: t.times, visitCount: sv ? sv.visitCount : null,
-      insTotal: t.insTotal, totalInsurance: sv ? sv.totalInsurance : null,
-      hasSalesData
-    });
+    // 2026-10-13: techBreakdown===false（医療保険の技術料内訳が無い帳票）はtechFeeとの突合対象外とする。
+    // _hcJudge自体（pharmy用の既存条件）は変えず、呼び出し側で分岐する（homecare_reconcile.mjsのjudgeReconcileと同型）。
+    const j = techBreakdown
+      ? _hcJudge({
+          tech: t.tech, techFee: sv ? sv.techFee : null,
+          times: t.times, visitCount: sv ? sv.visitCount : null,
+          insTotal: t.insTotal, totalInsurance: sv ? sv.totalInsurance : null,
+          hasSalesData
+        })
+      : { status: 'excluded', label: '対象外（技術料内訳なし・' + (data.techLabel || '介護保険') + '）' };
     const isOld = typeof t.drugFee !== 'number';
     html += '<tr style="background:#fffbea"><td colspan="10" style="padding:8px 10px;border-top:1px solid #ddd;font-size:12px;color:#555">';
     html += '<b>月計表突合（INC-401）:</b> ';
-    if (j.status === 'nosales' || j.status === 'unknown') {
+    if (j.status === 'nosales' || j.status === 'unknown' || j.status === 'excluded') {
       html += '<span style="color:#888">' + j.label + '</span>';
     } else {
       const color = j.status === 'match' ? '#27ae60' : (j.status === 'check' ? '#e67e22' : '#e74c3c');

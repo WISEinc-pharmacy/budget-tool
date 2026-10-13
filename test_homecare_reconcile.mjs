@@ -2,7 +2,7 @@
  * 月計表突合ロジック(judgeReconcile)のスタンドアロンNodeテスト（依存ゼロ・純関数のみ検証・INC-401）
  * 実行: node test_homecare_reconcile.mjs
  */
-import { judgeReconcile } from './homecare_reconcile.mjs';
+import { judgeReconcile, judgeReconcileWithBreakdown } from './homecare_reconcile.mjs';
 
 let pass = 0, fail = 0;
 function assertEq(actual, expected, label) {
@@ -93,6 +93,34 @@ function assertOk(cond, label) {
   assertOk(j.status === 'match' || j.status === 'check', '(6) 実測近似ケースは match/check のいずれか');
   assertEq(j.timesMatch, true, '(6) times一致(柏1,289=1,289)');
   assertOk(Math.abs(j.insDiffPercent) < 1, '(6) insTotal差分は1%未満(0.1%相当)');
+}
+
+// ---- 分岐6: techBreakdown=false（例: elysia=介護保険 居宅療養管理指導の単位のみ）→ 対象外（INC-401・2026-10-13） ----
+{
+  // techFeeと食い違う値を入れても（本来ならmismatch相当）、techBreakdown=falseなら突合自体を行わず「対象外」になる
+  const j = judgeReconcileWithBreakdown({
+    techBreakdown: false, tech: 9999, techFee: 1, times: 5, visitCount: 999,
+    insTotal: 0, totalInsurance: 999999, hasSalesData: true, techLabel: '介護保険 居宅療養管理指導（単位）',
+  });
+  assertEq(j.status, 'excluded', '(7) techBreakdown=false → excluded（techFeeの食い違いに関わらず判定しない）');
+  assertOk(j.label.includes('対象外') && j.label.includes('居宅療養管理指導'), '(7) labelに対象外・techLabelが含まれる');
+  assertOk(j.diffPercent === undefined, '(7) 乖離%等の判定値を返さない（判定不可ではなく対象外である点がunknownと違う）');
+}
+{
+  // techLabel省略時は「・介護保険」をデフォルト表記にする
+  const j = judgeReconcileWithBreakdown({ techBreakdown: false, tech: 100, hasSalesData: true });
+  assertEq(j.label, '対象外（技術料内訳なし・介護保険）', '(7b) techLabel省略時はデフォルト表記');
+}
+{
+  // techBreakdown未指定（pharmy等の旧data）はtrue扱い＝通常のjudgeReconcileと同じ結果になる（既存条件は変えない）
+  const withFlag = judgeReconcileWithBreakdown({ tech: 1000, techFee: 10000, hasSalesData: true });
+  const direct = judgeReconcile({ tech: 1000, techFee: 10000, hasSalesData: true });
+  assertEq(withFlag, direct, '(7c) techBreakdown省略時はjudgeReconcile直接呼び出しと同一結果（pharmy等の既存挙動は不変）');
+}
+{
+  // techBreakdown=trueを明示した場合も同様（elysia以外が将来trueを明示するケースの保険）
+  const withFlag = judgeReconcileWithBreakdown({ techBreakdown: true, tech: 1020, techFee: 10000, hasSalesData: true });
+  assertEq(withFlag.status, 'check', '(7d) techBreakdown=true明示時は通常判定（差分+2%→check）');
 }
 
 console.log(`\n合計: ${pass + fail}件 / PASS ${pass} / FAIL ${fail}`);

@@ -522,7 +522,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
         </select>
         <select id="homecareMonth" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"></select>
         <label class="btn btn-import" style="cursor:pointer;">
-          📄 CSVファイル選択
+          <span id="homecareFileLabelText">📄 CSVファイル選択</span>
           <input type="file" id="homecareFileInput" accept=".txt,.csv" style="display:none">
         </label>
         <span id="homecareFileName" style="color:#666;font-size:12px;"></span>
@@ -705,6 +705,15 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<!-- 2026-10-14: 足立「施設集計R」PDF在宅内訳の列位置厳密抽出用（AI読み取りではなくpdf.jsのテキスト座標抽出を使う。
+     売上PDF取込(handleSalesPdf)はGemini Flash APIのAI抽出だが、45頁1,476行の患者別明細を数値精度要件で
+     取込むにはAI抽出は不向きなため新規導入。legacyビルドを使用し互換性を優先） -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js" integrity="sha384-OemFRmhjDZwhIKuUld0HJozkF2YErsgDaCL41trxGQZt4/WgnopJQqQl2DvDZ07Z" crossorigin="anonymous"></script>
+<script>
+  if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js';
+  }
+</script>
 <!-- Firebase Storage不使用（PDFはFirestoreにBase64保存） -->
 
 <script>
@@ -6546,6 +6555,207 @@ function computeHomecareTotalsFromRows(header, rows, _profile) {
 }
 // ===HOMECARE_ROWS_END===
 
+// ===HOMECARE_PDF_ELYSIA_R_START===
+// 足立（シグマ エリシア）「施設集計 R」PDF（医療保険 患者別調剤報酬明細）のテキスト行配列パーサ（2026-10-14）。
+// 背景: HOMECARE_CSV_PROFILES.elysia（既存）は介護保険 居宅療養管理指導のCSVで医療保険の技術料内訳が無い
+// （techBreakdown:false）。この帳票（PDF）には医療保険の基本料/調製料/(加算)/管理料/薬剤料/材料料/報酬点数の
+// 列があり、足立の技術料内訳を本部手作業なしで取込める。pdf.jsはindex.html側で読み込み、テキスト抽出結果
+// （1行=1文字列の配列。行内の列は空白区切りのトークン）をこの純関数へ渡す（pdf.js依存をparse本体から分離し、
+// Node（pdf.js無し）でも単体テスト可能にするため）。
+//
+// 行の形（ヘッダー行の列順）: 患者番号 漢字氏名(姓+名=2トークン想定) 基本料 調製料 (加算) 管理料 薬剤料 材料料 報酬点数 [管理名(施設名・無い場合あり)] 件数
+// 合計行（最終頁）: 氏名が無く数値トークンのみ（基本料計 調製料計 加算計 管理料計 薬剤料計 材料料計 報酬点数計 件数計）。
+// 識別子（患者番号・氏名）は返り値のrowsに含めない（患者個人情報を保存しない）。
+// 1行=1回の訪問（同一患者が月内に複数行）のため、施設+患者番号単位で事前集約して1行=1患者/月にする
+// （HOMECARE_CSV_PROFILES.elysiaのperPatient方式と同じ。computeHomecareTotalsFromRowsのg.patients++が
+// 来院回数ではなく患者数になるようにするため）。
+// 列→HOMECARE_ROWS_HEADER_PHARMYフィールド対応（報酬点数以外の4項目に相当する列がこの帳票に無いため0固定):
+//   基本料→basePoints / timePoints=0固定（時加算に相当する列が無い） / 調製料→dispensingPoints /
+//   (加算)→dispensingAddPoints（調製料の直後の列のため調剤側の加算と解釈） / 管理料→guidancePoints /
+//   薬剤料→oralMedPoints（drugFee=oral+external+materialの既存定義に合わせる。externalMedPoints=0固定） /
+//   材料料→materialPoints / 報酬点数→insuranceTotal（単位は「点」。pharmyのinsuranceTotalは「円」相当
+//   (CSV保険計列を無変換格納・プレビューは/10表示)のため、点→円相当に合わせて×10して格納）。
+// ⚠️未確認: 基本料+調製料+(加算)+管理料+薬剤料+材料料の単純合計は報酬点数と一致しない行がある
+//   （実データ観測・他の加算等が報酬点数に含まれ列には出ない可能性）。本関数はtech内訳の検算には使わず、
+//   合計行の件数との一致検算のみ行う（呼び出し側でfooterTotalVisitsとrows合計visitsを比較）。
+function _elysiaRIsNumericToken(t) { return /^[0-9,]+$/.test(t); }
+
+/**
+ * 「施設集計 R」PDFのテキスト行配列（ページ見出し・列ヘッダー行を含んでいてよい）を解析し、
+ * 施設+患者単位で事前集約したrows（HOMECARE_ROWS_HEADER_PHARMY形式）を返す純関数（副作用なし・pdf.js非依存）。
+ * @param {string[]} lines 1行1文字列（行内は空白1個以上で列区切り。pdf.js由来でもpdftotext -layout由来でも可）
+ * @returns {{rows: Array<Array<number|string>>|null, header: string[], footerTotalVisits: number|null,
+ *            footerFinancials: Object|null, warnings: string[]}}
+ */
+// 1患者/月の妥当な最大件数（例: 週2回×4週強=60）。合計行が患者行へ誤結合された場合、その患者のvisitsだけ
+// 異常に大きくなる（2026-10-14実測: サンドボックスのXpdf変換では発生・本番と同じpdfjs-dist実機検証では
+// 未発生だったが、将来の帳票レイアウト変化に備えた防御として常設）。超過時はその患者行を除外し警告する
+// （保存はブロックしない）。
+const ELYSIA_R_MAX_VISITS_PER_PATIENT = 60;
+
+function parseElysiaRLines(lines) {
+  const header = HOMECARE_ROWS_HEADER_PHARMY;
+  const perPatient = new Map(); // key: facility + '\u0000' + patientId（施設+患者単位で月内複数訪問行を事前集約）
+  const warnings = [];
+  let footerTotalVisits = null;
+  let footerFinancials = null;
+  let mergeSuspectCount = 0;
+  (lines || []).forEach((raw, lineIdx) => {
+    const line = (raw == null ? '' : String(raw)).trim();
+    if (!line) return;
+    if (line.indexOf('患者番号') >= 0 || line.indexOf('施設集計') >= 0 || line.indexOf('作成日') >= 0) return; // 列ヘッダー/ページ見出し行
+    const tokens = line.split(/\s+/);
+    if (tokens.length < 2) return;
+    if (tokens.every(_elysiaRIsNumericToken)) {
+      // 患者行には必ず非数値（氏名）トークンが入るため、全トークン数値＝合計行として識別する
+      footerTotalVisits = parseInt(tokens[tokens.length - 1].replace(/,/g, ''), 10) || 0;
+      if (tokens.length >= 8) {
+        const fin = tokens.slice(-8, -1).map(t => parseInt(t.replace(/,/g, ''), 10) || 0);
+        footerFinancials = {
+          base: fin[0], dispensing: fin[1], add: fin[2], guidance: fin[3],
+          drug: fin[4], material: fin[5], insuranceTotalPoints: fin[6]
+        };
+      }
+      return;
+    }
+    if (!_elysiaRIsNumericToken(tokens[0])) return; // 患者番号列が数値でない行（ノイズ）はスキップ
+    if (tokens.length < 10) return; // 患者番号+氏名1+数値7+件数1の最小構成未満はスキップ
+    const patientId = tokens[0];
+    const visitsTok = tokens[tokens.length - 1];
+    if (!_elysiaRIsNumericToken(visitsTok)) {
+      warnings.push('行' + (lineIdx + 1) + ': 件数列が数値でないためスキップ');
+      return;
+    }
+    const visits = parseInt(visitsTok.replace(/,/g, ''), 10) || 0;
+    const body = tokens.slice(1, -1); // 患者番号と件数を除いた残り（氏名〜管理名）
+    const bodyMut = body.slice();
+    const facilityTokens = [];
+    while (bodyMut.length > 0 && !_elysiaRIsNumericToken(bodyMut[bodyMut.length - 1])) {
+      facilityTokens.unshift(bodyMut.pop()); // 末尾から非数値（管理名）を切り出す
+    }
+    const facility = facilityTokens.join('') || '（未分類）';
+    if (bodyMut.length < 8) {
+      warnings.push('行' + (lineIdx + 1) + ': 患者番号' + patientId + ' の数値列が7列未満のためスキップ');
+      return;
+    }
+    const fin = bodyMut.slice(-7).map(t => parseInt(t.replace(/,/g, ''), 10) || 0);
+    const [base, dispensing, add, guidance, drug, material, rewardPoints] = fin;
+    const key = facility + '\u0000' + patientId;
+    if (!perPatient.has(key)) {
+      perPatient.set(key, {
+        facility, insuranceType: '', copayRatio: 0, visits: 0, copay: 0, careCopay: 0,
+        selectTherapy: 0, selfPayDrug: 0, billedAmount: 0, paidAmount: 0, unpaidAmount: 0,
+        insuranceTotal: 0, basePoints: 0, timePoints: 0, dispensingPoints: 0, dispensingAddPoints: 0,
+        guidancePoints: 0, oralMedPoints: 0, externalMedPoints: 0, materialPoints: 0
+      });
+    }
+    const p = perPatient.get(key);
+    p.visits += visits;
+    p.basePoints += base;
+    p.dispensingPoints += dispensing;
+    p.dispensingAddPoints += add;
+    p.guidancePoints += guidance;
+    p.oralMedPoints += drug;
+    p.materialPoints += material;
+    p.insuranceTotal += rewardPoints * 10; // 点→pharmy互換の「円相当」単位へ（プレビューは/10で点表示に戻す）
+  });
+  if (perPatient.size === 0) return { rows: null, header, footerTotalVisits, footerFinancials, warnings, mergeSuspectCount };
+  const validEntries = [];
+  perPatient.forEach((p, key) => {
+    if (p.visits > ELYSIA_R_MAX_VISITS_PER_PATIENT) {
+      mergeSuspectCount++;
+      warnings.push('施設「' + p.facility + '」の患者行(件数=' + p.visits + ')が上限(' + ELYSIA_R_MAX_VISITS_PER_PATIENT +
+        ')を超えたため、合計行結合の疑いとして除外しました');
+    } else {
+      validEntries.push(p);
+    }
+  });
+  if (validEntries.length === 0) return { rows: null, header, footerTotalVisits, footerFinancials, warnings, mergeSuspectCount };
+  const rows = validEntries.map(p => header.map(k => p[k]));
+  return { rows, header, footerTotalVisits, footerFinancials, warnings, mergeSuspectCount };
+}
+
+/**
+ * pdf.jsのgetTextContent()結果（items配列の集合・1ページ1配列）を行テキスト配列に変換する（ブラウザ専用・pdf.js依存）。
+ * y座標を小数2桁で丸めてビン化し同一ビンを1行とみなし、各行内はx座標昇順に並べてstr同士を半角スペースで結合する。
+ * @param {Array<Array<{str:string,transform:number[]}>>} pagesItems ページごとのtextContent.items配列
+ * @returns {string[]} 1行1文字列の配列（ページ順・各ページ内はy降順→x昇順）
+ */
+function _pdfPagesItemsToLines(pagesItems) {
+  const lines = [];
+  (pagesItems || []).forEach(items => {
+    const bins = new Map(); // key: y(丸め) → {y, parts:[{x,str}]}
+    (items || []).forEach(it => {
+      const str = (it && it.str != null) ? String(it.str).trim() : '';
+      if (!str) return;
+      const x = (it.transform && typeof it.transform[4] === 'number') ? it.transform[4] : 0;
+      const y = (it.transform && typeof it.transform[5] === 'number') ? it.transform[5] : 0;
+      const yKey = Math.round(y * 2) / 2; // 0.5pt単位でビン化（同一行内の微小な上下ブレを許容）
+      if (!bins.has(yKey)) bins.set(yKey, { y: yKey, parts: [] });
+      bins.get(yKey).parts.push({ x, str });
+    });
+    const sortedBins = Array.from(bins.values()).sort((a, b) => b.y - a.y); // PDF座標はy大=上→上から順に
+    sortedBins.forEach(bin => {
+      const lineText = bin.parts.sort((a, b) => a.x - b.x).map(p => p.str).join(' ');
+      if (lineText.trim()) lines.push(lineText);
+    });
+  });
+  return lines;
+}
+
+/**
+ * PDF(ArrayBuffer)をpdf.jsで読み込み、全ページのtextContent.itemsを行配列（_pdfPagesItemsToLines）に変換する。
+ * ブラウザ専用（pdfjsLibはindex.htmlでCDN読み込み済みの前提）。
+ * @param {ArrayBuffer} arrayBuffer PDFファイルの内容
+ * @returns {Promise<string[]>}
+ */
+async function _pdfArrayBufferToLines(arrayBuffer) {
+  if (typeof pdfjsLib === 'undefined') throw new Error('pdfjsLibが読み込まれていません');
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const pagesItems = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const textContent = await page.getTextContent();
+    pagesItems.push(textContent.items);
+  }
+  return _pdfPagesItemsToLines(pagesItems);
+}
+
+const HOMECARE_PDF_PROFILES = {
+  elysia_r: {
+    name: 'シグマ エリシア（施設集計R・医療保険）',
+    stores: ['adachi'],
+    confirmed: true,
+    techBreakdown: true, // 医療保険の技術料内訳あり（既存elysia CSV=介護保険とは別勘定。両立可）
+    techKind: 'iryo_tech',
+    techLabel: null, // techBreakdown:trueのためプレビュー側はprevTechLabel未使用（既存pharmy等と同表示）
+    source: 'pdf',
+    /**
+     * 行配列(pdf.js由来)→rows→集計までを行う（parseElysiaRLinesのラッパー。合計行検算用の値も返す）。
+     * @param {string[]} lines _pdfArrayBufferToLinesの戻り値
+     */
+    parseLines(lines) {
+      const r = parseElysiaRLines(lines);
+      if (!r.rows) return { unsupported: false, empty: true, warnings: r.warnings };
+      const agg = computeHomecareTotalsFromRows(r.header, r.rows, 'elysia_r');
+      if (!agg) return { unsupported: false, empty: true, warnings: r.warnings };
+      const sumVisits = agg.totals.times;
+      const checkOk = r.footerTotalVisits == null || sumVisits === r.footerTotalVisits;
+      return {
+        sorted: agg.sorted, totals: agg.totals, header: r.header, rows: r.rows,
+        footerTotalVisits: r.footerTotalVisits, footerFinancials: r.footerFinancials,
+        sumVisits, checkOk, warnings: r.warnings, mergeSuspectCount: r.mergeSuspectCount || 0
+      };
+    }
+  }
+};
+
+/** 店舗IDから対応する在宅内訳PDFプロファイルを返す（未登録店舗はnull。PDF取込に対応する店舗のみ登録） */
+function _getHomecarePdfProfileForStore(store) {
+  return Object.values(HOMECARE_PDF_PROFILES).find(p => p.stores.includes(store)) || null;
+}
+// ===HOMECARE_PDF_ELYSIA_R_END===
+
 const HOMECARE_CSV_PROFILES = {
   pharmy: {
     name: 'モイネット ファーミー',
@@ -6701,8 +6911,21 @@ function _parseHomecareCSV(arrayBuffer, store) {
   return profile.parse(lines);
 }
 
-// データ取込タブ → 在宅内訳CSVセクション のファイル選択ハンドラ
-document.getElementById('homecareFileInput').addEventListener('change', function(e) {
+// 2026-10-14(山内さん指示): PDF受付は足立（HOMECARE_PDF_PROFILES登録店舗）だけに限定し、CSV店
+// （pharmy=柏/我孫子等）のラベル文言・ファイル選択ダイアログの拡張子フィルタは一切変えない。
+// 店舗選択が変わるたびにラベル文言とaccept属性を切り替える（既定=CSVのみ・足立選択時だけCSV/PDF）。
+document.getElementById('homecareStore').addEventListener('change', function() {
+  const store = this.value;
+  const hasPdf = !!_getHomecarePdfProfileForStore(store);
+  document.getElementById('homecareFileLabelText').textContent = hasPdf ? '📄 CSV/PDFファイル選択' : '📄 CSVファイル選択';
+  document.getElementById('homecareFileInput').setAttribute('accept', hasPdf ? '.txt,.csv,.pdf' : '.txt,.csv');
+});
+
+// データ取込タブ → 在宅内訳CSV/PDFセクション のファイル選択ハンドラ
+// 2026-10-14: 足立（PDF「施設集計R」=医療保険技術料内訳）対応のため、拡張子で分岐する（.pdf→pdf.js経路／
+// それ以外→既存CSV経路）。PDFプロファイルが無い店舗で.pdfを選んだ場合は未対応表示にする（accept属性で絞っていても
+// OS側のファイル選択ダイアログで「すべてのファイル」指定により他拡張子が選ばれるケースの保険）。
+document.getElementById('homecareFileInput').addEventListener('change', async function(e) {
   const file = e.target.files[0];
   if (!file) return;
   document.getElementById('homecareFileName').textContent = file.name;
@@ -6714,27 +6937,65 @@ document.getElementById('homecareFileInput').addEventListener('change', function
     _homecareResult = null;
     return;
   }
+  const isPdf = /\.pdf$/i.test(file.name);
+  const _renderUnsupported = (label) => {
+    document.getElementById('homecarePreview').innerHTML =
+      '<p style="color:#c0392b">この店舗の帳票形式（' + (label || '不明') + '）は未対応です（サンプルファイルを頂ければ対応します）。</p>';
+    document.getElementById('homecareSaveArea').style.display = 'none';
+    _homecareResult = null;
+  };
+  const _renderNoData = () => {
+    document.getElementById('homecarePreview').innerHTML = '<p style="color:#c0392b">データ行が見つかりませんでした。ファイル形式を確認してください。</p>';
+    document.getElementById('homecareSaveArea').style.display = 'none';
+    _homecareResult = null;
+  };
+  if (isPdf) {
+    const pdfProfile = _getHomecarePdfProfileForStore(store);
+    if (!pdfProfile || !pdfProfile.confirmed) { _renderUnsupported(pdfProfile ? pdfProfile.name : null); return; }
+    let arrayBuffer;
+    try { arrayBuffer = await file.arrayBuffer(); } catch (e2) { alert('PDF読み込みエラー: ' + e2.message); return; }
+    let lines;
+    try { lines = await _pdfArrayBufferToLines(arrayBuffer); } catch (e3) { alert('PDF解析エラー: ' + e3.message); return; }
+    const pdfResult = pdfProfile.parseLines(lines);
+    if (!pdfResult || pdfResult.empty) { _renderNoData(); return; }
+    pdfResult.profileObj = pdfProfile;
+    pdfResult.profileId = 'elysia_r';
+    pdfResult.source = 'pdf';
+    _homecareResult = pdfResult;
+    let _pdfWarnHtml = '';
+    if (pdfResult.footerTotalVisits != null && !pdfResult.checkOk) {
+      _pdfWarnHtml += '<p style="color:#c0392b;font-weight:bold">⚠️ 件数の検算が不一致です（PDF合計行=' + pdfResult.footerTotalVisits.toLocaleString() +
+        '件 / 集計結果=' + pdfResult.sumVisits.toLocaleString() + '件）。保存は可能ですが、取込漏れの可能性があるためファイルを確認してください。</p>';
+    }
+    if (pdfResult.mergeSuspectCount > 0) {
+      _pdfWarnHtml += '<p style="color:#c0392b;font-weight:bold">⚠️ 合計行が患者行に結合した可能性: ' + pdfResult.mergeSuspectCount +
+        '行を除外しました。保存は可能ですが、該当施設の件数が実際より少なく表示されている場合があるためファイルを確認してください。</p>';
+    }
+    if (_pdfWarnHtml) document.getElementById('homecarePreview').innerHTML = _pdfWarnHtml;
+    _renderHomecarePreview(pdfResult, pdfProfile, /*append=*/true);
+    return;
+  }
   const reader = new FileReader();
   reader.onload = function(ev) {
     const result = _parseHomecareCSV(ev.target.result, store);
-    if (result && result.unsupported) {
-      const label = result.profileName || '不明';
-      document.getElementById('homecarePreview').innerHTML =
-        '<p style="color:#c0392b">この店舗の帳票形式（' + label + '）は未対応です（サンプルCSVを頂ければ対応します）。</p>';
-      document.getElementById('homecareSaveArea').style.display = 'none';
-      _homecareResult = null;
-      return;
-    }
-    if (!result) {
-      document.getElementById('homecarePreview').innerHTML = '<p style="color:#c0392b">データ行が見つかりませんでした。ファイル形式を確認してください。</p>';
-      document.getElementById('homecareSaveArea').style.display = 'none';
-      _homecareResult = null;
-      return;
-    }
+    if (result && result.unsupported) { _renderUnsupported(result.profileName); return; }
+    if (!result) { _renderNoData(); return; }
     _homecareResult = result;
+    _renderHomecarePreview(result, null, /*append=*/false);
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+/**
+ * 在宅内訳プレビューテーブルを描画する（CSV/PDF共通。pdfProfileObjが渡された場合はそれをtechBreakdown判定に使う）。
+ * append=trueのときはPDF検算警告(既に描画済み)を消さずその下にテーブルを追加する。
+ */
+function _renderHomecarePreview(result, pdfProfileObj, append) {
+  {
+    const store = document.getElementById('homecareStore').value;
     const { sorted, totals } = result;
     // 2026-10-13: techBreakdown===false（例: elysia）は技術料内訳が無い帳票。ラベル・単位を変える（pharmy等は不変）
-    const _previewProfile = _getHomecareProfileForStore(store);
+    const _previewProfile = pdfProfileObj || (result && result.profileObj) || _getHomecareProfileForStore(store);
     const previewTechBreakdown = !(_previewProfile && _previewProfile.techBreakdown === false);
     const previewTechLabel = (_previewProfile && _previewProfile.techLabel) || '技術料';
     const previewTechHeader = previewTechBreakdown ? '技術料合計(点)' : previewTechLabel + '(単位)';
@@ -6778,13 +7039,16 @@ document.getElementById('homecareFileInput').addEventListener('change', function
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.internal.toLocaleString() + '</td>';
     html += '</tr>';
     html += '</tbody></table></div>';
-    document.getElementById('homecarePreview').innerHTML = html;
+    if (append) {
+      document.getElementById('homecarePreview').insertAdjacentHTML('beforeend', html);
+    } else {
+      document.getElementById('homecarePreview').innerHTML = html;
+    }
     document.getElementById('homecareSaveArea').style.display = '';
     const statusEl = document.getElementById('homecareSaveStatus');
     if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
-  };
-  reader.readAsArrayBuffer(file);
-});
+  }
+}
 
 // データ取込タブ → 在宅内訳セクション切り替え
 function switchImportSection(sec) {
@@ -6936,23 +7200,39 @@ async function saveHomecareData() {
     const replaceAll = !!(replaceAllEl && replaceAllEl.checked);
     let mergedFacilities = newFacilities;
     let prevCount = 0;
+    // 2026-10-14: プロファイルID＋技術料内訳の有無を保存docに含める（読む側が再解析せず判別できるように）。
+    // techBreakdown未指定（pharmy等）はtrue扱い（既存の挙動を変えない）。既存フィールドは削除・改名しない。
+    // _homecareResult.profileObj/profileId（PDF経路で設定）を優先し、無ければ従来通りCSVプロファイルから導出する。
+    const _profileObjForSave = _homecareResult.profileObj || _getHomecareProfileForStore(store);
+    const _profileIdForSave = _homecareResult.profileId || (_profileObjForSave
+      ? Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === _profileObjForSave)
+      : null);
+    const _techBreakdownForSave = !(_profileObjForSave && _profileObjForSave.techBreakdown === false);
+    const _techKindForSave = (_profileObjForSave && _profileObjForSave.techKind) || null;
+    const _techLabelForSave = (_profileObjForSave && _profileObjForSave.techLabel) || null;
+    const _sourceForSave = _homecareResult.source || 'csv';
     if (!replaceAll) {
       // 既存doc取得 → 施設名キーでマージ（1施設ずつアップロードしても前施設分を消さない）
       const prevDoc = await db.collection('homecareData').doc(docId).get();
       const prevFacilities = prevDoc.exists ? (prevDoc.data().facilities || []) : [];
       prevCount = prevFacilities.length;
+      // 2026-10-14: 医療保険PDF（R）と介護保険CSV（既存elysia）は別帳票・別勘定のため、同月に既存docが
+      // 別プロファイル由来かつ施設データを持つ場合は上書き前に確認する（複雑な自動マージはせずRを正として進める）。
+      if (prevDoc.exists && prevCount > 0) {
+        const prevProfileId = prevDoc.data().profile || null;
+        if (prevProfileId && prevProfileId !== _profileIdForSave) {
+          const prevLabel = (HOMECARE_CSV_PROFILES[prevProfileId] || HOMECARE_PDF_PROFILES[prevProfileId] || {}).name || prevProfileId;
+          const curLabel = (_profileObjForSave && _profileObjForSave.name) || _profileIdForSave || '不明';
+          const ok = confirm(
+            'この月は既存データが別の帳票（' + prevLabel + '）由来です。今回は（' + curLabel + '）として保存します。\n' +
+            '医療保険の技術料内訳（R）を正として進めます。同名施設は今回の値で上書きされます。続けますか？'
+          );
+          if (!ok) { status.textContent = '保存を中止しました（プロファイル不一致）'; status.style.color = '#c0392b'; return; }
+        }
+      }
       mergedFacilities = mergeHomecareFacilities(prevFacilities, newFacilities);
     }
     const mergedTotals = recalcHomecareTotals(mergedFacilities);
-    // 2026-10-13: プロファイルID＋技術料内訳の有無を保存docに含める（読む側が再解析せず判別できるように）。
-    // techBreakdown未指定（pharmy等）はtrue扱い（既存の挙動を変えない）。既存フィールドは削除・改名しない。
-    const _profileObjForSave = _getHomecareProfileForStore(store);
-    const _profileIdForSave = _profileObjForSave
-      ? Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === _profileObjForSave)
-      : null;
-    const _techBreakdownForSave = !(_profileObjForSave && _profileObjForSave.techBreakdown === false);
-    const _techKindForSave = (_profileObjForSave && _profileObjForSave.techKind) || null;
-    const _techLabelForSave = (_profileObjForSave && _profileObjForSave.techLabel) || null;
     await db.collection('homecareData').doc(docId).set({
       store,
       yearMonth: month,
@@ -6962,6 +7242,7 @@ async function saveHomecareData() {
       techBreakdown: _techBreakdownForSave,
       techKind: _techKindForSave,
       techLabel: _techLabelForSave,
+      source: _sourceForSave,
       uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
       uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
     });
@@ -6970,8 +7251,7 @@ async function saveHomecareData() {
     // このブロックの失敗はconsole.warnに留め、アップロード完了表示自体はブロックしない。
     try {
       if (_homecareResult.header && _homecareResult.rows) {
-        const profileObj = _getHomecareProfileForStore(store);
-        const profileId = profileObj ? Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === profileObj) : null;
+        const profileId = _profileIdForSave;
         let rowsToSave = { header: _homecareResult.header, rows: _homecareResult.rows };
         if (!replaceAll) {
           const prevRowsDoc = await loadHomecareRowsAll(docId);

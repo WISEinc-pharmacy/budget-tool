@@ -1933,8 +1933,20 @@ const KANRIBU_HIDDEN_ADMIN_IDS = ['shataku_yachin', 'yakuin_hoshu', 'shoyo_yakui
 
 function isItemVisible(it) {
   if (!it.adminOnly) return true;
-  // 管理部ビュー: 許可リストの科目のみ表示（KGI可視化に必要な範囲に限定・機密科目は除外）
-  if (userRole === 'viewer_kanribu') return KANRIBU_VISIBLE_ADMIN_IDS.includes(it.id);
+  // 営業外収益・営業外費用・経常利益・特別損益・税引前当期純利益（KANRIBU_VISIBLE_ADMIN_IDSの21科目）:
+  // 管理部・役員・全体モードでのみ表示し、学術研修・店舗部門を選択しているときはロールを問わず非表示にする
+  // （2026-10-16指示）。選択部門が複数のときは全てがkanribu/yakuinの場合のみ表示する。
+  if (KANRIBU_VISIBLE_ADMIN_IDS.includes(it.id)) {
+    if (currentDeptId() === 'all') return true;
+    if (isViewerRole(userRole)) return userRole === 'viewer_kanribu'; // viewer_kanribuはkanribu部門のみ選択可能
+    // 選択部門がそのロールの閲覧可能部門を全件網羅している（＝実質的に全社表示）場合は'all'と同じ扱いで表示する。
+    // tax_advisorの初期状態（DEPTS全件を個別選択）・admin/editorの「全選択」ボタンがこれに該当する（2026-10-16回帰修正）。
+    const visIds = getVisibleDepts().map(d => d.id);
+    if (visIds.length > 0 && visIds.every(id => selectedDepts.includes(id))) return true;
+    return selectedDepts.length > 0 && selectedDepts.every(id => id === 'kanribu' || id === 'yakuin');
+  }
+  // 管理部ビュー: 上記以外のadminOnly科目は非表示（許可リスト外＝機密科目のため）
+  if (userRole === 'viewer_kanribu') return false;
   // 全閲覧者は adminOnly 科目を非表示
   if (isViewerRole(userRole)) return false;
   // 全体モードは会社合計なので管理部門科目も含める

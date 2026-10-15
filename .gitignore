@@ -10,3 +10,7 @@ print_test*.mjs
 print_test*.pdf
 verify_print_logic.mjs
 *.bak-*
+# 突合レポート・バックアップ（施設別の在宅データを含む。publicリポジトリへ入れない）
+reports/
+firestore.rules.backup_*
+firestore.rules.uploader-diff-*

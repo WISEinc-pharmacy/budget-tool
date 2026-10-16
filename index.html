@@ -1921,23 +1921,24 @@ function getPrevBudgetActual(prevAllData) {
 // 管理部ビュー(viewer_kanribu)にのみ表示を許可する adminOnly 科目（2026-10-15）。
 // 管理部の目標管理は税引前当期純利益を指標にするため、経常利益・税引前に至る
 // 営業外収益・営業外費用・特別損益の内訳科目を管理部ビューで表示する。
-// 2026-10-16 山内さん指示「ファクタリング手数料が見れるのは役員だけ」: 管理部ビューでは非表示
-// （管理部部門のfactoringは0なので営業外費用合計・経常利益・税引前の整合は崩れない）
+// 2026-10-16 山内さん指示「営業外の内訳科目が見れるのは役員だけ」: 預金利息・金融機関利息・
+// 信用保証料・ファクタリング手数料・社宅家賃・雑収入その他は管理部ビューでは非表示。
+// 助成金と各合計行は管理部の目標管理に必要なため表示を維持する。
+// （管理部部門にはこれらの計上が無いため、合計行・経常利益・税引前の整合は崩れない）
 const KANRIBU_VISIBLE_ADMIN_IDS = [
-  'sec_eigyogai_rev', 'uketori_risoku', 'yokin_risoku', 'kashitsuke_risoku', 'zatsu_shuunyu', 'joseikin', 'zatsu_other', 'eigyogai_rev_total',
-  'sec_eigyogai_exp', 'shiharai_risoku', 'kinyu_risoku', 'shiharai_risoku_other', 'eigyogai_tesuryo', 'hoshoryo', 'eigyogai_exp_total',
+  'sec_eigyogai_rev', 'uketori_risoku', 'kashitsuke_risoku', 'zatsu_shuunyu', 'joseikin', 'eigyogai_rev_total',
+  'sec_eigyogai_exp', 'shiharai_risoku', 'shiharai_risoku_other', 'eigyogai_tesuryo', 'eigyogai_exp_total',
   'keijo_rieki',
   'sec_tokubetsu', 'tokubetsu_rieki', 'tokubetsu_sonshitsu', 'zeibiki_mae',
 ];
 // 役員関連のため viewer_kanribu にも非表示を維持する adminOnly 科目。
 // KANRIBU_VISIBLE_ADMIN_IDS へは追加しないこと（許可リスト外＝非表示で担保する設計）。
-// 2026-10-16 山内さん指示「ファクタリング手数料が見れるのは役員だけ」: 管理部ビューでは非表示
-// （管理部部門のfactoringは0なので営業外費用合計・経常利益・税引前の整合は崩れない）
-const KANRIBU_HIDDEN_ADMIN_IDS = ['shataku_yachin', 'yakuin_hoshu', 'shoyo_yakuin', 'honbu_yakuin', 'honbu_somu', 'naibu_ryuho', 'factoring'];
+// 2026-10-16 山内さん指示: 営業外の内訳科目は役員のみ閲覧（管理部ビューでも非表示）
+const KANRIBU_HIDDEN_ADMIN_IDS = ['shataku_yachin', 'yakuin_hoshu', 'shoyo_yakuin', 'honbu_yakuin', 'honbu_somu', 'naibu_ryuho', 'factoring', 'yokin_risoku', 'kinyu_risoku', 'hoshoryo', 'zatsu_other'];
 
 function isItemVisible(it) {
   if (!it.adminOnly) return true;
-  // 営業外収益・営業外費用・経常利益・特別損益・税引前当期純利益（KANRIBU_VISIBLE_ADMIN_IDSの21科目）:
+  // 営業外収益・営業外費用・経常利益・特別損益・税引前当期純利益（KANRIBU_VISIBLE_ADMIN_IDSの16科目）:
   // 管理部・役員・全体モードでのみ表示し、学術研修・店舗部門を選択しているときはロールを問わず非表示にする
   // （2026-10-16指示）。選択部門が複数のときは全てがkanribu/yakuinの場合のみ表示する。
   if (KANRIBU_VISIBLE_ADMIN_IDS.includes(it.id)) {

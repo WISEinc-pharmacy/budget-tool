@@ -1921,15 +1921,19 @@ function getPrevBudgetActual(prevAllData) {
 // 管理部ビュー(viewer_kanribu)にのみ表示を許可する adminOnly 科目（2026-10-15）。
 // 管理部の目標管理は税引前当期純利益を指標にするため、経常利益・税引前に至る
 // 営業外収益・営業外費用・特別損益の内訳科目を管理部ビューで表示する。
+// 2026-10-16 山内さん指示「ファクタリング手数料が見れるのは役員だけ」: 管理部ビューでは非表示
+// （管理部部門のfactoringは0なので営業外費用合計・経常利益・税引前の整合は崩れない）
 const KANRIBU_VISIBLE_ADMIN_IDS = [
   'sec_eigyogai_rev', 'uketori_risoku', 'yokin_risoku', 'kashitsuke_risoku', 'zatsu_shuunyu', 'joseikin', 'zatsu_other', 'eigyogai_rev_total',
-  'sec_eigyogai_exp', 'shiharai_risoku', 'kinyu_risoku', 'shiharai_risoku_other', 'eigyogai_tesuryo', 'hoshoryo', 'factoring', 'eigyogai_exp_total',
+  'sec_eigyogai_exp', 'shiharai_risoku', 'kinyu_risoku', 'shiharai_risoku_other', 'eigyogai_tesuryo', 'hoshoryo', 'eigyogai_exp_total',
   'keijo_rieki',
   'sec_tokubetsu', 'tokubetsu_rieki', 'tokubetsu_sonshitsu', 'zeibiki_mae',
 ];
 // 役員関連のため viewer_kanribu にも非表示を維持する adminOnly 科目。
 // KANRIBU_VISIBLE_ADMIN_IDS へは追加しないこと（許可リスト外＝非表示で担保する設計）。
-const KANRIBU_HIDDEN_ADMIN_IDS = ['shataku_yachin', 'yakuin_hoshu', 'shoyo_yakuin', 'honbu_yakuin', 'honbu_somu', 'naibu_ryuho'];
+// 2026-10-16 山内さん指示「ファクタリング手数料が見れるのは役員だけ」: 管理部ビューでは非表示
+// （管理部部門のfactoringは0なので営業外費用合計・経常利益・税引前の整合は崩れない）
+const KANRIBU_HIDDEN_ADMIN_IDS = ['shataku_yachin', 'yakuin_hoshu', 'shoyo_yakuin', 'honbu_yakuin', 'honbu_somu', 'naibu_ryuho', 'factoring'];
 
 function isItemVisible(it) {
   if (!it.adminOnly) return true;
@@ -4082,6 +4086,13 @@ function computeFreeeplFromLines(lines) {
   let currentParentL2 = '';
   let inSGA = false;
 
+  // 営業外収益・営業外費用（2026-10-16 山内さん決定（案A）: 管理部MBOのKGI＝税引前当期純利益のため
+  // 営業外を取込対象に追加。API経路 freee_budget_mapping.mjs と同一仕様）
+  let inEigyogaiRev = false, inEigyogaiExp = false;
+  let currentParentEigyogaiL2 = '';
+  let yokinRisokuTotal = z(), kinyuRisokuTotal = z(), hoshoryoTotal = z(), factoringTotal = z();
+  let zatsuShunyuTotal = z(), zatsuShatakuBreak = z(), zatsuJoseikinBreak = z(), zatsuOtherBreak = z();
+
   for (const line of lines) {
     const cols = parseCSVLine(line);
     const getMonthVals = () => {
@@ -4118,9 +4129,21 @@ function computeFreeeplFromLines(lines) {
     const L4 = (cols[4] || '').trim();
     if (!L0 && !L1 && !L2 && !L3 && L4 === '仕入高' && hasVal) genkaShiire = getMonthVals();
 
+    // === 営業外収益・営業外費用（開始判定）===
+    // 2026-10-16 Codexレビュー対応: 営業外の開始判定を販管費ブロックより前に置き、開始時にinSGAを
+    // 明示的にfalseへ落とす。終端行(「販売管理費 計」)が欠落・表記ゆれしたCSVでinSGAがtrueのまま
+    // 営業外セクションへ突入しても、営業外のL2行が販管費としても処理され既存科目（例:tesuryo）へ
+    // 混入する経路を構造的に断つ。区間フラグ(inSGA/inEigyogaiRev/inEigyogaiExp)は常に排他（同時に1つだけtrue）。
+    // 終了条件: ①L0に値がある ②L1が非空かつラベル不一致 ③L1・L2・L3が全て空の行（セクション境界の空行相当。
+    //   実CSV35件の構造実測では出現しないが、Codexが指摘した空欄境界漏れ(受取利息が次セクションへ漏れる)への保険）
+    if (inEigyogaiRev && (L0 || (L1 && L1 !== '営業外収益') || (!L1 && !L2 && !L3))) inEigyogaiRev = false;
+    if (inEigyogaiExp && (L0 || (L1 && L1 !== '営業外費用') || (!L1 && !L2 && !L3))) inEigyogaiExp = false;
+    if (!L0 && L1 === '営業外収益') { inEigyogaiRev = true; inEigyogaiExp = false; inSGA = false; currentParentEigyogaiL2 = ''; continue; }
+    if (!L0 && L1 === '営業外費用') { inEigyogaiExp = true; inEigyogaiRev = false; inSGA = false; currentParentEigyogaiL2 = ''; continue; }
+
     // === 販管費セクション ===
     // L1='販売管理費'(値なし) → セクション開始
-    if (!L0 && L1 === '販売管理費' && !hasVal) { inSGA = true; continue; }
+    if (!L0 && L1 === '販売管理費' && !hasVal) { inSGA = true; inEigyogaiRev = false; inEigyogaiExp = false; continue; }
     // L1='販売管理費 計' → セクション終了
     if (!L0 && L1 === '販売管理費 計') { inSGA = false; continue; }
 
@@ -4176,6 +4199,38 @@ function computeFreeeplFromLines(lines) {
         }
       }
     }
+
+    // === 営業外収益・営業外費用（L2/L3内訳の処理。開始/終了判定は上の販管費ブロックより前に移動済み） ===
+    // 営業外のL2行（受取利息/支払利息/支払保証料/雑収入/営業外支払手数料 等）
+    if ((inEigyogaiRev || inEigyogaiExp) && !L0 && !L1 && L2 && hasVal) {
+      const vals = getMonthVals();
+      currentParentEigyogaiL2 = L2;
+      if (L2 === '受取利息') { for (let i=0;i<12;i++) yokinRisokuTotal[i] += vals[i]; }
+      else if (L2 === '支払利息') { for (let i=0;i<12;i++) kinyuRisokuTotal[i] += vals[i]; }
+      else if (L2 === '支払保証料') { for (let i=0;i<12;i++) hoshoryoTotal[i] += vals[i]; }
+      else if (L2 === '雑収入') { for (let i=0;i<12;i++) zatsuShunyuTotal[i] += vals[i]; }
+      else if (L2 === '営業外支払手数料') {
+        // 2026-10-16 山内さん決定: freeeの「営業外支払手数料」は予実表の(64)ファクタリング手数料へ計上する。
+        // 根拠=freeeに「ファクタリング手数料」という費目が存在せず、(64)には予算が設定されている。
+        for (let i=0;i<12;i++) factoringTotal[i] += vals[i];
+      }
+      else {
+        // 営業外支払手数料はfactoringへ計上済み（2026-10-16決定）。それ以外の未知科目は以下で記録する。
+        // 2026-10-16 Codexレビュー対応: 科目名だけだと金額・区分が失われ判断材料にならないため、
+        // 区分(営業外収益/営業外費用)と12ヶ月合計金額を文字列に含めて記録する（unmappedL2はSet<string>のまま）
+        const yearTotal = vals.reduce((a, b) => a + b, 0);
+        const category = inEigyogaiRev ? '営業外収益' : '営業外費用';
+        unmappedL2.add(`${L2}（${category}・12ヶ月合計${yearTotal.toLocaleString('en-US')}円）`);
+      }
+    }
+
+    // 雑収入のL3内訳（品目: 社宅/助成金/その他）
+    if ((inEigyogaiRev || inEigyogaiExp) && !L0 && !L1 && !L2 && L3 && hasVal && currentParentEigyogaiL2 === '雑収入') {
+      const vals = getMonthVals();
+      if (L3.includes('社宅')) { for (let i=0;i<12;i++) zatsuShatakuBreak[i] += vals[i]; }
+      else if (L3.includes('助成金')) { for (let i=0;i<12;i++) zatsuJoseikinBreak[i] += vals[i]; }
+      else { for (let i=0;i<12;i++) zatsuOtherBreak[i] += vals[i]; }
+    }
   }
 
   // 結果をまとめる
@@ -4230,6 +4285,28 @@ function computeFreeeplFromLines(lines) {
     monthValues['honbu_yakuin'] = z();
     monthValues['honbu_somu'] = honbuRaw;
   }
+
+  // 営業外収益/営業外費用（2026-10-16 山内さん決定・案A: 既存の売上/販管費と同じ「CSV値をそのまま採用」規則）
+  monthValues['yokin_risoku'] = yokinRisokuTotal;
+  monthValues['kinyu_risoku'] = kinyuRisokuTotal;
+  monthValues['hoshoryo'] = hoshoryoTotal;
+  monthValues['factoring'] = factoringTotal;
+  // 雑収入: L3内訳（社宅/助成金/その他）がある月はその値を使い、L3合計がL2合計に足りない月（内訳が一部しかない・全く無い月）は
+  // 差分を月単位でzatsu_otherへ寄せる（月によってL3内訳の有無が混在するため全期間一括判定は不可・2026-10-16修正）
+  monthValues['shataku_yachin'] = zatsuShatakuBreak;
+  monthValues['joseikin'] = zatsuJoseikinBreak;
+  monthValues['zatsu_other'] = zatsuShunyuTotal.map((total, i) => {
+    const l3Sum = zatsuShatakuBreak[i] + zatsuJoseikinBreak[i] + zatsuOtherBreak[i];
+    const diff = total - l3Sum;
+    // 2026-10-16 Codexレビュー対応: 内訳合計が親(L2)合計を超過(diff<0)するのは異常値。
+    // 従来はconsole.warnのみで負の差額をそのままzatsu_otherへ加算していたが、
+    // 負のときは差額を加算せず(zatsuOtherBreakの値のみ採用)、unmappedL2へ異常として記録して画面で気づけるようにする。
+    if (diff < 0) {
+      unmappedL2.add(`雑収入のL3内訳合計がL2合計を超過（月index${i}・L2合計${total}・内訳合計${l3Sum}）`);
+      return zatsuOtherBreak[i];
+    }
+    return zatsuOtherBreak[i] + diff;
+  });
 
   // 部門推定: まずL3の物件名で高精度判定し、次に全文テキストで低精度判定
   const l3Values = lines.map(line => { const c = parseCSVLine(line); return (c[3]||'').trim(); }).filter(v => v && v !== '未選択');

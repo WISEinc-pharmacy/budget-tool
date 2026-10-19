@@ -213,5 +213,14 @@ service cloud.firestore {
         allow write: if signedIn() && (isAnon() || isEditor());
       }
     }
+    // Drive提出物の列挙キャッシュ（submissionDriveIndex/{storeId}・2026-10-19 INC-584/INC-555対策）。
+    // 在宅内訳タブの状態表（index.html renderHomecareReadinessPanel）が「Driveに置かれているが
+    // ツール未取込」を表示するための読取専用キャッシュ。書込はAdmin SDK（submission_watch.mjs。
+    // rulesを経由しないため本ルールにwriteは無い＝クライアントSDKからの書込は構造的に不可）のみを
+    // 想定する。2026-10-19時点ではこのコレクションへの実書込は未実施（本ルールはローカル完成のみ・
+    // デプロイ・書込実行は親のゲート後）。
+    match /submissionDriveIndex/{storeId} {
+      allow read: if hasUserDoc();
+    }
   }
 }

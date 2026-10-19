@@ -566,6 +566,13 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
 </div>
 
 <div id="tab-homecare" class="tab-content">
+  <!-- データの揃い具合パネル（INC-584対策・2026-10-19追加）。常時表示・折りたたみ不可。
+       判定ロジックはwise/common/keiei_data_readiness.mjs（Node側・Admin SDK・Drive列挙あり）と
+       同じ値・同じ順序で書く（ブラウザ単体scriptのためコードは複製。相互に同期を維持すること）。 -->
+  <div id="homecareReadinessPanel" style="padding:12px 24px;background:#fff8e1;border-bottom:2px solid #f39c12;">
+    <h4 style="margin:0 0 8px;color:#935116;font-size:14px;">📋 データの揃い具合（在宅内訳・月計表）</h4>
+    <div id="homecareReadinessBody" style="font-size:12px;color:#888;">読込中…</div>
+  </div>
   <div style="padding:16px 24px;background:#f0f9f4;border-bottom:1px solid #a9dfbf;">
     <h3 style="margin:0 0 12px;color:#1a5276;font-size:15px;">🏠 在宅内訳 — 施設別</h3>
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
@@ -4623,7 +4630,7 @@ async function renderCurrentTab(){
   else if(currentTab==='kessanCheck') await loadKessanData();
   else if(currentTab==='import') await renderSalesTab();
   else if(currentTab==='labor') await loadLaborData();
-  else if(currentTab==='homecare') await loadHomecareView();
+  else if(currentTab==='homecare') { await loadHomecareView(); await renderHomecareReadinessPanel(); }
 }
 
 // ===== 決算照合タブ =====
@@ -7840,6 +7847,181 @@ async function reportNoHomecare() {
 }
 
 // 在宅内訳タブ — Firestoreデータ閲覧
+// ===== データの揃い具合パネル（INC-584対策・2026-10-19） =====
+// 判定ロジックは wise/common/keiei_data_readiness.mjs の judgeSalesData/judgeHomecare/getFiscalMonths/
+// getDeadline と同じ値・同じ順序。ブラウザ単体scriptのためコードは複製している。
+// 変更する場合は両方のファイルに反映すること（既存の_hcJudge/judgeReconcileと同じ運用方針）。
+const READINESS_HOMECARE_STORE_IDS = ['kashiwa', 'adachi', 'abiko'];
+const READINESS_STORE_OPEN_MONTH = { koshigaya: '2026-08', kiyose: '2026-11' };
+
+function readinessFiscalMonths(today) {
+  const months = [];
+  const start = new Date(2026, 1, 1); // 2026-02
+  const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 1);
+  const cur = new Date(start);
+  while (cur < prevMonthEnd) {
+    months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return months;
+}
+function readinessDeadline(month) {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(y, m, 10);
+}
+function readinessOverdue(month, today) { return today.getTime() >= readinessDeadline(month).getTime(); }
+
+function readinessJudgeSales({ exists, techFee }) {
+  if (!exists) return { status: 'missing', label: '未提出' };
+  if (typeof techFee !== 'number') return { status: 'partial', label: '△(技術料欄なし)' };
+  return { status: 'ok', label: '○' };
+}
+function readinessJudgeHomecare({ exists, noHomecare, tech, insTotal, techKind, techFee }) {
+  if (exists && noHomecare) return { status: 'no_homecare', label: '在宅患者なし（報告済）' };
+  if (!exists) return { status: 'missing', label: '未提出' };
+  if (tech === 0) return { status: 'zero', label: '×(技術料ゼロ)' };
+  if (typeof tech === 'number' && typeof insTotal === 'number' && tech === Math.round(insTotal / 10)) {
+    return { status: 'legacy', label: '旧式' };
+  }
+  if (techKind === 'iryo_tech' || techKind === 'kaigo') {
+    return { status: 'partial', label: '片側(' + (techKind === 'iryo_tech' ? '医療のみ' : '介護のみ') + ')' };
+  }
+  if (typeof techFee === 'number' && typeof tech === 'number') {
+    const techFeePoints = techFee / 10;
+    if (techFeePoints !== 0) {
+      const diffPercent = ((tech - techFeePoints) / techFeePoints) * 100;
+      if (Math.abs(diffPercent) > 3) return { status: 'diverged', label: `乖離${diffPercent >= 0 ? '+' : ''}${diffPercent.toFixed(1)}%` };
+    }
+  }
+  if (typeof techFee !== 'number') return { status: 'unverifiable', label: '○(突合不可)' };
+  return { status: 'ok', label: '○' };
+}
+function readinessIsGap(status) { return ['missing', 'partial', 'zero', 'legacy', 'diverged'].includes(status); }
+const READINESS_MARK = { ok: '○', unverifiable: '○*', no_homecare: '━', missing: '×', partial: '△', zero: '×', legacy: '旧', diverged: '乖', not_yet_open: '・' };
+
+async function renderHomecareReadinessPanel() {
+  const body = document.getElementById('homecareReadinessBody');
+  if (!body) return;
+  body.innerHTML = '読込中…';
+  try {
+    const visibleStoreIds = DEPTS.filter(d => !d.adminOnly).map(d => d.id).filter(id => getVisibleDepts().some(d => d.id === id));
+    if (visibleStoreIds.length === 0) { body.innerHTML = '<span style="color:#999">この権限では表示できません</span>'; return; }
+    const homecareStoreIds = READINESS_HOMECARE_STORE_IDS.filter(id => visibleStoreIds.includes(id));
+    const today = new Date();
+    const months = readinessFiscalMonths(today);
+
+    // salesData/homecareDataは全件取得してクライアント側で対象月・対象店舗にフィルタする
+    // （既存のloadHomecareView「全指定なし」ケースと同じ方式・7900行付近参照）
+    const [salesSnap, homecareSnap] = await Promise.all([
+      db.collection('salesData').get(),
+      db.collection('homecareData').get(),
+    ]);
+    const salesByKey = {}; // `${store}_${month}` -> {exists, techFee}
+    // salesDataのdocIdは `${month}_${store}` 形式（valuesは別フィールド）。docId分解で確実に拾う。
+    salesSnap.forEach(doc => {
+      const id = doc.id; // 例: 2026-08_kashiwa
+      const m = id.match(/^(\d{4}-\d{2})_(.+)$/);
+      if (!m) return;
+      const [, month, store] = m;
+      if (!visibleStoreIds.includes(store) || !months.includes(month)) return;
+      const v = doc.data().values || {};
+      salesByKey[`${store}_${month}`] = { exists: true, techFee: v.techFee };
+    });
+    const homecareByKey = {};
+    homecareSnap.forEach(doc => {
+      const id = doc.id; // 例: kashiwa_202608
+      const m = id.match(/^([a-z_]+)_(\d{6})$/);
+      if (!m) return;
+      const store = m[1]; const ym = m[2];
+      const month = `${ym.slice(0, 4)}-${ym.slice(4, 6)}`;
+      if (!homecareStoreIds.includes(store) || !months.includes(month)) return;
+      const d = doc.data();
+      const t = d.totals || {};
+      homecareByKey[`${store}_${month}`] = { exists: true, noHomecare: !!d.noHomecare, tech: t.tech, insTotal: t.insTotal, techKind: d.techKind || null };
+    });
+
+    // Driveキャッシュ（submissionDriveIndex・submission_watch.mjs --write-index が書く想定。
+    // 形: { updatedAt, months: { 'YYYY-MM': { sales:[name...], homecare:[name...], unknown:[name...] } } }
+    // 2026-10-19時点では--write-indexを実行していないため通常はdoc不在→既存表示に影響しない（try/catchで無視）。
+    // 2026-10-19訂正: [D]はkind（sales/homecare）が一致するファイルがある時だけ。unknownのみの月は[?]にする
+    // （wise/common/keiei_data_readiness.mjs buildReadinessMatrixと同じ規則。両方に反映すること）。
+    const driveByStore = {};
+    await Promise.all(visibleStoreIds.map(async (store) => {
+      try {
+        const snap = await db.collection('submissionDriveIndex').doc(store).get();
+        if (snap.exists) driveByStore[store] = (snap.data() || {}).months || {};
+      } catch (_e) { /* 権限なし・コレクション未作成は無視して既存表示を維持 */ }
+    }));
+    function driveMark(store, month, kind) {
+      const monthEntry = (driveByStore[store] || {})[month];
+      if (!monthEntry) return '';
+      if (Array.isArray(monthEntry[kind]) && monthEntry[kind].length > 0) return '[D]';
+      if (Array.isArray(monthEntry.unknown) && monthEntry.unknown.length > 0) return '[?]';
+      return '';
+    }
+
+    let overdueCount = 0;
+    const rowsSales = visibleStoreIds.map(store => {
+      let readyCount = 0;
+      const cells = months.map(month => {
+        if (READINESS_STORE_OPEN_MONTH[store] && month < READINESS_STORE_OPEN_MONTH[store]) return { mark: '・', status: 'not_yet_open' };
+        const j = readinessJudgeSales(salesByKey[`${store}_${month}`] || { exists: false });
+        const gap = readinessIsGap(j.status);
+        if (!gap) readyCount++;
+        const overdue = gap && readinessOverdue(month, today);
+        if (overdue) overdueCount++;
+        return { mark: (READINESS_MARK[j.status] || '?') + driveMark(store, month, 'sales') + (overdue ? '!' : ''), status: j.status, overdue };
+      });
+      return { store, label: HOMECARE_STORE_LABELS[store] || store, cells, readyCount, total: cells.filter(c => c.status !== 'not_yet_open').length };
+    });
+    const rowsHomecare = homecareStoreIds.map(store => {
+      let readyCount = 0;
+      const cells = months.map(month => {
+        if (READINESS_STORE_OPEN_MONTH[store] && month < READINESS_STORE_OPEN_MONTH[store]) return { mark: '・', status: 'not_yet_open' };
+        const techFee = (salesByKey[`${store}_${month}`] || {}).techFee;
+        const j = readinessJudgeHomecare({ ...(homecareByKey[`${store}_${month}`] || { exists: false }), techFee });
+        const gap = readinessIsGap(j.status);
+        if (!gap) readyCount++;
+        const overdue = gap && readinessOverdue(month, today);
+        if (overdue) overdueCount++;
+        return { mark: (READINESS_MARK[j.status] || '?') + driveMark(store, month, 'homecare') + (overdue ? '!' : ''), status: j.status, overdue };
+      });
+      return { store, label: HOMECARE_STORE_LABELS[store] || store, cells, readyCount, total: cells.filter(c => c.status !== 'not_yet_open').length };
+    });
+
+    const hcReady = rowsHomecare.reduce((a, r) => a + r.readyCount, 0), hcTotal = rowsHomecare.reduce((a, r) => a + r.total, 0);
+    const svReady = rowsSales.reduce((a, r) => a + r.readyCount, 0), svTotal = rowsSales.reduce((a, r) => a + r.total, 0);
+
+    let html = `<div style="margin-bottom:8px;font-weight:bold;color:#935116;">在宅内訳 ${hcReady}/${hcTotal}・月計表 ${svReady}/${svTotal}・期限超過の欠け ${overdueCount}件</div>`;
+    html += '<div style="font-size:11px;color:#999;margin-bottom:8px">凡例: ○=揃い ○*=揃い(突合不可) ×=未提出/技術料ゼロ △=技術料欄なし 旧=旧式 乖=乖離 ━=在宅患者なし ・=対象外(開局前) [D]=Driveに提出物あり・ツール未取込(帳票種別一致) [?]=Driveに種別不明の提出物あり !=提出期限超過</div>';
+    function table(title, rows) {
+      let t = `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:bold;color:#1a5276;margin-bottom:4px">${title}</div>`;
+      t += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:11px;white-space:nowrap"><thead><tr>';
+      t += '<th style="padding:3px 8px;text-align:left;border-bottom:1px solid #ccc">店舗</th>' + months.map(m => `<th style="padding:3px 8px;text-align:center;border-bottom:1px solid #ccc">${m}</th>`).join('');
+      t += '</tr></thead><tbody>';
+      rows.forEach(r => {
+        t += `<tr><td style="padding:3px 8px;border-bottom:1px solid #eee">${r.label}</td>`;
+        t += r.cells.map(c => {
+          let color = '#333', bg = 'transparent';
+          if (c.overdue) { color = '#fff'; bg = '#e74c3c'; }
+          else if (c.status === 'ok' || c.status === 'unverifiable' || c.status === 'no_homecare' || c.status === 'not_yet_open') { color = '#2e7d32'; }
+          else if (['missing', 'zero', 'diverged'].includes(c.status)) { color = '#c0392b'; }
+          else if (['partial', 'legacy'].includes(c.status)) { color = '#e67e22'; }
+          return `<td style="padding:3px 8px;text-align:center;border-bottom:1px solid #eee;color:${color};background:${bg}">${c.mark}</td>`;
+        }).join('');
+        t += '</tr>';
+      });
+      t += '</tbody></table></div></div>';
+      return t;
+    }
+    html += table('月計表（レセコン月計表）', rowsSales);
+    html += table('在宅内訳（柏・足立・我孫子のみ対象）', rowsHomecare);
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<span style="color:#c0392b">揃い具合の読込に失敗しました: ' + (e && e.message ? e.message : e) + '</span>';
+  }
+}
+
 async function loadHomecareView() {
   const storeSelect = document.getElementById('homecareViewStore');
   // 敵対的レビュー指摘(High・line 6887): 在宅内訳タブは他タブと違いgetVisibleDepts()による部門フィルタが無く、

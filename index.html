@@ -7956,6 +7956,10 @@ async function renderHomecareReadinessPanel() {
       const monthEntry = (driveByStore[store] || {})[month];
       if (!monthEntry) return '';
       if (Array.isArray(monthEntry[kind]) && monthEntry[kind].length > 0) return '[D]';
+      // 2026-10-20訂正: 施設・個人宅経営報告フォルダ配下の旧方式経営報告Doc（画像貼付・ツール取込不可）は
+      // 在宅内訳の行でのみ[報]として扱う（sales行では無関係）。homecare_legacy_docはsubmission_watch.mjsの
+      // buildDriveIndexMonthsが書くバケット（wise/common/keiei_data_readiness.mjsと同じ優先順位: D>報>?）。
+      if (kind === 'homecare' && Array.isArray(monthEntry.homecare_legacy_doc) && monthEntry.homecare_legacy_doc.length > 0) return '[報]';
       if (Array.isArray(monthEntry.unknown) && monthEntry.unknown.length > 0) return '[?]';
       return '';
     }
@@ -7993,7 +7997,7 @@ async function renderHomecareReadinessPanel() {
     const svReady = rowsSales.reduce((a, r) => a + r.readyCount, 0), svTotal = rowsSales.reduce((a, r) => a + r.total, 0);
 
     let html = `<div style="margin-bottom:8px;font-weight:bold;color:#935116;">在宅内訳 ${hcReady}/${hcTotal}・月計表 ${svReady}/${svTotal}・期限超過の欠け ${overdueCount}件</div>`;
-    html += '<div style="font-size:11px;color:#999;margin-bottom:8px">凡例: ○=揃い ○*=揃い(突合不可) ×=未提出/技術料ゼロ △=技術料欄なし 旧=旧式 乖=乖離 ━=在宅患者なし ・=対象外(開局前) [D]=Driveに提出物あり・ツール未取込(帳票種別一致) [?]=Driveに種別不明の提出物あり !=提出期限超過</div>';
+    html += '<div style="font-size:11px;color:#999;margin-bottom:8px">凡例: ○=揃い ○*=揃い(突合不可) ×=未提出/技術料ゼロ △=技術料欄なし 旧=旧式 乖=乖離 ━=在宅患者なし ・=対象外(開局前) [D]=Driveに提出物あり・ツール未取込(帳票種別一致) [報]=経営報告Doc（旧方式・画像）あり・ツール取込不可 [?]=Driveに種別不明の提出物あり !=提出期限超過</div>';
     function table(title, rows) {
       let t = `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:bold;color:#1a5276;margin-bottom:4px">${title}</div>`;
       t += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:11px;white-space:nowrap"><thead><tr>';

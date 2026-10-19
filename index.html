@@ -7455,6 +7455,39 @@ function _hcSingleMonthLabel(ym) {
 }
 
 /**
+ * 改修A-4（2026-10-19）: 提出ファイル名から集計期間('YYYY-MM')を読み取る。読めなければnull。
+ * シグマ エリシアの帳票は「R8.8 施設集計.pdf」「施設集計(2026年08月01日)～(2026年08月31日).csv」のように
+ * ファイル名へ期間が入る。モイネット ファーミーの「患者別調剤内訳.txt」には入らないのでnullを返す（何もしない）。
+ * 和暦: 令和N年 = 西暦(2018+N)。令和8年=2026年。
+ * 誤検知を避けるため、読めた年が2000〜2100の範囲外・月が1〜12の範囲外なら採用しない。
+ */
+function _homecarePeriodFromFileName(name) {
+  const s = String(name || '');
+  if (!s) return null;
+  const mk = (y, m) => {
+    const yi = parseInt(y, 10), mi = parseInt(m, 10);
+    if (!(yi >= 2000 && yi <= 2100) || !(mi >= 1 && mi <= 12)) return null;
+    return yi + '-' + String(mi).padStart(2, '0');
+  };
+  let m;
+  // 1) 西暦「2026年08月」「2026年8月」（期間つきファイル名の先頭の月を採る）
+  if ((m = s.match(/(20\d{2})\s*年\s*(\d{1,2})\s*月/))) { const r = mk(m[1], m[2]); if (r) return r; }
+  // 2) 和暦「令和8年8月」「R8年8月」
+  if ((m = s.match(/(?:令和|令\s*和|[Rr])\s*(\d{1,2})\s*年\s*(\d{1,2})\s*月/))) {
+    const r = mk(String(2018 + parseInt(m[1], 10)), m[2]); if (r) return r;
+  }
+  // 3) 和暦の略記「R8.8」「R8-8」「R8/8」「R8_8」（年は1〜31＝令和の実在範囲に限定して誤検知を抑える）
+  if ((m = s.match(/(?:^|[^0-9A-Za-z])[Rr]\s*([1-9]|[12]\d|3[01])\s*[.\-\/_]\s*(\d{1,2})(?![0-9])/))) {
+    const r = mk(String(2018 + parseInt(m[1], 10)), m[2]); if (r) return r;
+  }
+  // 4) 西暦の区切り記号つき「2026.8」「2026-8」「2026/8」（実例「2026.8施設集計NO2.pdf」）
+  if ((m = s.match(/(?:^|[^0-9])(20\d{2})\s*[.\-\/]\s*(\d{1,2})(?![0-9])/))) { const r = mk(m[1], m[2]); if (r) return r; }
+  // 5) 西暦の連結「202608」（前後が数字でないもの。電話番号・連番との誤検知を避けるため最後に判定）
+  if ((m = s.match(/(?:^|[^0-9])(20\d{2})(0[1-9]|1[0-2])(?![0-9])/))) { const r = mk(m[1], m[2]); if (r) return r; }
+  return null;
+}
+
+/**
  * 改修A-1（2026-10-19）: 同一店舗の他の月のhomecareDataと、患者数・訪問回数・保険計(insTotal)の3値が
  * 完全一致する月があるかを調べる（対象月の選び間違い検知。実績: kashiwa_202606が実は7月分・
  * adachi_202609が実は8月分の2件確定）。一致する最初の月のyearMonthを返す（無ければnull）。
@@ -7577,35 +7610,25 @@ async function saveHomecareData() {
   } catch (_eDup) { console.warn('[homecare] 重複月チェックに失敗（続行）:', _eDup); }
   // ===HOMECARE_MONTH_MISMATCH_GUARD_END===
 
-  // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_START===
-  // 改修A-2（2026-10-19）: 同月レセコン月計表(salesData)の技術料との突合を取込時にも効かせる（既存_hcJudgeを再利用・
-  // 複製しない。_hcJudgeの定義・判定基準はrenderHomecareView内と同一のまま）。医療保険の技術料内訳がある帳票
-  // (techBreakdown)のみ対象。月計表未提出(nosales)はブロックも警告もしない。
-  if (_techBreakdownForUpload) {
-    try {
-      const salesDoc = await db.collection('salesData').doc(month + '_' + store).get();
-      if (salesDoc.exists) {
-        const sv = salesDoc.data().values || {};
-        const j = _hcJudge({
-          tech: _homecareResult.totals.tech, techFee: sv.techFee,
-          times: _homecareResult.totals.times, visitCount: sv.visitCount,
-          insTotal: _homecareResult.totals.insTotal, totalInsurance: sv.totalInsurance,
-          hasSalesData: true
-        });
-        if (j.status === 'mismatch') {
-          const okJudge = confirm(
-            '同じ月のレセコン月計表の技術料〈' + Math.round(j.techFeePoints).toLocaleString() + '点〉に対して、' +
-            'この帳票の技術料は〈' + Math.round(_homecareResult.totals.tech).toLocaleString() + '点〉で、' +
-            Math.abs(j.diffPercent).toFixed(1) + '%ずれています。\n' +
-            '対象月の選択が正しいか、帳票が全ページ揃っているかを確認してください。'
-          );
-          if (!okJudge) return;
-        }
-      }
-      // salesDoc不在（月計表未提出）→ ブロックも警告もしない（通常運用でよくあるため）
-    } catch (_eJudge) { console.warn('[homecare] 月計表突合チェックに失敗（続行）:', _eJudge); }
+  // ===HOMECARE_FILENAME_PERIOD_GUARD_START===
+  // 改修A-4（2026-10-19）: 元ファイル名に集計期間が入っている帳票は、その期間と選択中の月を突き合わせる。
+  // 実例: つなぐ薬局 足立が 2026-10-16 15:21 に「R8.8 施設集計.pdf」（令和8年8月＝2026年8月）を9月の枠へ入れ、
+  // 直前に入れた9月分（R8.9）を上書きして消した。A-1（他の月との完全一致）は同じ枠への入れ直しを検知できないため、
+  // ファイル名の期間で止める。期間が読めないファイル名（ファーミーの「患者別調剤内訳.txt」等）は何もしない。
+  const _filePeriod = _homecarePeriodFromFileName(_homecareFileName);
+  if (_filePeriod && _filePeriod !== month) {
+    const okPeriod = confirm(
+      '選んだファイル「' + _homecareFileName + '」は、ファイル名から〈' + _hcSingleMonthLabel(_filePeriod) + '〉分の帳票と読めます。\n' +
+      'いま選択中の対象月は〈' + _hcSingleMonthLabel(month) + '〉です。\n\n' +
+      'このまま登録すると' + _hcSingleMonthLabel(_filePeriod) + '分が' + _hcSingleMonthLabel(month) + 'の枠に入り、' +
+      'すでに' + _hcSingleMonthLabel(month) + 'の枠にあるデータは上書きされて消えます。\n' +
+      '対象月のプルダウンを' + _hcSingleMonthLabel(_filePeriod) + 'に変えなくてよいですか？'
+    );
+    if (!okPeriod) return;
   }
-  // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_END===
+  // ===HOMECARE_FILENAME_PERIOD_GUARD_END===
+  // 改修A-2の突合は合算後の数字で行う（この位置ではなく書込直前）。理由は
+  // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_START=== のコメントに記載。
 
   const status = document.getElementById('homecareSaveStatus');
   status.textContent = 'アップロード中...';
@@ -7689,6 +7712,40 @@ async function saveHomecareData() {
       _techBreakdownForSave = false;
     }
     const mergedTotals = recalcHomecareTotals(mergedFacilities);
+    // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_START===
+    // 改修A-2（2026-10-19・位置は10-19に見直し）: 同月レセコン月計表(salesData)の技術料と突合する（既存_hcJudgeを
+    // 再利用・複製しない）。**合算後のmergedTotalsで判定する**のが要点。月計表は医療保険と介護保険の両方を含むため、
+    // 片側だけの帳票（つなぐ薬局 足立の医療のみ=iryo_tech／介護のみ=kaigo）を単体で突合すると必ず約半分になり、
+    // 毎月「乖離」が出て警告に慣れてしまう＝本来の検知が死ぬ。片側だけの状態では突合しない。
+    // 実測（2026-10-19）: 足立8月は 医療7,158,080円＋介護6,323,670円＝13,481,750円 に対し月計表13,577,130円で
+    // 差0.70%＝一致。柏8月は▲0.27%、柏9月は+0.02%。合算後なら月計表と一致する前提が成り立っている。
+    const _partialCoverageKinds = ['iryo_tech', 'kaigo', 'kaigo_kyotaku'];
+    const _coversBothInsurances = !_partialCoverageKinds.includes(_techKindForSave);
+    if (_techBreakdownForSave && _coversBothInsurances) {
+      try {
+        const salesDoc = await db.collection('salesData').doc(month + '_' + store).get();
+        if (salesDoc.exists) {
+          const sv = salesDoc.data().values || {};
+          const j = _hcJudge({
+            tech: mergedTotals.tech, techFee: sv.techFee,
+            times: mergedTotals.times, visitCount: sv.visitCount,
+            insTotal: mergedTotals.insTotal, totalInsurance: sv.totalInsurance,
+            hasSalesData: true
+          });
+          if (j.status === 'mismatch') {
+            const okJudge = confirm(
+              '同じ月のレセコン月計表の技術料〈' + Math.round(j.techFeePoints).toLocaleString() + '点〉に対して、' +
+              'この帳票の技術料は〈' + Math.round(mergedTotals.tech).toLocaleString() + '点〉で、' +
+              Math.abs(j.diffPercent).toFixed(1) + '%ずれています。\n' +
+              '対象月の選択が正しいか、帳票が全ページ揃っているかを確認してください。'
+            );
+            if (!okJudge) { status.textContent = '保存を中止しました（月計表との乖離）'; status.style.color = '#c0392b'; return; }
+          }
+        }
+        // salesDoc不在（月計表未提出）→ ブロックも警告もしない（通常運用でよくあるため）
+      } catch (_eJudge) { console.warn('[homecare] 月計表突合チェックに失敗（続行）:', _eJudge); }
+    }
+    // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_END===
     await db.collection('homecareData').doc(docId).set({
       store,
       yearMonth: month,

@@ -538,7 +538,7 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
         <input type="checkbox" id="homecareReplaceAll" style="margin:0;">
         この月のデータを全て置き換える（チェックしない場合は既存施設に追記し、同名施設のみ上書き更新します。施設ごとに複数回に分けてアップロードする場合はチェックを外したままにしてください）
       </label>
-      <button class="btn btn-primary" onclick="saveHomecareData()">⬆️ アップロードする</button>
+      <button class="btn btn-primary" id="homecareUploadBtn" onclick="saveHomecareData()">⬆️ アップロードする</button>
       <span id="homecareSaveStatus" style="margin-left:12px;font-size:13px;"></span>
     </div>
   </div>
@@ -6867,6 +6867,10 @@ function _getHomecarePdfProfileForStore(store) {
 }
 // ===HOMECARE_PDF_ELYSIA_R_END===
 
+// 改修B（2026-10-19）: 介護保険の算定単位→円相当換算（1単位=10円）。地域区分による単価差（10.00〜11.40円等）は
+// 未反映の近似値。合算時の画面注記（techLabel等）で必ず「1単位10円換算」である旨を明示すること。
+const HOMECARE_KAIGO_UNIT_YEN = 10;
+
 const HOMECARE_CSV_PROFILES = {
   pharmy: {
     name: 'モイネット ファーミー',
@@ -6915,8 +6919,15 @@ const HOMECARE_CSV_PROFILES = {
     }
   },
   elysia: {
-    name: 'シグマ エリシア',
-    stores: ['adachi'],
+    name: 'シグマ エリシア（旧・介護保険CSV取込ID）',
+    // 改修B（2026-10-19）: stores:[]にして取込の自動選択対象から外した（_getHomecareProfileForStoreは店舗に対し
+    // 先勝ちで1件しか返せない構造のため、新プロファイルelysia_kaigo（下記・列構造をヘッダー名で解決する堅牢版）と
+    // 同じ店舗'adachi'を共存させられない）。このキー自体は削除しない: 過去にprofile:'elysia'で保存された
+    // Firestoreドキュメントの帳票名表示（HOMECARE_CSV_PROFILES[prevProfileId].name等の参照）のために残す。
+    // 以後の新規アップロードはelysia_kaigoを使う。ゼロガード(_homecareZeroTechGuard)のisKaigoCsv分岐は
+    // profileId==='elysia'を見るが、新規アップロードではこのIDが二度と付与されないため実質到達不能になる
+    // （削除はしない＝「親が本日入れた変更を消さない」指示のため）。
+    stores: [],
     // 2026-10-13: 足立SPスタッフ提供サンプル「施設集計(2026年09月01日)～(2026年09月30日).csv」で列構造確定。
     // 列（ヘッダー1行・各フィールドは""で囲まれる。pharmyと違い単位行は無くi=1からデータ）:
     // 0患者番号(識別子),1カナ氏名(識別子),2漢字氏名(識別子),3生年月日(識別子),4性別,
@@ -6979,6 +6990,60 @@ const HOMECARE_CSV_PROFILES = {
       return { sorted: agg.sorted, totals: agg.totals, header, rows };
     }
   },
+  // 2026-10-19(改修B・足立 在宅内訳 医療+介護合算): シグマ エリシアの介護保険「施設集計」CSV
+  // （薬剤師居宅療養管理指導の明細）。上のelysia(旧ID)と違い列は固定位置で読まずヘッダー名で解決する
+  // （スクラッチパッドkaigo_agg.mjsで実ファイルを検証済みの方式。列順・引用符の有無が変わっても耐える）。
+  // 必須ヘッダー: 患者番号・管理名(施設名)・単位。他列(カナ氏名・漢字氏名・生年月日・性別・管理フラグ・請求額・
+  // 入金額・要介護度区分・サービス提供日)は存在してもしなくても無視する（識別子は保存しない）。
+  // 単位(介護保険の算定単位)をguidancePointsへ格納しtechへ素通し（医療保険の点数と同スケールの値として
+  // saveHomecareData側で医療(elysia_r)の技術料とそのまま加算できるようにする）。1単位=10円換算で
+  // insuranceTotal(円相当)も計算する（地域区分による単価差は未反映の近似値。画面注記で明記する）。
+  elysia_kaigo: {
+    name: 'シグマ エリシア 介護保険（施設集計CSV）',
+    stores: ['adachi'],
+    confirmed: true,
+    techBreakdown: false, // 単体提出時は内訳なし表示。医療(elysia_r)と合算された月はsaveHomecareData側でtrueに上書きする
+    techKind: 'kaigo',
+    techLabel: '介護保険 居宅療養管理指導（単位・1単位' + HOMECARE_KAIGO_UNIT_YEN + '円換算）',
+    parse(lines) {
+      const header = HOMECARE_ROWS_HEADER_PHARMY;
+      const strip = (s) => (s == null ? '' : String(s).replace(/^"|"$/g, '').trim());
+      if (!lines || !lines.length) return null;
+      const headCols = lines[0].split(',').map(strip);
+      const ix = (name) => headCols.indexOf(name);
+      const I = { pid: ix('患者番号'), kanri: ix('管理名'), tani: ix('単位') };
+      if (I.pid === -1 || I.kanri === -1 || I.tani === -1) return null; // 必須列が無い帳票は非対応として扱う
+      const perPatient = new Map(); // key: facility + '\u0000' + patientId（施設+患者単位で月内複数行を事前集約）
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const cols = line.split(',').map(strip);
+        if (cols.length <= Math.max(I.pid, I.kanri, I.tani)) continue;
+        const patientId = cols[I.pid];
+        if (!patientId) continue;
+        const facility = cols[I.kanri] || '（未分類）';
+        const units = parseInt(cols[I.tani], 10) || 0;
+        const key = facility + '\u0000' + patientId;
+        if (!perPatient.has(key)) {
+          perPatient.set(key, {
+            facility, insuranceType: '', copayRatio: 0, visits: 0, copay: 0, careCopay: 0,
+            selectTherapy: 0, selfPayDrug: 0, billedAmount: 0, paidAmount: 0, unpaidAmount: 0,
+            insuranceTotal: 0, basePoints: 0, timePoints: 0, dispensingPoints: 0, dispensingAddPoints: 0,
+            guidancePoints: 0, oralMedPoints: 0, externalMedPoints: 0, materialPoints: 0
+          });
+        }
+        const p = perPatient.get(key);
+        p.visits += 1; // 回数（この患者の月内訪問回数=行数）
+        p.guidancePoints += units; // tech側に乗る唯一の値（介護保険の算定単位。医療の点と同スケールでそのまま合算）
+        p.insuranceTotal += units * HOMECARE_KAIGO_UNIT_YEN; // 1単位=10円換算（円相当・pharmy/elysia_rと同スケール）
+      }
+      if (perPatient.size === 0) return null;
+      const rows = Array.from(perPatient.values()).map(p => header.map(k => p[k]));
+      const agg = computeHomecareTotalsFromRows(header, rows, 'elysia_kaigo');
+      if (!agg) return null;
+      return { sorted: agg.sorted, totals: agg.totals, header, rows };
+    }
+  },
   pharnes: {
     name: 'ウィーメックス pharnes V-EX',
     stores: ['nagareyama'],
@@ -7019,7 +7084,14 @@ function _parseHomecareCSV(arrayBuffer, store) {
   if (!profile || !profile.confirmed) {
     return { unsupported: true, profileName: profile ? profile.name : null };
   }
-  return profile.parse(lines);
+  const parsed = profile.parse(lines);
+  // INC-555（2026-10-16）: ゼロガード(_homecareZeroTechGuard)がプロファイル種別で判定するため、
+  // 使用したプロファイルのキー/オブジェクトをparse結果へ付与する（プレビュー描画・保存の2箇所が同じ値を見る）。
+  if (parsed) {
+    parsed.profileObj = profile;
+    parsed.profileId = Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === profile) || null;
+  }
+  return parsed;
 }
 
 // 2026-10-14(山内さん指示): PDF受付は足立（HOMECARE_PDF_PROFILES登録店舗）だけに限定し、CSV店
@@ -7056,7 +7128,16 @@ document.getElementById('homecareFileInput').addEventListener('change', async fu
     _homecareResult = null;
   };
   const _renderNoData = () => {
-    document.getElementById('homecarePreview').innerHTML = '<p style="color:#c0392b">データ行が見つかりませんでした。ファイル形式を確認してください。</p>';
+    // INC-555関連（2026-10-16 実帳票との突合）: 足立の「施設集計 R」CSVは現行の解析では0行になるため、
+    // この文言だけでは次に何をすればよいか分からない。PDF取込に対応している店舗には PDF へ誘導する。
+    let _noDataHint = '';
+    try {
+      const _pdfProf = _getHomecarePdfProfileForStore(store);
+      if (!isPdf && _pdfProf && _pdfProf.confirmed) {
+        _noDataHint = '<p style="color:#c0392b;margin-top:6px">この店舗は区療保険の「施設集計 R」（患者別調剤報酬明細）を <strong>PDF</strong> で取り込めます。CSV形式はまだ対応していないため、同じ帳票をPDFで出力して選び直してください。</p>';
+      }
+    } catch (_e) { _noDataHint = ''; }
+    document.getElementById('homecarePreview').innerHTML = '<p style="color:#c0392b">データ行が見つかりませんでした。ファイル形式を確認してください。</p>' + _noDataHint;
     document.getElementById('homecareSaveArea').style.display = 'none';
     _homecareResult = null;
   };
@@ -7097,6 +7178,72 @@ document.getElementById('homecareFileInput').addEventListener('change', async fu
   reader.readAsArrayBuffer(file);
 });
 
+// ===HOMECARE_ZERO_TECH_GUARD_START===
+// INC-555（2026-10-16）: 足立が2026-09-14に提出した在宅内訳の帳票が、必要な医療保険の技術料内訳を持たない
+// 介護保険「施設集計」CSV（居宅療養管理指導の明細＝HOMECARE_CSV_PROFILES.elysia）だったため、取込自体は
+// 通ってしまい「必要な帳票かどうか」の判定が山内さんの目視確認だけに依存し約1か月止まった。
+// 2026-10-16改訂: insuranceTotal単独ゼロ判定は、pharmy（柏/我孫子）実CSVで保険計列が欠落・非数値だった場合に
+// 正常な提出を誤ブロックする恐れがある（Firestore実データでの裏取り未了・gcloud再認証切れのため未検証）。
+// 誤ブロック回帰を避けるため、判定を「プロファイル種別」ベースに変更する:
+//   1) 取込行が0件 → ブロック
+//   2) プロファイルがelysia（介護保険『施設集計』CSV）→ 常にブロック（この帳票は構造的に医療保険の技術料
+//      を持たないため。INC-555の穴そのもの。insTotal/techの値を問わない）
+//   3) それ以外（pharmy CSV・elysia_r PDF）→ insuranceTotal(点)とtech(技術料内訳の内部集計)が
+//      両方0のときだけブロック。どちらか一方でも正の値なら通す（片方の列だけ欠落しても誤ブロックしない）
+// 「この月は在宅患者なし」報告(reportNoHomecare)はCSV/PDF取込を経由しないため、本ガードの対象外（別経路）。
+// プロファイル種別の判定にはresult.profileIdを使う。CSV経路は_parseHomecareCSV内で付与し、PDF経路は
+// 呼び出し側(homecareFileInputのchangeハンドラ)でpdfResult.profileId='elysia_r'を既に付与している。
+// どちらもparse直後に確定するフィールドのため、プレビュー描画(_renderHomecarePreview)と保存(saveHomecareData)
+// が同じ_homecareResult.profileIdを参照し、判定が2箇所でずれない。
+/**
+ * 在宅内訳プレビュー結果から、技術料（報酬点数）ゼロガードの判定値を計算する純関数
+ * （副作用なし・DOM非依存。Node単体テスト可能）。
+ * @param {{totals?:{insTotal?:number,tech?:number}, sorted?:Array, rows?:Array, profileId?:string|null}} result
+ *   _parseHomecareCSV/HOMECARE_PDF_PROFILES.parseLinesの戻り値（profileId付与済みのもの）
+ * @returns {{blocked:boolean, reason:('no_rows'|'kaigo_csv'|'zero_both'|null), techTotalPoints:number,
+ *            techPoints:number, facilityCount:number, rowCount:number, profileId:string|null}}
+ */
+function _homecareZeroTechGuard(result) {
+  const totals = (result && result.totals) || {};
+  // insuranceTotalは「円相当」単位で保持される（pharmyはCSV保険計列をそのまま格納・elysia_rは報酬点数×10）。
+  // プレビュー表示(保険計(点)列)と同じ /10 変換で「点」に揃える（表示との整合のみが目的で判定のしきい値には影響しない）。
+  const techTotalPoints = Math.round((Number(totals.insTotal) || 0) / 10);
+  const techPoints = Number(totals.tech) || 0; // 基本点+時加算+調剤点+調加算+指導点の内部集計（既存computeHomecareTotalsFromRows準拠）
+  const facilityCount = (result && Array.isArray(result.sorted)) ? result.sorted.length : 0;
+  const rowCount = (result && Array.isArray(result.rows)) ? result.rows.length : 0;
+  const profileId = (result && result.profileId) || null;
+  const isKaigoCsv = (profileId === 'elysia' || profileId === 'elysia_kaigo');
+  let reason = null;
+  if (rowCount === 0) reason = 'no_rows';
+  else if (isKaigoCsv) reason = 'kaigo_csv';
+  else if (techTotalPoints === 0 && techPoints === 0) reason = 'zero_both';
+  return { blocked: reason !== null, reason, techTotalPoints, techPoints, facilityCount, rowCount, profileId };
+}
+
+// 介護保険CSV(elysia)専用の警告文（構造的に技術料列を持たない帳票である旨を明示）
+const HOMECARE_ZERO_TECH_MSG_KAIGO_CSV =
+  'このファイルには技術料（報酬点数）が入っていません。在宅内訳には医療保険の『施設集計 R』（患者別調剤報酬明細）が必要です。' +
+  '介護保険の『施設集計』（居宅療養管理指導の明細）は技術料が入っていないため使えません。帳票を出し直してください。';
+// それ以外（pharmy/elysia_r）で保険計・技術料がいずれも0だった場合の汎用警告文（原因が列欠落か対象月違いか帳票側で特定できないため一般的な確認依頼にする）
+const HOMECARE_ZERO_TECH_MSG_GENERIC =
+  'このファイルには技術料（報酬点数）が入っていません。帳票と対象月を確認してください。';
+
+/** ガード判定結果(reason)に応じた警告本文（プレーンテキスト）を返す。blocked:falseのときは空文字 */
+function _homecareZeroTechMessage(guard) {
+  if (!guard || !guard.blocked) return '';
+  if (guard.reason === 'kaigo_csv') return HOMECARE_ZERO_TECH_MSG_KAIGO_CSV;
+  return HOMECARE_ZERO_TECH_MSG_GENERIC; // 'no_rows' | 'zero_both'
+}
+
+/** ガード判定結果からプレビュー用の警告HTML（赤枠）を返す。blocked:falseのときは空文字 */
+function _homecareZeroTechWarningHtml(guard) {
+  const msg = _homecareZeroTechMessage(guard);
+  if (!msg) return '';
+  return '<div style="margin:0 0 10px;padding:8px 12px;background:#fdedec;border:1px solid #e74c3c;border-radius:4px;color:#c0392b;font-size:13px;font-weight:600;">' +
+    '⚠️ ' + msg + '</div>';
+}
+// ===HOMECARE_ZERO_TECH_GUARD_END===
+
 /**
  * 在宅内訳プレビューテーブルを描画する（CSV/PDF共通。pdfProfileObjが渡された場合はそれをtechBreakdown判定に使う）。
  * append=trueのときはPDF検算警告(既に描画済み)を消さずその下にテーブルを追加する。
@@ -7110,8 +7257,11 @@ function _renderHomecarePreview(result, pdfProfileObj, append) {
     const previewTechBreakdown = !(_previewProfile && _previewProfile.techBreakdown === false);
     const previewTechLabel = (_previewProfile && _previewProfile.techLabel) || '技術料';
     const previewTechHeader = previewTechBreakdown ? '技術料合計(点)' : previewTechLabel + '(単位)';
+    // INC-555（2026-10-16）: 技術料（報酬点数）ゼロガード。保存ボタンのdisabled判定にも使う（下部参照）。
+    const _zeroTechGuard = _homecareZeroTechGuard(result);
     // プレビューテーブル描画
-    let html = '<div style="margin-bottom:8px;font-size:13px;color:#555">';
+    let html = _homecareZeroTechWarningHtml(_zeroTechGuard);
+    html += '<div style="margin-bottom:8px;font-size:13px;color:#555">';
     html += sorted.length + ' 施設 / ' + totals.patients.toLocaleString() + ' 患者（プレビュー）</div>';
     if (!previewTechBreakdown) {
       html += '<p style="color:#888;font-size:12px;margin:0 0 6px">※技術料内訳なし（' + previewTechLabel + '）。保険計(点)欄は「—（この帳票にはなし）」。</p>';
@@ -7156,6 +7306,10 @@ function _renderHomecarePreview(result, pdfProfileObj, append) {
       document.getElementById('homecarePreview').innerHTML = html;
     }
     document.getElementById('homecareSaveArea').style.display = '';
+    // INC-555（2026-10-16）: 技術料（報酬点数）が0、または取込行が0件のときはアップロードボタンを押せなくする
+    // （「この月は在宅患者なし」報告=reportNoHomecare()は本関数を経由しないため対象外）。
+    const uploadBtn = document.getElementById('homecareUploadBtn');
+    if (uploadBtn) uploadBtn.disabled = _zeroTechGuard.blocked;
     const statusEl = document.getElementById('homecareSaveStatus');
     if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
   }
@@ -7237,6 +7391,96 @@ function mergeHomecareRows(prevHeader, prevRows, newHeader, newRows) {
 }
 // ===HOMECARE_ROWS_MERGE_END===
 
+// ===HOMECARE_IRYO_KAIGO_MERGE_START===
+// 改修B（2026-10-19）: 足立(adachi)在宅内訳の医療保険(elysia_r・PDF)と介護保険(elysia_kaigo・CSV)の合算。
+// 背景: 在宅医療の報酬は医療保険(技術料)と介護保険(居宅療養管理指導)の両方から出るが、帳票は別々に提出される
+// （実測: 足立の医療保険7,158,080円＋介護保険632,367単位×10円=6,323,670円＝合計13,481,750円で柏とほぼ同規模）。
+// 設計: homecareRowsを医療側(docId無suffix・既存のまま)と介護側(docId+'__kaigo'・新設)の2バケットに分けて保存し、
+// facilities/totalsは常に両バケットの最新全量から再計算する（upload順に依存しない＝逆順でも同じ結果になる。
+// 再提出・訂正も安全＝片側だけ差し替えても他側は影響を受けない）。_hcJudge・_homecareZeroTechGuardは変更しない。
+const HOMECARE_IRYO_PROFILE_ID = 'elysia_r';
+const HOMECARE_KAIGO_PROFILE_ID = 'elysia_kaigo';
+
+function _isHomecareKaigoProfile(profileId) { return profileId === HOMECARE_KAIGO_PROFILE_ID; }
+
+/** homecareRowsの介護側専用バケットのdocId（医療側の行データ(docId無suffix)と分離し、上書き・混在させない） */
+function _homecareKaigoRowsDocId(docId) { return docId + '__kaigo'; }
+
+/** 2つのprofileIdが医療(PDF)/介護(CSV)の合算対象ペアかどうか（順不同判定） */
+function _isHomecareMergeablePair(idA, idB) {
+  return (idA === HOMECARE_IRYO_PROFILE_ID && idB === HOMECARE_KAIGO_PROFILE_ID) ||
+         (idB === HOMECARE_IRYO_PROFILE_ID && idA === HOMECARE_KAIGO_PROFILE_ID);
+}
+
+/**
+ * 医療側・介護側それぞれの施設別集計(computeHomecareTotalsFromRowsのsorted形式)を、施設名の完全一致で合算する純関数。
+ * 一致しない施設名はそのまま別行として残す（勝手に寄せて数字を混ぜない。表記違いの可能性は呼び出し側で一覧表示する）。
+ * @param {Array<[string,Object]>} sortedIryo 医療側sorted（無ければ[]）
+ * @param {Array<[string,Object]>} sortedKaigo 介護側sorted（無ければ[]）
+ * @returns {{facilities:Array<{name:string,[k:string]:number}>, mismatches:Array<{name:string,side:'iryo'|'kaigo'}>}}
+ */
+function _combineHomecareIryoKaigo(sortedIryo, sortedKaigo) {
+  const kaigoMap = new Map((sortedKaigo || []).map(([name, g]) => [name, g]));
+  const usedKaigo = new Set();
+  const facilities = [];
+  const mismatches = [];
+  (sortedIryo || []).forEach(([name, g]) => {
+    const kg = kaigoMap.get(name);
+    if (kg) { usedKaigo.add(name); facilities.push(_homecareSumFacility(name, g, kg)); }
+    else { facilities.push({ name, ...g }); mismatches.push({ name, side: 'iryo' }); }
+  });
+  (sortedKaigo || []).forEach(([name, g]) => {
+    if (!usedKaigo.has(name)) { facilities.push({ name, ...g }); mismatches.push({ name, side: 'kaigo' }); }
+  });
+  return { facilities, mismatches };
+}
+
+/** 施設の2つの集計オブジェクト(computeHomecareTotalsFromRowsのg)を数値フィールドのみ加算して1つにまとめる */
+function _homecareSumFacility(name, a, b) {
+  const out = { name };
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  keys.forEach(k => {
+    const av = typeof a[k] === 'number' ? a[k] : 0;
+    const bv = typeof b[k] === 'number' ? b[k] : 0;
+    out[k] = av + bv;
+  });
+  return out;
+}
+
+/** 'YYYY-MM' -> '2026年7月' 形式のラベル（1件のみ。複数月の省略表示は既存_hcMonthLabels参照） */
+function _hcSingleMonthLabel(ym) {
+  const parts = (ym || '').split('-');
+  if (parts.length !== 2) return ym || '';
+  return parts[0] + '年' + parseInt(parts[1], 10) + '月';
+}
+
+/**
+ * 改修A-1（2026-10-19）: 同一店舗の他の月のhomecareDataと、患者数・訪問回数・保険計(insTotal)の3値が
+ * 完全一致する月があるかを調べる（対象月の選び間違い検知。実績: kashiwa_202606が実は7月分・
+ * adachi_202609が実は8月分の2件確定）。一致する最初の月のyearMonthを返す（無ければnull）。
+ * @param {string} store
+ * @param {string} month 対象月('YYYY-MM'。この月自身は比較対象から除外する)
+ * @param {{patients?:number, times?:number, insTotal?:number}} totals 今回アップロードする集計値
+ */
+async function _homecareFindDuplicateMonth(store, month, totals) {
+  if (!totals || !(totals.patients > 0)) return null; // 全部0同士の一致は誤検知になるため対象外
+  const snap = await db.collection('homecareData').where('store', '==', store).get();
+  let found = null;
+  snap.forEach(doc => {
+    if (found) return;
+    const d = doc.data();
+    if (!d || d.yearMonth === month || d.noHomecare) return;
+    const t = d.totals || {};
+    if ((t.patients || 0) === (totals.patients || 0) &&
+        (t.times || 0) === (totals.times || 0) &&
+        (t.insTotal || 0) === (totals.insTotal || 0)) {
+      found = d.yearMonth;
+    }
+  });
+  return found;
+}
+// ===HOMECARE_IRYO_KAIGO_MERGE_END===
+
 // homecareRows: 1docあたりの行数上限（Firestore 1MBドキュメント制限への配慮・超過分はchunksサブコレクションへ分割）
 const HOMECARE_ROWS_CHUNK_SIZE = 500;
 
@@ -7301,6 +7545,68 @@ async function saveHomecareData() {
     alert('CSVファイルを先に選択してください');
     return;
   }
+  // INC-555（2026-10-16）: ボタンのdisabled状態を取り逃した経路（直接呼び出し等）に備えた二重ガード。
+  // 通常はプレビュー描画時点でボタンがdisabledになり、ここに到達しない。
+  const _saveGuard = _homecareZeroTechGuard(_homecareResult);
+  if (_saveGuard.blocked) {
+    alert(_homecareZeroTechMessage(_saveGuard) + '（画面の警告（赤字）を確認してください）');
+    return;
+  }
+  // 2026-10-14: プロファイルID＋技術料内訳の有無を保存docに含める（読む側が再解析せず判別できるように）。
+  // techBreakdown未指定（pharmy等）はtrue扱い（既存の挙動を変えない）。既存フィールドは削除・改名しない。
+  // _homecareResult.profileObj/profileId（PDF経路で設定）を優先し、無ければ従来通りCSVプロファイルから導出する。
+  const _profileObjForSave = _homecareResult.profileObj || _getHomecareProfileForStore(store);
+  const _profileIdForSave = _homecareResult.profileId || (_profileObjForSave
+    ? Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === _profileObjForSave)
+    : null);
+  const _techBreakdownForUpload = !(_profileObjForSave && _profileObjForSave.techBreakdown === false);
+
+  // ===HOMECARE_MONTH_MISMATCH_GUARD_START===
+  // 改修A-1（2026-10-19）: 対象月の取り違え検知。他の月の登録済みデータと患者数・回数・保険計が完全一致する場合は確認を挟む。
+  try {
+    const _dupMonth = await _homecareFindDuplicateMonth(store, month, _homecareResult.totals);
+    if (_dupMonth) {
+      const dupLabel = _hcSingleMonthLabel(_dupMonth), curLabel = _hcSingleMonthLabel(month);
+      const okDup = confirm(
+        'この内容は〈' + dupLabel + '〉として登録済みの数字と、患者数・訪問回数・保険請求額のすべてが一致しています。\n' +
+        '対象月のプルダウンが〈' + curLabel + '〉になっていますが、帳票は' + dupLabel + '分ではありませんか？\n' +
+        'このまま登録すると' + dupLabel + '分が' + curLabel + 'の枠に入ります。'
+      );
+      if (!okDup) return;
+    }
+  } catch (_eDup) { console.warn('[homecare] 重複月チェックに失敗（続行）:', _eDup); }
+  // ===HOMECARE_MONTH_MISMATCH_GUARD_END===
+
+  // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_START===
+  // 改修A-2（2026-10-19）: 同月レセコン月計表(salesData)の技術料との突合を取込時にも効かせる（既存_hcJudgeを再利用・
+  // 複製しない。_hcJudgeの定義・判定基準はrenderHomecareView内と同一のまま）。医療保険の技術料内訳がある帳票
+  // (techBreakdown)のみ対象。月計表未提出(nosales)はブロックも警告もしない。
+  if (_techBreakdownForUpload) {
+    try {
+      const salesDoc = await db.collection('salesData').doc(month + '_' + store).get();
+      if (salesDoc.exists) {
+        const sv = salesDoc.data().values || {};
+        const j = _hcJudge({
+          tech: _homecareResult.totals.tech, techFee: sv.techFee,
+          times: _homecareResult.totals.times, visitCount: sv.visitCount,
+          insTotal: _homecareResult.totals.insTotal, totalInsurance: sv.totalInsurance,
+          hasSalesData: true
+        });
+        if (j.status === 'mismatch') {
+          const okJudge = confirm(
+            '同じ月のレセコン月計表の技術料〈' + Math.round(j.techFeePoints).toLocaleString() + '点〉に対して、' +
+            'この帳票の技術料は〈' + Math.round(_homecareResult.totals.tech).toLocaleString() + '点〉で、' +
+            Math.abs(j.diffPercent).toFixed(1) + '%ずれています。\n' +
+            '対象月の選択が正しいか、帳票が全ページ揃っているかを確認してください。'
+          );
+          if (!okJudge) return;
+        }
+      }
+      // salesDoc不在（月計表未提出）→ ブロックも警告もしない（通常運用でよくあるため）
+    } catch (_eJudge) { console.warn('[homecare] 月計表突合チェックに失敗（続行）:', _eJudge); }
+  }
+  // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_END===
+
   const status = document.getElementById('homecareSaveStatus');
   status.textContent = 'アップロード中...';
   status.style.color = '#555';
@@ -7311,27 +7617,31 @@ async function saveHomecareData() {
     const replaceAll = !!(replaceAllEl && replaceAllEl.checked);
     let mergedFacilities = newFacilities;
     let prevCount = 0;
-    // 2026-10-14: プロファイルID＋技術料内訳の有無を保存docに含める（読む側が再解析せず判別できるように）。
-    // techBreakdown未指定（pharmy等）はtrue扱い（既存の挙動を変えない）。既存フィールドは削除・改名しない。
-    // _homecareResult.profileObj/profileId（PDF経路で設定）を優先し、無ければ従来通りCSVプロファイルから導出する。
-    const _profileObjForSave = _homecareResult.profileObj || _getHomecareProfileForStore(store);
-    const _profileIdForSave = _homecareResult.profileId || (_profileObjForSave
-      ? Object.keys(HOMECARE_CSV_PROFILES).find(k => HOMECARE_CSV_PROFILES[k] === _profileObjForSave)
-      : null);
-    const _techBreakdownForSave = !(_profileObjForSave && _profileObjForSave.techBreakdown === false);
-    const _techKindForSave = (_profileObjForSave && _profileObjForSave.techKind) || null;
-    const _techLabelForSave = (_profileObjForSave && _profileObjForSave.techLabel) || null;
+    let _techBreakdownForSave = _techBreakdownForUpload;
+    let _techKindForSave = (_profileObjForSave && _profileObjForSave.techKind) || null;
+    let _techLabelForSave = (_profileObjForSave && _profileObjForSave.techLabel) || null;
     const _sourceForSave = _homecareResult.source || 'csv';
+    let _facilityMismatchesForSave = [];
+    // 改修B（2026-10-19）: 介護(elysia_kaigo)の行データは医療側(docId無suffix)とは別バケット(__kaigo)に保存し、
+    // 同名施設でも上書きし合わないようにする（合算はfacilities/totalsの計算時にのみ行う。_isHomecareKaigoProfile等は
+    // 上のHOMECARE_IRYO_KAIGO_MERGE_START節を参照）。
+    const _isKaigoUpload = _isHomecareKaigoProfile(_profileIdForSave);
+    const _otherSideDocId = _isKaigoUpload ? docId : _homecareKaigoRowsDocId(docId);
+    const rowsTargetDocId = _isKaigoUpload ? _homecareKaigoRowsDocId(docId) : docId;
+    let newRowsToSave = { header: _homecareResult.header, rows: _homecareResult.rows };
+
     if (!replaceAll) {
       // 既存doc取得 → 施設名キーでマージ（1施設ずつアップロードしても前施設分を消さない）
       const prevDoc = await db.collection('homecareData').doc(docId).get();
-      const prevFacilities = prevDoc.exists ? (prevDoc.data().facilities || []) : [];
+      const prevData = prevDoc.exists ? prevDoc.data() : null;
+      const prevFacilities = prevData ? (prevData.facilities || []) : [];
       prevCount = prevFacilities.length;
-      // 2026-10-14: 医療保険PDF（R）と介護保険CSV（既存elysia）は別帳票・別勘定のため、同月に既存docが
+      // 2026-10-14: 医療保険PDF（R）と介護保険CSV（elysia_kaigo）は別帳票・別勘定のため、同月に既存docが
       // 別プロファイル由来かつ施設データを持つ場合は上書き前に確認する（複雑な自動マージはせずRを正として進める）。
+      // 改修B（2026-10-19）: 医療(elysia_r)⇄介護(elysia_kaigo)の合算ペアはこの警告の対象外にする（想定どおりの正常操作）。
       if (prevDoc.exists && prevCount > 0) {
-        const prevProfileId = prevDoc.data().profile || null;
-        if (prevProfileId && prevProfileId !== _profileIdForSave) {
+        const prevProfileId = prevData.profile || null;
+        if (prevProfileId && prevProfileId !== _profileIdForSave && !_isHomecareMergeablePair(prevProfileId, _profileIdForSave)) {
           const prevLabel = (HOMECARE_CSV_PROFILES[prevProfileId] || HOMECARE_PDF_PROFILES[prevProfileId] || {}).name || prevProfileId;
           const curLabel = (_profileObjForSave && _profileObjForSave.name) || _profileIdForSave || '不明';
           const ok = confirm(
@@ -7341,7 +7651,42 @@ async function saveHomecareData() {
           if (!ok) { status.textContent = '保存を中止しました（プロファイル不一致）'; status.style.color = '#c0392b'; return; }
         }
       }
-      mergedFacilities = mergeHomecareFacilities(prevFacilities, newFacilities);
+      if (_homecareResult.header && _homecareResult.rows) {
+        const prevRowsDoc = await loadHomecareRowsAll(rowsTargetDocId);
+        newRowsToSave = mergeHomecareRows(
+          prevRowsDoc ? prevRowsDoc.header : null, prevRowsDoc ? prevRowsDoc.rows : null,
+          _homecareResult.header, _homecareResult.rows
+        );
+      }
+      // 改修B: もう一方の側（医療⇄介護）の行データが既にあれば合算する（常に両バケットの最新全量から再計算するため、
+      // upload順（逆順含む）や再提出・訂正の繰り返しに対して結果が安定する）
+      let _otherSideRows = null;
+      try { _otherSideRows = await loadHomecareRowsAll(_otherSideDocId); } catch (_eOther) { _otherSideRows = null; }
+      const _hasOtherSide = !!(_otherSideRows && _otherSideRows.rows && _otherSideRows.rows.length > 0);
+      if (_hasOtherSide && _homecareResult.header && _homecareResult.rows) {
+        const header = _homecareResult.header;
+        const iryoRows = _isKaigoUpload ? _otherSideRows.rows : newRowsToSave.rows;
+        const kaigoRows = _isKaigoUpload ? newRowsToSave.rows : _otherSideRows.rows;
+        const aggIryo = computeHomecareTotalsFromRows(header, iryoRows) || { sorted: [] };
+        const aggKaigo = computeHomecareTotalsFromRows(header, kaigoRows) || { sorted: [] };
+        const combo = _combineHomecareIryoKaigo(aggIryo.sorted, aggKaigo.sorted);
+        mergedFacilities = combo.facilities;
+        _facilityMismatchesForSave = combo.mismatches;
+        _techKindForSave = 'iryo_kaigo';
+        _techLabelForSave = '医療＋介護（介護分は1単位' + HOMECARE_KAIGO_UNIT_YEN + '円換算）';
+        _techBreakdownForSave = true;
+      } else {
+        mergedFacilities = mergeHomecareFacilities(prevFacilities, newFacilities);
+        if (_isKaigoUpload) {
+          _techKindForSave = (_profileObjForSave && _profileObjForSave.techKind) || 'kaigo';
+          _techLabelForSave = (_profileObjForSave && _profileObjForSave.techLabel) || '介護保険 居宅療養管理指導（単位）';
+          _techBreakdownForSave = false;
+        }
+      }
+    } else if (_isKaigoUpload) {
+      _techKindForSave = (_profileObjForSave && _profileObjForSave.techKind) || 'kaigo';
+      _techLabelForSave = (_profileObjForSave && _profileObjForSave.techLabel) || '介護保険 居宅療養管理指導（単位）';
+      _techBreakdownForSave = false;
     }
     const mergedTotals = recalcHomecareTotals(mergedFacilities);
     await db.collection('homecareData').doc(docId).set({
@@ -7354,26 +7699,20 @@ async function saveHomecareData() {
       techKind: _techKindForSave,
       techLabel: _techLabelForSave,
       source: _sourceForSave,
+      facilityMismatches: _facilityMismatchesForSave, // 改修B: 医療側/介護側で施設名が一致しなかったもの（無ければ[]）
+      sourceFileName: _homecareFileName || null, // 改修A-3: 画面で元ファイル名を常時表示するため
       uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
       uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
     });
     // homecareRows: 提出された行データ（識別子を除く）を保存する（INC-403・2026-09-16）。
     // 式修正後の再計算をhomecareRowsから行えるようにするための正データ。集計(facilities/totals)の保存に失敗させないよう、
     // このブロックの失敗はconsole.warnに留め、アップロード完了表示自体はブロックしない。
+    // 改修B: 保存先は介護(elysia_kaigo)なら専用バケット(rowsTargetDocId=docId+'__kaigo')、それ以外はdocIdそのもの。
     try {
       if (_homecareResult.header && _homecareResult.rows) {
-        const profileId = _profileIdForSave;
-        let rowsToSave = { header: _homecareResult.header, rows: _homecareResult.rows };
-        if (!replaceAll) {
-          const prevRowsDoc = await loadHomecareRowsAll(docId);
-          rowsToSave = mergeHomecareRows(
-            prevRowsDoc ? prevRowsDoc.header : null, prevRowsDoc ? prevRowsDoc.rows : null,
-            _homecareResult.header, _homecareResult.rows
-          );
-        }
-        await saveHomecareRows(docId, {
-          store, yearMonth: month, profile: profileId,
-          header: rowsToSave.header, rows: rowsToSave.rows,
+        await saveHomecareRows(rowsTargetDocId, {
+          store, yearMonth: month, profile: _profileIdForSave,
+          header: newRowsToSave.header, rows: newRowsToSave.rows,
           sourceFileName: _homecareFileName || null,
         });
       }
@@ -7666,6 +8005,24 @@ async function renderHomecareView(container, dataList) {
     if (!techBreakdown) {
       html += '<p style="color:#888;font-size:12px;margin:0 0 6px">※技術料内訳なし（' + (data.techLabel || '介護保険 居宅療養管理指導の単位のみ') + '）。保険計(点)欄は「—（この帳票にはなし）」。</p>';
     }
+    // 改修A-3（2026-10-19）: 元ファイル名・取込日時・帳票種別を常時表示する（対象月の取り違えに人の目で気づける材料。
+    // sourceFileNameは2026-10-19以前に保存されたdocには無い場合がある＝homecareRows側にしか入っていない世代。
+    // 表示のための追加読取(homecareRows)は行わず、無ければ「記録なし」と出すだけにする）。
+    {
+      const _srcLabel = data.sourceFileName || '元ファイル名の記録なし';
+      const _uploadedAtLabel = (data.uploadedAt && typeof data.uploadedAt.toDate === 'function')
+        ? data.uploadedAt.toDate().toLocaleDateString('ja-JP') : '記録なし';
+      const _reportLabel = data.techLabel || (HOMECARE_CSV_PROFILES[data.profile] || HOMECARE_PDF_PROFILES[data.profile] || {}).name || data.profile || '不明';
+      html += '<p style="color:#999;font-size:11px;margin:0 0 6px">元ファイル: ' + _srcLabel +
+        ' / 取込: ' + _uploadedAtLabel + ' / 帳票: ' + _reportLabel + '</p>';
+    }
+    // 改修B（2026-10-19）: 医療側・介護側で施設名が一致しなかったものを一覧表示する（勝手に数字を混ぜていない確認用）
+    if (Array.isArray(data.facilityMismatches) && data.facilityMismatches.length > 0) {
+      html += '<p style="color:#e67e22;font-size:12px;margin:0 0 8px;padding:6px 10px;background:#fef5e7;border-radius:4px">';
+      html += '⚠️ 医療側と介護側で施設名が一致しなかったもの: ';
+      html += data.facilityMismatches.map(m => m.name + '（' + (m.side === 'iryo' ? '医療側のみ' : '介護側のみ') + '）').join('、');
+      html += '</p>';
+    }
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';
     ['施設名','患者数','回数','保険計(点)',techHeaderLabel,'薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
@@ -7710,15 +8067,20 @@ async function renderHomecareView(container, dataList) {
       console.warn('月計表突合の取得に失敗（表示は継続）:', e);
     }
     // 2026-10-13: techBreakdown===false（医療保険の技術料内訳が無い帳票）はtechFeeとの突合対象外とする。
+    // 改修B（2026-10-19）: techKind==='iryo_kaigo'（医療＋介護合算）も対象外にする。tech/insTotalが介護分を
+    // 含むため、医療単体のレセコン月計表とは恒常的にずれ、単純比較すると常に「乖離」と誤判定されるため。
     // _hcJudge自体（pharmy用の既存条件）は変えず、呼び出し側で分岐する（homecare_reconcile.mjsのjudgeReconcileと同型）。
-    const j = techBreakdown
-      ? _hcJudge({
+    const _excludeReconcile = !techBreakdown || data.techKind === 'iryo_kaigo';
+    const j = _excludeReconcile
+      ? { status: 'excluded', label: techBreakdown
+            ? '対象外（医療＋介護の合算のため医療単体の月計表と単純比較できません）'
+            : '対象外（技術料内訳なし・' + (data.techLabel || '介護保険') + '）' }
+      : _hcJudge({
           tech: t.tech, techFee: sv ? sv.techFee : null,
           times: t.times, visitCount: sv ? sv.visitCount : null,
           insTotal: t.insTotal, totalInsurance: sv ? sv.totalInsurance : null,
           hasSalesData
-        })
-      : { status: 'excluded', label: '対象外（技術料内訳なし・' + (data.techLabel || '介護保険') + '）' };
+        });
     const isOld = typeof t.drugFee !== 'number';
     html += '<tr style="background:#fffbea"><td colspan="10" style="padding:8px 10px;border-top:1px solid #ddd;font-size:12px;color:#555">';
     html += '<b>月計表突合（INC-401）:</b> ';
@@ -7763,24 +8125,50 @@ async function recomputeHomecareFromRows(store, yearMonth) {
   const statusEl = document.getElementById('hcRecalcStatus-' + docId);
   if (statusEl) { statusEl.textContent = '再集計中...'; statusEl.style.color = '#555'; }
   try {
+    // 改修Bの追補（2026-10-19）: 医療(docId)と介護(docId+'__kaigo')の両バケットを読み、両方あれば合算して書き戻す。
+    // 医療側だけを読んで上書きすると、合算済みの月でこのボタンを押したときに介護分が消える（取込時と同じ合算を通す）。
     const rowsData = await loadHomecareRowsAll(docId);
-    if (!rowsData || !rowsData.rows || !rowsData.rows.length) {
+    let kaigoRowsDoc = null;
+    try { kaigoRowsDoc = await loadHomecareRowsAll(docId + '__kaigo'); } catch (_eKaigo) { kaigoRowsDoc = null; }
+    const hasIryoRows = !!(rowsData && rowsData.rows && rowsData.rows.length);
+    const hasKaigoRows = !!(kaigoRowsDoc && kaigoRowsDoc.rows && kaigoRowsDoc.rows.length);
+    if (!hasIryoRows && !hasKaigoRows) {
       if (statusEl) { statusEl.textContent = '❌ 保存済み行データがありません（この月はhomecareRows未保存・旧データの可能性）'; statusEl.style.color = '#e74c3c'; }
       return;
     }
-    const agg = computeHomecareTotalsFromRows(rowsData.header, rowsData.rows, rowsData.profile);
+    const baseDoc = hasIryoRows ? rowsData : kaigoRowsDoc;
+    const agg = computeHomecareTotalsFromRows(baseDoc.header, baseDoc.rows, baseDoc.profile);
     if (!agg) {
       if (statusEl) { statusEl.textContent = '❌ 集計に必要な列が保存データに揃っていません'; statusEl.style.color = '#e74c3c'; }
       return;
     }
-    const facilities = agg.sorted.map(([name, g]) => ({ name, ...g }));
-    await db.collection('homecareData').doc(docId).set({
+    let facilities = agg.sorted.map(([name, g]) => ({ name, ...g }));
+    let totals = agg.totals;
+    let rowCountForMsg = baseDoc.rows.length;
+    const extraFields = {};
+    if (hasIryoRows && hasKaigoRows) {
+      const aggKaigo = computeHomecareTotalsFromRows(rowsData.header, kaigoRowsDoc.rows) || { sorted: [] };
+      const combo = _combineHomecareIryoKaigo(agg.sorted, aggKaigo.sorted);
+      facilities = combo.facilities;
+      totals = recalcHomecareTotals(facilities);
+      rowCountForMsg = rowsData.rows.length + kaigoRowsDoc.rows.length;
+      extraFields.facilityMismatches = combo.mismatches;
+      extraFields.techKind = 'iryo_kaigo';
+      extraFields.techLabel = '医療＋介護（介護分は1単位' + HOMECARE_KAIGO_UNIT_YEN + '円換算）';
+      extraFields.techBreakdown = true;
+    } else if (!hasIryoRows && hasKaigoRows) {
+      extraFields.techKind = 'kaigo';
+      extraFields.techLabel = '介護保険 居宅療養管理指導（単位・1単位' + HOMECARE_KAIGO_UNIT_YEN + '円換算）';
+      extraFields.techBreakdown = false;
+    }
+    await db.collection('homecareData').doc(docId).set(Object.assign({
       facilities,
-      totals: agg.totals,
+      totals,
       recomputedAt: firebase.firestore.FieldValue.serverTimestamp(),
       recomputedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
-    }, { merge: true });
-    if (statusEl) { statusEl.textContent = '✅ 再集計完了（' + facilities.length + '施設・' + rowsData.rows.length + '行から再生成）'; statusEl.style.color = '#27ae60'; }
+    }, extraFields), { merge: true });
+    if (statusEl) { statusEl.textContent = '✅ 再集計完了（' + facilities.length + '施設・' + rowCountForMsg + '行から再生成'
+      + ((hasIryoRows && hasKaigoRows) ? '・医療と介護を合算' : '') + '）'; statusEl.style.color = '#27ae60'; }
     await loadHomecareView();
   } catch (e) {
     if (statusEl) { statusEl.textContent = '❌ 再集計失敗: ' + e.message; statusEl.style.color = '#e74c3c'; }

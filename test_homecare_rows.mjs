@@ -190,6 +190,240 @@ const merged2 = mergeHomecareRows(prevHeader, merged.rows, header, reuploadA);
 assertEq(merged2.rows.filter(r => r[idx.facility] === '施設A').length, reuploadA.length,
   'mergeHomecareRows: 同一施設の再アップロードは新データで置換される（重複しない）');
 
+// ===== INC-595: saveHomecareRows/loadHomecareRowsAll の Firestore nested-array制約テスト =====
+// モックFirestore: 配列の直下に配列があるset()をFirestore実機と同じく例外にする（この検証が無いと
+// 「配列の配列を書けること」を前提にした偽成功テストになる＝INC-595の穴そのもの）。
+function assertNoNestedArray(value, p) {
+  if (Array.isArray(value)) {
+    for (const v of value) {
+      if (Array.isArray(v)) throw new Error('INVALID_ARGUMENT: Nested arrays are not supported (at ' + p + ')');
+      assertNoNestedArray(v, p);
+    }
+  } else if (value && typeof value === 'object') {
+    for (const k of Object.keys(value)) assertNoNestedArray(value[k], p + '.' + k);
+  }
+}
+function createMockDb() {
+  const data = new Map();
+  function docRef(path) {
+    return {
+      get: async () => ({ exists: data.has(path), data: () => data.get(path) }),
+      set: async (v) => { assertNoNestedArray(v, path); data.set(path, JSON.parse(JSON.stringify(v))); },
+      collection: (sub) => collRef(path + '/' + sub),
+    };
+  }
+  function collRef(path) {
+    return {
+      doc: (id) => docRef(path + '/' + id),
+      get: async () => {
+        const prefix = path + '/';
+        const docs = [];
+        for (const p of data.keys()) {
+          if (p.startsWith(prefix) && !p.slice(prefix.length).includes('/')) {
+            docs.push({ id: p.slice(prefix.length), data: () => data.get(p), ref: docRef(p) });
+          }
+        }
+        return { docs };
+      },
+    };
+  }
+  return { collection: (name) => collRef(name), _raw: data };
+}
+
+// _homecareRowToArray + saveHomecareRows + loadHomecareRowsAll を抽出（index.htmlを書き換えずに実関数を直接実行）
+const rowsFormatSrc = extractBetweenMarkers(src, '// ===HOMECARE_ROWS_FORMAT_START===', '// ===HOMECARE_ROWS_FORMAT_END===');
+const { full: saveFull } = extractBraceBlock(src, 'async function saveHomecareRows(docId, { store, yearMonth, profile, header, rows, sourceFileName }) {');
+const saveBody = saveFull.slice(1, -1);
+const { full: loadFull } = extractBraceBlock(src, 'async function loadHomecareRowsAll(docId) {');
+const loadBody = loadFull.slice(1, -1);
+if (!saveBody.includes('wrappedRows') || !saveBody.includes("rowFormat: 'v'")) {
+  throw new Error('抽出したsaveHomecareRows本体がINC-595修正後の形(各行を{v:[...]}でラップ)と一致しません（index.html構造変更の疑い）');
+}
+
+const combinedSrc2 = rowsFormatSrc + '\n' +
+  'const HOMECARE_ROWS_CHUNK_SIZE = ' + HOMECARE_ROWS_CHUNK_SIZE + ';\n' +
+  'async function saveHomecareRows(docId, { store, yearMonth, profile, header, rows, sourceFileName }) {' + saveBody + '}\n' +
+  'async function loadHomecareRowsAll(docId) {' + loadBody + '}\n' +
+  'this.saveHomecareRows = saveHomecareRows;\n' +
+  'this.loadHomecareRowsAll = loadHomecareRowsAll;\n';
+
+function makeSandbox2(mockDb) {
+  const sandbox2 = {
+    db: mockDb,
+    firebase: { firestore: { FieldValue: { serverTimestamp: () => '__SERVER_TIMESTAMP__' } } },
+    auth: { currentUser: null },
+  };
+  vm.createContext(sandbox2);
+  vm.runInContext(combinedSrc2, sandbox2);
+  return sandbox2;
+}
+
+// ---- ① 保存→読み戻しで行数・列数・内容が完全一致（非chunk・chunk両方） ----
+{
+  const mockDb = createMockDb();
+  const sandbox2 = makeSandbox2(mockDb);
+  const smallRows = rows.slice(); // pharmy.parse()が返した3行（識別子なし）
+  await sandbox2.saveHomecareRows('test_roundtrip_small', { store: 'kashiwa', yearMonth: '2026-08', profile: 'pharmy', header, rows: smallRows, sourceFileName: 'x.csv' });
+  const loadedSmall = await sandbox2.loadHomecareRowsAll('test_roundtrip_small');
+  assertEq(loadedSmall.rows.length, smallRows.length, '①非chunk: 読み戻し行数が一致');
+  assertEq(loadedSmall.header.length, header.length, '①非chunk: 読み戻し列数(header)が一致');
+  assertEq(loadedSmall.rows, smallRows, '①非chunk: 読み戻し内容が元の行配列と完全一致');
+
+  const bigRows = [];
+  for (let i = 0; i < 1234; i++) bigRows.push(rows[i % rows.length].slice());
+  await sandbox2.saveHomecareRows('test_roundtrip_big', { store: 'kashiwa', yearMonth: '2026-09', profile: 'pharmy', header, rows: bigRows, sourceFileName: 'y.csv' });
+  const loadedBig = await sandbox2.loadHomecareRowsAll('test_roundtrip_big');
+  assertEq(loadedBig.rows.length, bigRows.length, '①chunk(1234行): 読み戻し行数が一致');
+  assertEq(loadedBig.rows, bigRows, '①chunk(1234行): 読み戻し内容が元の行配列と完全一致（chunk連結後も順序保持）');
+}
+
+// ---- ② 回帰テスト: 「配列の配列」を拒否するモックに対して、修正前の実装は失敗し修正後は成功する ----
+{
+  const mockDb = createMockDb();
+  // 修正前の実装を再現（objRows変換なしでrowsをそのままset()）
+  const oldSaveSrc = 'async function saveHomecareRowsOld(docId, { store, yearMonth, profile, header, rows, sourceFileName }) {' +
+    'const rowCount = rows.length; const uploadedAt = firebase.firestore.FieldValue.serverTimestamp(); ' +
+    "const uploadedBy = auth.currentUser ? auth.currentUser.uid : 'unknown'; " +
+    'const base = { store, yearMonth, profile: profile || null, header, rowCount, uploadedAt, uploadedBy }; ' +
+    'if (sourceFileName) base.sourceFileName = sourceFileName; ' +
+    "const rowsRef = db.collection('homecareRows').doc(docId); " +
+    'if (rowCount <= HOMECARE_ROWS_CHUNK_SIZE) { await rowsRef.set({ ...base, rows, chunked: false, chunkCount: 0 }); } ' +
+    'else { const chunkCount = Math.ceil(rowCount / HOMECARE_ROWS_CHUNK_SIZE); ' +
+    'await rowsRef.set({ ...base, chunked: true, chunkCount, rows: [] }); const writes = []; ' +
+    'for (let n = 0; n < chunkCount; n++) { const chunkRows = rows.slice(n * HOMECARE_ROWS_CHUNK_SIZE, (n + 1) * HOMECARE_ROWS_CHUNK_SIZE); ' +
+    "writes.push(rowsRef.collection('chunks').doc(String(n)).set({ chunkIndex: n, rows: chunkRows })); } " +
+    'await Promise.all(writes); } }\n' +
+    'this.saveHomecareRowsOld = saveHomecareRowsOld;\n';
+  const sandboxOld = { db: mockDb, firebase: { firestore: { FieldValue: { serverTimestamp: () => 't' } } }, auth: { currentUser: null } };
+  vm.createContext(sandboxOld);
+  vm.runInContext('const HOMECARE_ROWS_CHUNK_SIZE = ' + HOMECARE_ROWS_CHUNK_SIZE + ';\n' + oldSaveSrc, sandboxOld);
+  let oldThrew = false;
+  try { await sandboxOld.saveHomecareRowsOld('test_old_bug', { store: 'kashiwa', yearMonth: '2026-08', profile: 'pharmy', header, rows: rows.slice(), sourceFileName: null }); }
+  catch (e) { oldThrew = /[Nn]ested array/.test(e.message); }
+  assertOk(oldThrew, '②回帰: 修正前の実装(配列の配列を直接set)はモックのnested array制約で例外になる（INC-595の再現）');
+
+  const sandbox2 = makeSandbox2(mockDb);
+  let newThrew = null;
+  try { await sandbox2.saveHomecareRows('test_new_fixed', { store: 'kashiwa', yearMonth: '2026-08', profile: 'pharmy', header, rows: rows.slice(), sourceFileName: null }); }
+  catch (e) { newThrew = e; }
+  assertOk(newThrew === null, '②回帰: 修正後のsaveHomecareRows(オブジェクト化)は同じモックで例外にならない');
+  const reloaded = await sandbox2.loadHomecareRowsAll('test_new_fixed');
+  assertEq(reloaded.rows, rows, '②回帰: 修正後に保存した内容が元のrowsと完全一致（{v:[...]}形式→配列正規化）');
+}
+
+// ---- ④ 重複ヘッダー・空ヘッダー・スラッシュ入りヘッダーでも列が潰れず往復一致する（親ゲート指摘2026-10-20） ----
+// {v:[...]}形式はheader名をキーにしないため、Object.fromEntries方式で起きるフィールド名制約・重複キー崩壊
+// （INC-403「全列保持」違反）が構造的に発生しない。ここではheaderに重複・空文字・スラッシュを混在させて確認する。
+{
+  const mockDb = createMockDb();
+  const sandbox2 = makeSandbox2(mockDb);
+  const weirdHeader = ['facility', 'a', 'a', '', 'b/c', 'd~e*f'];
+  const weirdRows = [
+    ['施設A', 1, 2, 3, 4, 5],
+    ['施設B', 10, 20, 30, 40, 50],
+  ];
+  await sandbox2.saveHomecareRows('test_weird_header', { store: 'kashiwa', yearMonth: '2026-08', profile: 'pharmy', header: weirdHeader, rows: weirdRows, sourceFileName: null });
+  const loadedWeird = await sandbox2.loadHomecareRowsAll('test_weird_header');
+  assertEq(loadedWeird.header, weirdHeader, '④headerに重複/空文字/スラッシュがあっても親docのheaderはそのまま保持');
+  assertEq(loadedWeird.rows, weirdRows, '④重複ヘッダー("a","a")・空ヘッダー・スラッシュ入りヘッダーでも列の値が1つも潰れず往復一致');
+  assertEq(loadedWeird.rows[0].length, weirdHeader.length, '④1行目の列数がheader列数(6列)と一致（列欠落なし）');
+  assertEq(loadedWeird.rows[1].length, weirdHeader.length, '④2行目の列数がheader列数(6列)と一致（列欠落なし）');
+}
+
+// ---- ⑤ homecare_recompute.mjs: 共有正規化関数(extractHomecareRowToArray)の最小テスト（親ゲート指摘2026-10-20） ----
+// index.htmlの===HOMECARE_ROWS_FORMAT_START/END===ブロックをhomecare_recompute.mjsが実際に抽出して使っている
+// ことを検証する（ロジックの複製ではなく共有であることの確認）。Firestoreアクセスを伴うloadRowsDoc本体は
+// firebase SDKの実体が必要なため、本テストでは正規化関数(_homecareRowToArray)の3形式対応のみを検証する。
+{
+  const { extractHomecareRowToArray } = await import('./homecare_recompute.mjs');
+  const rowToArray = extractHomecareRowToArray();
+  const hdr = ['facility', 'visits', 'insuranceTotal'];
+  assertEq(rowToArray(['施設A', 3, 100], hdr), ['施設A', 3, 100], '⑤homecare_recompute.mjs: ①旧・配列形式はそのまま返す');
+  assertEq(rowToArray({ v: ['施設A', 3, 100] }, hdr), ['施設A', 3, 100], '⑤homecare_recompute.mjs: ③新・{v:[...]}形式を配列へ変換');
+  assertEq(rowToArray({ facility: '施設A', visits: 3, insuranceTotal: 100 }, hdr), ['施設A', 3, 100], '⑤homecare_recompute.mjs: ②本部手動修復時のヘッダーキー付きオブジェクトをheader順の配列へ変換');
+}
+
+// ---- ⑥ _homecareRecomputeGuard: 片側データしか無いときの再集計ガード（INC-595b・2026-10-20） ----
+// homecareData(既存集計)のtechKindと、保存済み行(homecareRows)の医療/介護の有無を突き合わせ、片側だけの
+// データで合算済み・反対側だけの集計を上書きしないことを検証する。index.html側の実関数をvmで直接実行し、
+// homecare_recompute.mjs(CLI)側のextractHomecareRecomputeGuardが同じ関数を共有していることも確認する。
+{
+  const guardBlockSrc = extractBetweenMarkers(src, '// ===HOMECARE_RECOMPUTE_GUARD_START===', '// ===HOMECARE_RECOMPUTE_GUARD_END===');
+  const sandboxGuard = {};
+  vm.createContext(sandboxGuard);
+  vm.runInContext(guardBlockSrc + '\nthis._homecareRecomputeGuard = _homecareRecomputeGuard;\n', sandboxGuard);
+  const guard = sandboxGuard._homecareRecomputeGuard;
+
+  assertEq(guard({ existingDoc: { techKind: 'iryo_kaigo' }, hasIryoRows: false, hasKaigoRows: true }).ok, false,
+    '⑥ガード: iryo_kaigo既存＋介護のみ→中止(false)');
+  assertEq(guard({ existingDoc: { techKind: 'iryo_kaigo' }, hasIryoRows: true, hasKaigoRows: true }).ok, true,
+    '⑥ガード: iryo_kaigo既存＋両方あり→許可(true)');
+  assertEq(guard({ existingDoc: { techKind: 'iryo_kaigo' }, hasIryoRows: false, hasKaigoRows: false }).ok, false,
+    '⑥ガード: 両方無し→中止(false)（existingDocの有無に関わらず）');
+  assertEq(guard({ existingDoc: { techKind: 'kaigo' }, hasIryoRows: false, hasKaigoRows: true }).ok, true,
+    '⑥ガード: kaigo既存＋介護のみ→許可(true)（同じ側のデータなので上書き可）');
+  assertEq(guard({ existingDoc: { techKind: 'iryo' }, hasIryoRows: false, hasKaigoRows: true }).ok, false,
+    '⑥ガード: iryo既存＋介護のみ→中止(false)（医療分を介護だけで上書きしない）');
+  assertEq(guard({ existingDoc: null, hasIryoRows: false, hasKaigoRows: true }).ok, true,
+    '⑥ガード: existingDoc無し(初回保存)→許可(true)');
+  assertEq(guard({ existingDoc: undefined, hasIryoRows: true, hasKaigoRows: false }).ok, true,
+    '⑥ガード: existingDoc無し(初回保存・医療のみ)→許可(true)');
+  assertOk(guard({ existingDoc: { techKind: 'iryo_kaigo' }, hasIryoRows: false, hasKaigoRows: true }).reason.length > 0,
+    '⑥ガード: ok:falseのときreasonが空文字でない');
+
+  // homecare_recompute.mjs(CLI)側が同じ関数を共有していることを確認（ロジックの複製ではない）
+  const { extractHomecareRecomputeGuard } = await import('./homecare_recompute.mjs');
+  const guardFromCli = extractHomecareRecomputeGuard();
+  assertEq(guardFromCli({ existingDoc: { techKind: 'iryo_kaigo' }, hasIryoRows: false, hasKaigoRows: true }),
+    guard({ existingDoc: { techKind: 'iryo_kaigo' }, hasIryoRows: false, hasKaigoRows: true }),
+    '⑥homecare_recompute.mjs: extractHomecareRecomputeGuardがindex.html側と同じ判定結果を返す（iryo_kaigo＋介護のみ）');
+  assertEq(guardFromCli({ existingDoc: { techKind: 'kaigo' }, hasIryoRows: false, hasKaigoRows: true }),
+    guard({ existingDoc: { techKind: 'kaigo' }, hasIryoRows: false, hasKaigoRows: true }),
+    '⑥homecare_recompute.mjs: extractHomecareRecomputeGuardがindex.html側と同じ判定結果を返す（kaigo＋介護のみ）');
+}
+
+// ---- ③ 保存失敗時に例外が呼び出し元へ伝播すること（saveHomecareData側のabort-before-write前提の検証） ----
+{
+  const mockDb = createMockDb();
+  const sandbox2 = makeSandbox2(mockDb);
+  // chunk書込みの一部を強制失敗させるdbラッパー（chunks.doc('1').setだけ失敗＝Promise.all内の部分失敗を模擬）
+  const origCollection = mockDb.collection.bind(mockDb);
+  const failingDb = {
+    collection: (name) => {
+      const c = origCollection(name);
+      return {
+        ...c,
+        doc: (id) => {
+          const d = c.doc(id);
+          return {
+            ...d,
+            collection: (sub) => {
+              const cc = d.collection(sub);
+              return {
+                ...cc,
+                doc: (cid) => {
+                  const cd = cc.doc(cid);
+                  if (cid === '1') return { ...cd, set: async () => { throw new Error('INC-595-TEST: simulated chunk write failure'); } };
+                  return cd;
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  const sandboxFail = makeSandbox2(failingDb);
+  let propagated = false;
+  const bigRows = [];
+  for (let i = 0; i < 1234; i++) bigRows.push(rows[i % rows.length].slice());
+  try { await sandboxFail.saveHomecareRows('test_fail_propagate', { store: 'kashiwa', yearMonth: '2026-08', profile: 'pharmy', header, rows: bigRows, sourceFileName: null }); }
+  catch (e) { propagated = /simulated chunk write failure/.test(e.message); }
+  assertOk(propagated, '③saveHomecareRowsは内部書込み失敗時に例外を呼び出し元へ伝播する（catchして握り潰さない）');
+  // index.html側のsaveHomecareData（この伝播をcatchしてstatus表示+returnし、homecareData.set()より前に中止する）は
+  // ソース読解で確認済み（行番号は本テスト実行時のレポートに記載）。DOM依存のため本ハーネスでは直接駆動しない。
+}
+
 console.log('---');
 if (fail === 0) { console.log('ALL PASS (test_homecare_rows.mjs) — ' + pass + ' assertions'); process.exit(0); }
 else { console.log('FAILED: ' + fail + ' assertion(s) / PASS ' + pass); process.exit(1); }

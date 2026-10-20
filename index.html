@@ -7524,18 +7524,76 @@ async function _homecareFindDuplicateMonth(store, month, totals) {
 // homecareRows: 1docあたりの行数上限（Firestore 1MBドキュメント制限への配慮・超過分はchunksサブコレクションへ分割）
 const HOMECARE_ROWS_CHUNK_SIZE = 500;
 
+// ===HOMECARE_ROWS_FORMAT_START===
+// INC-595（2026-10-20）: Firestoreは「配列の中に配列」を許さない（nested array不可）。saveHomecareRowsは
+// 行配列([val0,val1,...])をそのままrows配列の要素としてset()していたため、これまでの本番取込は常に
+// Promise.all()内のchunks書込みで例外→catchでconsole.warnされるだけの無言失敗だった（homecareDataは保存済みに
+// 見えるため取込成功と誤認される）。
+// 親ゲート指摘（2026-10-20）: header名をフィールド名にする変換(Object.fromEntries)は不採用。Firestoreの
+// フィールド名制約（空文字・「~*/[]」等を含む名前は不可）、および重複ヘッダーで同名キーが潰れる
+// （INC-403「全列保持」違反）の危険があるため。代わりに各行を{v:[val0,val1,...]}でラップして保存する
+// （rowFormat:'v'。mapの中の配列はFirestoreで合法＝nested array制約に当たらない。headerは従来どおり親docに1回だけ）。
+// 読み戻しは3形式に対応する:
+//   ①旧・配列のまま（本来のバグ修正前の形。実在はしないはずだが後方互換として残す）
+//   ②2026-10-20 本部が手動修復時に書いたヘッダーキー付きオブジェクト（homecareRows/adachi_202608__kaigo）
+//   ③新・{v:[...]}（本修正）
+// computeHomecareTotalsFromRows/mergeHomecareRows（どちらも列インデックスアクセス前提）は変更しない。
+/** 1行(配列/{v:[...]}/ヘッダーキー付きオブジェクト)をheader順の配列へ正規化する */
+function _homecareRowToArray(row, header) {
+  if (Array.isArray(row)) return row; // ①旧・配列
+  if (row && Array.isArray(row.v)) return row.v; // ③新・{v:[...]}
+  if (row && typeof row === 'object') return header.map(h => row[h]); // ②本部手動修復時のヘッダーキー付きオブジェクト
+  return row;
+}
+// ===HOMECARE_ROWS_FORMAT_END===
+
+// ===HOMECARE_RECOMPUTE_GUARD_START===
+// INC-595b（2026-10-20）: recomputeHomecareFromRows（「保存データから再集計」ボタン）は、医療(homecareRows/{docId})と
+// 介護(homecareRows/{docId}__kaigo)の一方しか保存されていないとき、その片側だけでfacilities/totalsを上書きし
+// techKindも書き換えてしまう。既存のhomecareData（例: 本部が書いたhomecareData/adachi_202608・techKind:'iryo_kaigo'・
+// 17施設・tech 1,348,175点）が医療＋介護の合算なのに、医療側rowsが保存されておらず介護側rowsだけが存在する場合、
+// ボタン押下で医療分が消える。書込み前に以下の純関数で判定し、上書きしてよいかを決める（Firestoreへは一切触れない）。
+/**
+ * @param {{existingDoc:(object|null), hasIryoRows:boolean, hasKaigoRows:boolean}} params
+ * @returns {{ok:boolean, reason:string}}
+ */
+function _homecareRecomputeGuard({ existingDoc, hasIryoRows, hasKaigoRows }) {
+  if (!hasIryoRows && !hasKaigoRows) {
+    return { ok: false, reason: '原データ（保存済み行データ）が医療・介護のどちらも保存されていません' };
+  }
+  if (!existingDoc) {
+    return { ok: true, reason: '' };
+  }
+  const techKind = existingDoc.techKind || 'iryo';
+  if (techKind === 'iryo_kaigo' && !(hasIryoRows && hasKaigoRows)) {
+    return { ok: false, reason: '既存の集計は医療＋介護の合算ですが、原データが片側しか保存されていないため再集計を中止しました（現在の集計を保持します）' };
+  }
+  if (techKind === 'iryo' && !hasIryoRows) {
+    return { ok: false, reason: '既存の集計は医療分ですが、医療側の原データが保存されていないため再集計を中止しました（介護側だけで医療分を上書きしません）' };
+  }
+  if (techKind === 'kaigo' && !hasKaigoRows) {
+    return { ok: false, reason: '既存の集計は介護分ですが、介護側の原データが保存されていないため再集計を中止しました（医療側だけで介護分を上書きしません）' };
+  }
+  return { ok: true, reason: '' };
+}
+// ===HOMECARE_RECOMPUTE_GUARD_END===
+
 /** homecareRows/{docId} を全行分読み出す（chunked=trueならchunksサブコレクションを連結）。未保存ならnullを返す */
 async function loadHomecareRowsAll(docId) {
   const ref = db.collection('homecareRows').doc(docId);
   const doc = await ref.get();
   if (!doc.exists) return null;
   const data = doc.data();
-  if (!data.chunked) return { header: data.header || [], rows: data.rows || [], profile: data.profile || null };
+  const header = data.header || [];
+  if (!data.chunked) {
+    const rows = (data.rows || []).map(r => _homecareRowToArray(r, header));
+    return { header, rows, profile: data.profile || null };
+  }
   const chunksSnap = await ref.collection('chunks').get();
   const chunkDocs = chunksSnap.docs.slice().sort((a, b) => (a.data().chunkIndex || 0) - (b.data().chunkIndex || 0));
   const rows = [];
-  chunkDocs.forEach(d => { rows.push(...(d.data().rows || [])); });
-  return { header: data.header || [], rows, profile: data.profile || null };
+  chunkDocs.forEach(d => { (d.data().rows || []).forEach(r => rows.push(_homecareRowToArray(r, header))); });
+  return { header, rows, profile: data.profile || null };
 }
 
 /**
@@ -7546,11 +7604,15 @@ async function saveHomecareRows(docId, { store, yearMonth, profile, header, rows
   const rowCount = rows.length;
   const uploadedAt = firebase.firestore.FieldValue.serverTimestamp();
   const uploadedBy = auth.currentUser ? auth.currentUser.uid : 'unknown';
-  const base = { store, yearMonth, profile: profile || null, header, rowCount, uploadedAt, uploadedBy };
+  // INC-595: Firestoreのnested array制約を回避するため、各行配列を{v:[...]}でラップして保存する
+  // （header名をキーにしない＝フィールド名制約・重複ヘッダー列欠落を回避。読み戻し側は_homecareRowToArrayで
+  // 配列へ戻すため、computeHomecareTotalsFromRows等は変更不要。親ゲート指摘2026-10-20）。
+  const wrappedRows = rows.map(r => ({ v: r }));
+  const base = { store, yearMonth, profile: profile || null, header, rowCount, rowFormat: 'v', uploadedAt, uploadedBy };
   if (sourceFileName) base.sourceFileName = sourceFileName;
   const rowsRef = db.collection('homecareRows').doc(docId);
   if (rowCount <= HOMECARE_ROWS_CHUNK_SIZE) {
-    await rowsRef.set({ ...base, rows, chunked: false, chunkCount: 0 });
+    await rowsRef.set({ ...base, rows: wrappedRows, chunked: false, chunkCount: 0 });
     // 前回chunked保存の残骸があれば削除（行数が減って非chunkedに戻ったケース）
     const oldChunks = await rowsRef.collection('chunks').get();
     await Promise.all(oldChunks.docs.map(d => d.ref.delete()));
@@ -7559,7 +7621,7 @@ async function saveHomecareRows(docId, { store, yearMonth, profile, header, rows
     await rowsRef.set({ ...base, chunked: true, chunkCount, rows: [] });
     const writes = [];
     for (let n = 0; n < chunkCount; n++) {
-      const chunkRows = rows.slice(n * HOMECARE_ROWS_CHUNK_SIZE, (n + 1) * HOMECARE_ROWS_CHUNK_SIZE);
+      const chunkRows = wrappedRows.slice(n * HOMECARE_ROWS_CHUNK_SIZE, (n + 1) * HOMECARE_ROWS_CHUNK_SIZE);
       writes.push(rowsRef.collection('chunks').doc(String(n)).set({ chunkIndex: n, rows: chunkRows }));
     }
     await Promise.all(writes);
@@ -7753,6 +7815,26 @@ async function saveHomecareData() {
       } catch (_eJudge) { console.warn('[homecare] 月計表突合チェックに失敗（続行）:', _eJudge); }
     }
     // ===HOMECARE_SALES_RECONCILE_IMPORT_GUARD_END===
+    // homecareRows: 提出された行データ（識別子を除く）を保存する（INC-403・2026-09-16）。
+    // INC-595改修（2026-10-20）: 旧実装はhomecareData（集計）を先に保存し、行データ保存の失敗は
+    // console.warnに留めてアップロード完了表示をブロックしなかったため、原データが保存されないまま
+    // 取込成功に見える事故が常態化していた（本番4件中3件で発生）。集計(homecareData)より先に行データを
+    // 保存し、失敗したらここで中止する（homecareDataは書かない＝取込を成功扱いにしない）。
+    // 改修B: 保存先は介護(elysia_kaigo)なら専用バケット(rowsTargetDocId=docId+'__kaigo')、それ以外はdocIdそのもの。
+    if (_homecareResult.header && _homecareResult.rows) {
+      try {
+        await saveHomecareRows(rowsTargetDocId, {
+          store, yearMonth: month, profile: _profileIdForSave,
+          header: newRowsToSave.header, rows: newRowsToSave.rows,
+          sourceFileName: _homecareFileName || null,
+        });
+      } catch (rowsErr) {
+        console.error('[homecareRows] 行データの保存に失敗したため取込を中止しました:', rowsErr);
+        status.textContent = '原データの保存に失敗したため取込を中止しました（' + (rowsErr && rowsErr.message ? rowsErr.message : rowsErr) + '）';
+        status.style.color = '#c0392b';
+        return;
+      }
+    }
     await db.collection('homecareData').doc(docId).set({
       store,
       yearMonth: month,
@@ -7768,21 +7850,6 @@ async function saveHomecareData() {
       uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
       uploadedBy: auth.currentUser ? auth.currentUser.uid : 'unknown'
     });
-    // homecareRows: 提出された行データ（識別子を除く）を保存する（INC-403・2026-09-16）。
-    // 式修正後の再計算をhomecareRowsから行えるようにするための正データ。集計(facilities/totals)の保存に失敗させないよう、
-    // このブロックの失敗はconsole.warnに留め、アップロード完了表示自体はブロックしない。
-    // 改修B: 保存先は介護(elysia_kaigo)なら専用バケット(rowsTargetDocId=docId+'__kaigo')、それ以外はdocIdそのもの。
-    try {
-      if (_homecareResult.header && _homecareResult.rows) {
-        await saveHomecareRows(rowsTargetDocId, {
-          store, yearMonth: month, profile: _profileIdForSave,
-          header: newRowsToSave.header, rows: newRowsToSave.rows,
-          sourceFileName: _homecareFileName || null,
-        });
-      }
-    } catch (rowsErr) {
-      console.warn('[homecareRows] 行データの保存に失敗しました（施設別集計は保存済み）:', rowsErr);
-    }
     const noteSuffix = replaceAll
       ? '（全置換・' + mergedFacilities.length + '施設）'
       : (prevCount > 0
@@ -8375,8 +8442,16 @@ async function recomputeHomecareFromRows(store, yearMonth) {
     try { kaigoRowsDoc = await loadHomecareRowsAll(docId + '__kaigo'); } catch (_eKaigo) { kaigoRowsDoc = null; }
     const hasIryoRows = !!(rowsData && rowsData.rows && rowsData.rows.length);
     const hasKaigoRows = !!(kaigoRowsDoc && kaigoRowsDoc.rows && kaigoRowsDoc.rows.length);
-    if (!hasIryoRows && !hasKaigoRows) {
-      if (statusEl) { statusEl.textContent = '❌ 保存済み行データがありません（この月はhomecareRows未保存・旧データの可能性）'; statusEl.style.color = '#e74c3c'; }
+    // INC-595b（2026-10-20）: 既存集計(homecareData)が医療＋介護の合算等なのに、原データが片側しか残っていない
+    // ときはfacilities/totals/techKindの上書きを中止する（片側だけの集計で合算済みデータを破壊しない）。
+    const existingHcSnap = await db.collection('homecareData').doc(docId).get();
+    const guardResult = _homecareRecomputeGuard({
+      existingDoc: existingHcSnap.exists ? existingHcSnap.data() : null,
+      hasIryoRows,
+      hasKaigoRows,
+    });
+    if (!guardResult.ok) {
+      if (statusEl) { statusEl.textContent = '❌ ' + guardResult.reason; statusEl.style.color = '#e74c3c'; }
       return;
     }
     const baseDoc = hasIryoRows ? rowsData : kaigoRowsDoc;

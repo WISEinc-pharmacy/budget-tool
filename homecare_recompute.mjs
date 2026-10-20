@@ -60,6 +60,43 @@ function extractBraceBlock(src, startMarker) {
   return { full: src.slice(openIdx, i), openIdx, endIdx: i };
 }
 
+// INC-595（2026-10-20）: homecareRowsの行は①旧配列②本部手動修復時のヘッダーキー付きオブジェクト③新{v:[...]}の
+// 3形式が混在する。index.html側の正規化関数(_homecareRowToArray・===HOMECARE_ROWS_FORMAT_START/END===マーカー)を
+// そのまま抽出して使う（ロジックを本ファイルに複製しない。親ゲート指摘で本ファイルのみ変更許可）。
+export function extractHomecareRowToArray() {
+  const src = readFileSync(INDEX_HTML_PATH, 'utf8');
+  const START = '// ===HOMECARE_ROWS_FORMAT_START===';
+  const END = '// ===HOMECARE_ROWS_FORMAT_END===';
+  const si = src.indexOf(START);
+  const ei = src.indexOf(END);
+  if (si === -1 || ei === -1) throw new Error('HOMECARE_ROWS_FORMATマーカーが見つかりません（index.html構造変更の疑い）');
+  const block = src.slice(si + START.length, ei);
+  if (!block.includes('function _homecareRowToArray')) {
+    throw new Error('抽出したブロックに_homecareRowToArrayが含まれません（index.html構造変更の疑い）');
+  }
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(block + '\nreturn _homecareRowToArray;');
+  return factory();
+}
+
+// INC-595b（2026-10-20）: 書込み前の保護ガード(_homecareRecomputeGuard・===HOMECARE_RECOMPUTE_GUARD_START/END===)も
+// index.html側をそのまま抽出して使う（ロジックを本ファイルに複製しない。extractHomecareRowToArrayと同方式）。
+export function extractHomecareRecomputeGuard() {
+  const src = readFileSync(INDEX_HTML_PATH, 'utf8');
+  const START = '// ===HOMECARE_RECOMPUTE_GUARD_START===';
+  const END = '// ===HOMECARE_RECOMPUTE_GUARD_END===';
+  const si = src.indexOf(START);
+  const ei = src.indexOf(END);
+  if (si === -1 || ei === -1) throw new Error('HOMECARE_RECOMPUTE_GUARDマーカーが見つかりません（index.html構造変更の疑い）');
+  const block = src.slice(si + START.length, ei);
+  if (!block.includes('function _homecareRecomputeGuard')) {
+    throw new Error('抽出したブロックに_homecareRecomputeGuardが含まれません（index.html構造変更の疑い）');
+  }
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(block + '\nreturn _homecareRecomputeGuard;');
+  return factory();
+}
+
 export function extractComputeHomecareTotalsFromRows() {
   const src = readFileSync(INDEX_HTML_PATH, 'utf8');
   const techConstMatch = src.match(/const\s+TECH_INCLUDE_TIME_ADD\s*=\s*(true|false)\s*;/);
@@ -93,17 +130,22 @@ function parseArgs(argv) {
   return out;
 }
 
-async function loadRowsDoc(db, docId) {
+// INC-595: rowToArrayはextractHomecareRowToArray()で取得したindex.html由来の正規化関数（①配列②本部手動修復時の
+// ヘッダーキー付きオブジェクト③{v:[...]}の3形式をheader順の配列へ変換する）。呼び出し元必須（未指定時は不正規化のrowsを
+// そのまま返す旧挙動＝テストでの明示比較用に残す）。
+export async function loadRowsDoc(db, docId, rowToArray) {
   const ref = doc(db, 'homecareRows', docId);
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
   const data = snap.data();
-  if (!data.chunked) return { header: data.header || [], rows: data.rows || [], profile: data.profile || null };
+  const header = data.header || [];
+  const norm = (r) => (rowToArray ? rowToArray(r, header) : r);
+  if (!data.chunked) return { header, rows: (data.rows || []).map(norm), profile: data.profile || null };
   const chunksSnap = await getDocs(collection(db, 'homecareRows', docId, 'chunks'));
   const chunkDocs = chunksSnap.docs.slice().sort((a, b) => (a.data().chunkIndex || 0) - (b.data().chunkIndex || 0));
   const rows = [];
-  chunkDocs.forEach(d => rows.push(...(d.data().rows || [])));
-  return { header: data.header || [], rows, profile: data.profile || null };
+  chunkDocs.forEach(d => (d.data().rows || []).forEach(r => rows.push(norm(r))));
+  return { header, rows, profile: data.profile || null };
 }
 
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString() : '-'; }
@@ -111,6 +153,8 @@ function fmt(n) { return typeof n === 'number' ? n.toLocaleString() : '-'; }
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const { computeHomecareTotalsFromRows } = extractComputeHomecareTotalsFromRows();
+  const rowToArray = extractHomecareRowToArray(); // INC-595: 保存形式3種の正規化（index.html由来）
+  const recomputeGuard = extractHomecareRecomputeGuard(); // INC-595b: 書込み前の保護ガード（index.html由来）
 
   const html = readFileSync(INDEX_HTML_PATH, 'utf-8');
   const apiKeyMatch = html.match(/apiKey:\s*"([^"]+)"/);
@@ -146,7 +190,7 @@ async function main() {
   let changed = 0, unchanged = 0, errors = 0;
   for (const docId of targets) {
     try {
-      const rowsData = await loadRowsDoc(db, docId);
+      const rowsData = await loadRowsDoc(db, docId, rowToArray);
       if (!rowsData || !rowsData.rows.length) { console.log(`  ${docId}: 行データなし（スキップ）`); continue; }
       const agg = computeHomecareTotalsFromRows(rowsData.header, rowsData.rows, rowsData.profile);
       if (!agg) { console.log(`  ${docId}: 集計に必要な列が揃っていません（スキップ）`); errors++; continue; }
@@ -166,6 +210,20 @@ async function main() {
         changed++;
       }
       if (args.write) {
+        // INC-595b（2026-10-20）: 書込み前に医療・介護両バケットの原データ有無を再確認し、既存集計(homecareData)の
+        // techKindと矛盾する片側だけの上書きを中止する（index.html「保存データから再集計」ボタンと同じガード）。
+        const baseId = docId.endsWith('__kaigo') ? docId.slice(0, -'__kaigo'.length) : docId;
+        const iryoDocForGuard = await loadRowsDoc(db, baseId, rowToArray).catch(() => null);
+        const kaigoDocForGuard = await loadRowsDoc(db, baseId + '__kaigo', rowToArray).catch(() => null);
+        const guardResult = recomputeGuard({
+          existingDoc: hcSnap.exists() ? hcSnap.data() : null,
+          hasIryoRows: !!(iryoDocForGuard && iryoDocForGuard.rows && iryoDocForGuard.rows.length),
+          hasKaigoRows: !!(kaigoDocForGuard && kaigoDocForGuard.rows && kaigoDocForGuard.rows.length),
+        });
+        if (!guardResult.ok) {
+          console.error(`  ${docId}: ❌ ガードにより中止: ${guardResult.reason}`);
+          process.exit(1);
+        }
         const facilities = agg.sorted.map(([name, g]) => ({ name, ...g }));
         await setDoc(doc(db, 'homecareData', docId), {
           facilities,

@@ -5073,7 +5073,9 @@ const STORE_PROFILE = {
   nagareyama: 'pharnes',
   ai_chozai:  'pharmaseed',
   koshigaya:  'pharmy', // 2026-09-24 T-20260924-023・越谷の帳票=pharmy「日計表（調剤種別合計）」実測
-  // kiyose: レセコン未定のため意図的に未登録（汎用フォールバック）
+  kiyose:     'pharmy', // 2026-10-20 店舗台帳ST-008「モイネット Pharmy Connect（2026-10-02山内さん確定）」を転記。
+  // 売上の日計表は同じ Pharmy Connect の越谷で列構造を実測済み。開局は11月で実データ未着のため初回取込時にプレビューの数値を目視する。
+  // 未登録のままだと在宅内訳の入口も閉じたままになる（INC-620）。
 };
 
 /** deptIdからprofileを返す。未登録またはfieldsが空ならnull（汎用フォールバック） */
@@ -7079,7 +7081,8 @@ async function _pdfArrayBufferToLines(arrayBuffer) {
 const HOMECARE_PDF_PROFILES = {
   elysia_r: {
     name: 'シグマ エリシア（施設集計R・医療保険）',
-    stores: ['adachi'],
+    receptor: 'elysia', // 取込の判定軸は店舗でなくレセコン（STORE_PROFILE が正本）。2026-10-20 INC-620
+    stores: ['adachi'], // 表示・既存データの互換用に残す（入口判定には使わない）
     confirmed: true,
     techBreakdown: true, // 医療保険の技術料内訳あり（既存elysia CSV=介護保険とは別勘定。両立可）
     techKind: 'iryo_tech',
@@ -7105,9 +7108,14 @@ const HOMECARE_PDF_PROFILES = {
   }
 };
 
-/** 店舗IDから対応する在宅内訳PDFプロファイルを返す（未登録店舗はnull。PDF取込に対応する店舗のみ登録） */
+/**
+ * 店舗IDから対応する在宅内訳PDFプロファイルを返す（そのレセコンのPDF帳票が未実装ならnull）。
+ * 2026-10-20 INC-620: 判定軸は店舗の列挙でなくレセコン。店舗→レセコンは STORE_PROFILE（売上側と共通の正本）だけを見る。
+ */
 function _getHomecarePdfProfileForStore(store) {
-  return Object.values(HOMECARE_PDF_PROFILES).find(p => p.stores.includes(store)) || null;
+  const receptor = STORE_PROFILE[store] || null;
+  if (!receptor) return null;
+  return Object.values(HOMECARE_PDF_PROFILES).find(p => p.receptor === receptor && !p.legacy) || null;
 }
 // ===HOMECARE_PDF_ELYSIA_R_END===
 
@@ -7118,7 +7126,11 @@ const HOMECARE_KAIGO_UNIT_YEN = 10;
 const HOMECARE_CSV_PROFILES = {
   pharmy: {
     name: 'モイネット ファーミー',
-    stores: ['kashiwa', 'abiko'],
+    receptor: 'pharmy',
+    // 2026-10-20 INC-620: 従来は stores:['kashiwa','abiko'] で入口を絞っていたため、店舗台帳で同じ
+    // 「モイネット ファーミー」の柏さくら台（ST-002）と、同系の Pharmy Connect（越谷ST-007・清瀬ST-008）が
+    // 「未対応」で弾かれていた（帳票形式は同じなのに登録漏れだった）。
+    stores: ['kashiwa', 'abiko'], // 表示・既存データの互換用に残す（入口判定には使わない）
     confirmed: true,
     // 0行目: ヘッダー, 1行目: 単位行 → スキップ（i=2から開始）。col22=施設名, col4=回数, col12=保険計,
     // col13-17=技術料（基本点/時加算/調剤点/調加算/指導点）・col18-20=薬剤料/材料料（内服薬/内服外/材料点、技術料に含めない。
@@ -7175,6 +7187,8 @@ const HOMECARE_CSV_PROFILES = {
     // ままだったため、新規アップロードが実際に使うelysia_kaigo側がゼロガードで常時ブロックされ、足立の介護CSV
     // 取込が画面から一切できなかった（10/20 11:41報告）。isKaigoCsvをprofileId==='elysia'のみに絞り、
     // elysia_kaigoは常時ブロックの対象から外した。上記「実質到達不能」は本修正により実際に成立する。
+    legacy: true, // 2026-10-20 INC-620でレセコン判定へ切り替えたため、後継=elysia_kaigo との衝突を明示的に除外する
+    receptor: 'elysia',
     stores: [],
     // 2026-10-13: 足立SPスタッフ提供サンプル「施設集計(2026年09月01日)～(2026年09月30日).csv」で列構造確定。
     // 列（ヘッダー1行・各フィールドは""で囲まれる。pharmyと違い単位行は無くi=1からデータ）:
@@ -7248,7 +7262,8 @@ const HOMECARE_CSV_PROFILES = {
   // insuranceTotal(円相当)も計算する（地域区分による単価差は未反映の近似値。画面注記で明記する）。
   elysia_kaigo: {
     name: 'シグマ エリシア 介護保険（施設集計CSV）',
-    stores: ['adachi'],
+    receptor: 'elysia', // 取込の判定軸はレセコン（STORE_PROFILE が正本）。2026-10-20 INC-620
+    stores: ['adachi'], // 表示・既存データの互換用に残す（入口判定には使わない）
     confirmed: true,
     techBreakdown: false, // 単体提出時は内訳なし表示。医療(elysia_r)と合算された月はsaveHomecareData側でtrueに上書きする
     techKind: 'kaigo',
@@ -7294,7 +7309,8 @@ const HOMECARE_CSV_PROFILES = {
   },
   pharnes: {
     name: 'ウィーメックス pharnes V-EX',
-    stores: ['nagareyama'],
+    receptor: 'pharnes', // 取込の判定軸はレセコン（STORE_PROFILE が正本）。2026-10-20 INC-620
+    stores: ['nagareyama'], // 表示・既存データの互換用に残す（入口判定には使わない）
     // TODO(未対応・2026-08-11): ながれやまの在宅内訳CSVサンプル未確認のため列構造が不明。
     // 実CSVを頂き次第、pharmyと同様の facility/patients/times/insTotal/tech内訳マッピングを実装する。
     // salesData側のRECEIPT_PROFILES.pharnes(L4275)は「売上PDF」の帳票列であり、在宅内訳CSVとは別帳票のため流用不可。
@@ -7303,9 +7319,21 @@ const HOMECARE_CSV_PROFILES = {
   },
 };
 
-/** 店舗IDから対応する在宅内訳CSVプロファイルを返す（未登録店舗はnull） */
+/**
+ * 店舗IDから対応する在宅内訳CSVプロファイルを返す（そのレセコンの帳票が未実装ならnull）。
+ *
+ * 2026-10-20 INC-620（山内さん「かってに、るーるつくんなよ　外来店舗だって在宅やることあるから」
+ * 「在宅は個人宅1件でもやってるでしょ」「前提から受け皿間違ってる」）:
+ * 在宅内訳の入口を「対象店舗の列挙」で絞ってはいけない。在宅の患者さんがいるかどうかは月ごとの事実であって
+ * 店舗の属性ではない（外来中心の店でも個人宅1件からやる）。したがって判定軸は店舗ではなく
+ * 「その店舗のレセコン（＝帳票の形式）」だけにし、店舗→レセコンは STORE_PROFILE（売上側と共通の正本）を使う。
+ * 提出がないことの唯一の正しい表現は月ごとの「この月は在宅患者なし（②提出なし）として報告」
+ * （keiei_data_readiness.mjs の judgeHomecare noHomecare 分岐）で、店舗リストで提出対象を区切る分岐は作らない。
+ */
 function _getHomecareProfileForStore(store) {
-  return Object.values(HOMECARE_CSV_PROFILES).find(p => p.stores.includes(store)) || null;
+  const receptor = STORE_PROFILE[store] || null;
+  if (!receptor) return null;
+  return Object.values(HOMECARE_CSV_PROFILES).find(p => p.receptor === receptor && !p.legacy) || null;
 }
 
 // CSV集計共通ロジック（TextDecoder Shift-JIS → 施設別集計）。店舗の機種プロファイルに応じて列マッピングを切替える
@@ -7330,7 +7358,10 @@ function _parseHomecareCSV(arrayBuffer, store) {
   const lines = text.split('\n');
   const profile = _getHomecareProfileForStore(store);
   if (!profile || !profile.confirmed) {
-    return { unsupported: true, profileName: profile ? profile.name : null };
+    // 帳票が未実装でも「どのレセコンか」は売上側のレセコンマスタから言える（2026-10-20 INC-620）
+    const _receptorName = profile ? profile.name
+      : ((RECEIPT_PROFILES[STORE_PROFILE[store]] && RECEIPT_PROFILES[STORE_PROFILE[store]].name) || null);
+    return { unsupported: true, profileName: _receptorName };
   }
   const parsed = profile.parse(lines);
   // INC-555（2026-10-16）: ゼロガード(_homecareZeroTechGuard)がプロファイル種別で判定するため、
@@ -7371,7 +7402,11 @@ document.getElementById('homecareFileInput').addEventListener('change', async fu
   const isPdf = /\.pdf$/i.test(file.name);
   const _renderUnsupported = (label) => {
     document.getElementById('homecarePreview').innerHTML =
-      '<p style="color:#c0392b">この店舗の帳票形式（' + (label || '不明') + '）は未対応です（サンプルファイルを頂ければ対応します）。</p>';
+      '<p style="color:#c0392b">' + (label ? '「' + label + '」' : 'この帳票形式')
+      + 'の在宅内訳はまだ読み取れません（帳票を1部いただければ対応します）。'
+      + '<br><span style="color:#555;font-size:12px">※提出が不要という意味ではありません。'
+      + '読み取りを用意するまでの間は、帳票ファイルを管理部へお渡しください。'
+      + 'その月に在宅の患者さんがいない場合だけ「この月は在宅患者なし」として報告してください。</span></p>';
     document.getElementById('homecareSaveArea').style.display = 'none';
     _homecareResult = null;
   };

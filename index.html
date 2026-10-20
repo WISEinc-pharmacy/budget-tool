@@ -7841,6 +7841,31 @@ function _homecareRecomputeGuard({ existingDoc, hasIryoRows, hasKaigoRows }) {
 }
 // ===HOMECARE_RECOMPUTE_GUARD_END===
 
+// ===HOMECARE_OVERWRITE_GUARD_START===
+// INC-602（2026-10-20）: homecareData/{docId}の書込み権限はfirestore.rules（L162-167）で
+// 「admin/editorロール」または「その文書のuploadedByと自分のuidが一致（本人）」に限られる
+// （isEditor()=role() in ['admin','editor']、isHomecareOwner()=resource.data.uploadedBy==request.auth.uid）。
+// 本部がAdmin SDKで取り込んだ月（uploadedByがhq_import_...等のuid以外の文字列）や、別の担当者が
+// 登録した月を、権限のないアカウントがsaveHomecareData（set）で上書きしようとすると、先に行データ
+// （saveHomecareRows・homecareRowsは認証済みなら誰でも書ける）だけが保存され、その後の集計保存で
+// 「Missing or insufficient permissions」という生のFirestoreエラーが出て、原因が分からず止まる
+// （10/20 11:33 店舗提出で発生）。書込み前にルールと同じ判定をクライアント側で行い、分かりやすい
+// 理由を出して中断する（Firestoreには一切触れない純関数）。
+/**
+ * @param {{existingUploadedBy:(string|null|undefined), currentUid:(string|undefined), role:(string|undefined)}} params
+ * @returns {{ok:boolean, reason:(string|null)}}
+ */
+function _homecareOverwriteGuard({ existingUploadedBy, currentUid, role }) {
+  if (existingUploadedBy === null || existingUploadedBy === undefined) return { ok: true, reason: null }; // 新規の月
+  if (role === 'admin' || role === 'editor') return { ok: true, reason: null }; // firestore.rules isEditor()と同条件
+  if (typeof currentUid === 'string' && currentUid !== '' && existingUploadedBy === currentUid) return { ok: true, reason: null }; // firestore.rules isHomecareOwner()と同条件
+  return {
+    ok: false,
+    reason: 'この月の在宅内訳は別の担当（または本部）が登録済みのため、この権限では上書きできません。入れ直す場合は管理部へ削除を依頼してください。'
+  };
+}
+// ===HOMECARE_OVERWRITE_GUARD_END===
+
 /** homecareRows/{docId} を全行分読み出す（chunked=trueならchunksサブコレクションを連結）。未保存ならnullを返す */
 async function loadHomecareRowsAll(docId) {
   const ref = db.collection('homecareRows').doc(docId);
@@ -7985,10 +8010,28 @@ async function saveHomecareData() {
     const rowsTargetDocId = _isKaigoUpload ? _homecareKaigoRowsDocId(docId) : docId;
     let newRowsToSave = { header: _homecareResult.header, rows: _homecareResult.rows };
 
+    // 既存doc取得（「全置換」の有無に関わらず常に行う）。全置換時はマージには使わないが、
+    // 直後のINC-602上書きガードがexistingUploadedBy判定に使うため取得自体は常時行う。
+    const prevDoc = await db.collection('homecareData').doc(docId).get();
+    const prevData = prevDoc.exists ? prevDoc.data() : null;
+
+    // ===HOMECARE_OVERWRITE_GUARD_CALL_START===
+    // INC-602（2026-10-20）: 別の担当（本部取込=hq_import_等／別スタッフ）が登録済みの月を、権限のない
+    // アカウントが上書きしようとする事故を、行データ・集計のどちらも書く前に止める（詳細は関数定義のコメント）。
+    const _hcOverwriteCheck = _homecareOverwriteGuard({
+      existingUploadedBy: prevData ? (prevData.uploadedBy ?? null) : null,
+      currentUid: auth.currentUser ? auth.currentUser.uid : '',
+      role: userRole,
+    });
+    if (!_hcOverwriteCheck.ok) {
+      status.textContent = _hcOverwriteCheck.reason;
+      status.style.color = '#c0392b';
+      return;
+    }
+    // ===HOMECARE_OVERWRITE_GUARD_CALL_END===
+
     if (!replaceAll) {
-      // 既存doc取得 → 施設名キーでマージ（1施設ずつアップロードしても前施設分を消さない）
-      const prevDoc = await db.collection('homecareData').doc(docId).get();
-      const prevData = prevDoc.exists ? prevDoc.data() : null;
+      // 既存doc取得済み（上記）→ 施設名キーでマージ（1施設ずつアップロードしても前施設分を消さない）
       const prevFacilities = prevData ? (prevData.facilities || []) : [];
       prevCount = prevFacilities.length;
       // 2026-10-14: 医療保険PDF（R）と介護保険CSV（elysia_kaigo）は別帳票・別勘定のため、同月に既存docが

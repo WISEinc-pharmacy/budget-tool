@@ -488,6 +488,8 @@ select.dist-select { font-size: 11px; padding: 1px 2px; border: 1px solid #aaa; 
       <div style="flex:1;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;min-width:0;overflow-x:auto;">
         <div id="salesExtracted" style="padding:12px 16px;display:none;border-bottom:1px solid #e0e0e0;">
           <h4 style="color:#1a5276;margin-bottom:8px;font-size:13px;">抽出結果 — 確認・修正してください</h4>
+          <!-- INC-598: 集計期間warn・整合性チェックissuesの表示先（renderSalesExtractedが都度書換える） -->
+          <div id="salesPeriodWarningBox" style="display:none;margin-bottom:8px;padding:8px 10px;border-radius:4px;font-size:12px;background:#fff8e1;border:1px solid #f1c40f;color:#7d5a00;"></div>
           <table id="salesTable"></table>
         </div>
         <div id="salesNoExtracted" style="padding:32px 16px;color:#aaa;font-size:12px;text-align:center;">📄 PDFを選択してAI読み取りを開始</div>
@@ -5103,6 +5105,10 @@ let salesExtractedData = {};
 let salesPdfArrayBuffer = null; // PDF読み取り時に保持
 let _salesPdfViewerReady = false;  // pdfviewer.html のロード完了フラグ
 let _pendingSalesPdfData = null;   // ビューア未準備時の一時保存
+// INC-598: 集計期間照合用（handleSalesPdfで設定・submitSalesDataの最終再チェックとrenderSalesExtractedの表示で参照）
+let _salesPdfText = null;          // pdf.jsで抽出したPDF本文（スキャンPDF等で抽出不能ならnull）
+let _salesPeriodWarnMsg = null;    // _salesPeriodGuardがwarnを返したときの表示文
+let _salesConsistencyIssues = [];  // _salesConsistencyCheckのissues
 
 // 店舗 → Google Drive「保険合計」フォルダID（2026-09-24 T-20260924-020: PDF保管先をFirestoreチャンクから
 // Drive正本方式へ切替。転記元: wise/AI_secretary_reika/sync_sales_to_drive.mjs の DEPT_DRIVE_FOLDERS（実測転記）。
@@ -5307,6 +5313,172 @@ function getGeminiUrl(key, model) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 }
 
+// ===SALES_PERIOD_GUARD_START===
+// INC-598（2026-10-20）: 月計表(保険合計)PDF取込(handleSalesPdf)には、取り込むPDFの集計期間が対象月と
+// 一致するかの照合が無かった。実例: 前年同月のPDF（本文の範囲行は前年を示す）が今月の枠に保存され、
+// AI抽出値も現物の帳票と不一致だった事故があった（具体的な金額・件数は非公開リポジトリのINC記録を参照）。
+// 在宅内訳側の対策 _homecarePeriodFromFileName（commit 12507df・===HOMECARE_FILENAME_PERIOD_GUARD_*===）の
+// 売上版。本ブロックは外部変数(DOM・db等)に依存しない純関数のみで構成する
+// （Node側(tools/hq_backfill_sales_2026)がindex.htmlからマーカー抽出してnew Functionで共有実行するため。
+// homecare_recompute.mjsのextractHomecareRowToArrayと同方式）。
+// 2026-10-20 親ゲート修正: ファイル名の期間検知に「強い／弱い」の証拠レベルを導入（誤block防止）。
+// レセコンの出力ファイル名には印字日が入ることがあり（例: 保険合計_2026-04-07.pdf＝3月分を4月7日に出力）、
+// 年月とみなせる数字が対象月と食い違っても、それが実際の集計期間かどうかは文字列だけでは判別できない。
+
+/**
+ * ファイル名・PDF本文テキストから集計期間(年月)を検出する。
+ * 和暦: R(n)/令和n年 → 2018+n年。ファイル名とPDF本文範囲行(R07/03/01〜R07/03/31等)の両方を見る。
+ * fileEvidence: ファイル名の「年」「月」が明示された表記(2025年3月・令和7年3月等)は'strong'、
+ * 「年」「月」の明示が無い数字だけの表記(2026.3・202603・R7.3等)は印字日との区別が付かないため'weak'。
+ * @param {{fileName?: string, pdfText?: string|null}} args
+ * @returns {{fileYearMonth: string|null, fileEvidence: 'strong'|'weak'|null, rangeYearMonth: string|null, rangeEndYearMonth: string|null}}
+ */
+function _salesPeriodFromText({ fileName, pdfText } = {}) {
+  const mkYm = (y, m) => {
+    const yi = parseInt(y, 10), mi = parseInt(m, 10);
+    if (!(yi >= 2000 && yi <= 2100) || !(mi >= 1 && mi <= 12)) return null;
+    return yi + '-' + String(mi).padStart(2, '0');
+  };
+  const reiwaToSeireki = (n) => 2018 + parseInt(n, 10);
+
+  function fromFileName(name) {
+    const s = String(name || '');
+    if (!s) return { ym: null, evidence: null };
+    let m;
+    // 1) 西暦「2025年3月」「2025年.3月」「2026年 3月」（年と月の間に全角ドット等が入るDrive実例あり）→ 強い証拠
+    if ((m = s.match(/(20\d{2})\s*年\s*[.]?\s*(\d{1,2})\s*月/))) {
+      const r = mkYm(m[1], m[2]); if (r) return { ym: r, evidence: 'strong' };
+    }
+    // 2) 和暦「令和7年3月」「R7年3月」→ 強い証拠
+    if ((m = s.match(/(?:令和|令\s*和|[Rr])\s*(\d{1,2})\s*年\s*(\d{1,2})\s*月/))) {
+      const r = mkYm(String(reiwaToSeireki(m[1])), m[2]); if (r) return { ym: r, evidence: 'strong' };
+    }
+    // 3)〜5) 「年」「月」の明示が無い数字だけの表記は、レセコンが印字日をファイル名に入れるケースと
+    //    形式上区別できないため「弱い」証拠とする（誤block防止・2026-10-20親ゲート指摘）。
+    // 3) 和暦略記「R7.3」「R7-3」「R7/3」「R7_3」（令和の実在範囲1〜31に限定し誤検知を抑える）
+    if ((m = s.match(/(?:^|[^0-9A-Za-z])[Rr]\s*([1-9]|[12]\d|3[01])\s*[.\-\/_]\s*(\d{1,2})(?![0-9])/))) {
+      const r = mkYm(String(reiwaToSeireki(m[1])), m[2]); if (r) return { ym: r, evidence: 'weak' };
+    }
+    // 4) 西暦の区切り記号つき「2026.3」「2026-3」「2026/3」（例: 保険合計_2026-04-07.pdfの印字日と同形式）
+    if ((m = s.match(/(?:^|[^0-9])(20\d{2})\s*[.\-\/]\s*(\d{1,2})(?![0-9])/))) {
+      const r = mkYm(m[1], m[2]); if (r) return { ym: r, evidence: 'weak' };
+    }
+    // 5) 西暦の連結「202603」
+    if ((m = s.match(/(?:^|[^0-9])(20\d{2})(0[1-9]|1[0-2])(?![0-9])/))) {
+      const r = mkYm(m[1], m[2]); if (r) return { ym: r, evidence: 'weak' };
+    }
+    return { ym: null, evidence: null };
+  }
+
+  function fromPdfText(text) {
+    const t = String(text || '');
+    if (!t) return { start: null, end: null };
+    let m;
+    // 和暦範囲「R07/03/01〜R07/03/31」「R7.3.1~R7.3.31」
+    if ((m = t.match(/[Rr]\s*(\d{1,2})[.\/\-]\s*(\d{1,2})[.\/\-]\s*\d{1,2}\s*[〜~～\-]\s*[Rr]\s*(\d{1,2})[.\/\-]\s*(\d{1,2})[.\/\-]\s*\d{1,2}/))) {
+      return { start: mkYm(String(reiwaToSeireki(m[1])), m[2]), end: mkYm(String(reiwaToSeireki(m[3])), m[4]) };
+    }
+    // 和暦単発「令和7年3月」
+    if ((m = t.match(/(?:令和|令\s*和)\s*(\d{1,2})\s*年\s*(\d{1,2})\s*月/))) {
+      const r = mkYm(String(reiwaToSeireki(m[1])), m[2]); return { start: r, end: r };
+    }
+    // 西暦範囲「2026/03/01〜2026/03/31」「2026-03-01~2026-03-31」
+    if ((m = t.match(/(20\d{2})[.\/\-](\d{1,2})[.\/\-]\s*\d{1,2}\s*[〜~～\-]\s*(20\d{2})[.\/\-](\d{1,2})[.\/\-]\s*\d{1,2}/))) {
+      return { start: mkYm(m[1], m[2]), end: mkYm(m[3], m[4]) };
+    }
+    return { start: null, end: null };
+  }
+
+  const fileResult = fromFileName(fileName);
+  const range = fromPdfText(pdfText);
+  return { fileYearMonth: fileResult.ym, fileEvidence: fileResult.evidence, rangeYearMonth: range.start, rangeEndYearMonth: range.end };
+}
+
+/**
+ * 取込対象PDFの集計期間が対象月と一致するかを判定する。
+ * (a) PDF本文の範囲行(rangeYearMonth)が取れていればそれが決定権を持つ（ファイル名の強弱に関わらず優先。
+ *     ファイル名が食い違っていても範囲行が対象月と一致すればok）。不一致ならblock。
+ * (b) 範囲行が無く、ファイル名が「強い」証拠(fileEvidence==='strong')で対象月と不一致 → block。
+ * (c) 範囲行が無く、ファイル名が「弱い」証拠(印字日の可能性あり)で対象月と不一致 → warn（block しない）。
+ * (d) どちらも検出できない → warn（目視確認を促す）。
+ * @param {{targetMonth: string, fileName?: string, pdfText?: string|null}} args
+ * @returns {{ok: boolean, severity: 'block'|'warn'|'ok', reason: string, detected: object}}
+ */
+function _salesPeriodGuard({ targetMonth, fileName, pdfText } = {}) {
+  const detected = _salesPeriodFromText({ fileName, pdfText });
+  const label = (ym) => {
+    if (!ym) return '';
+    const parts = ym.split('-');
+    return parts[0] + '年' + parseInt(parts[1], 10) + '月';
+  };
+  // (a) 範囲行優先
+  if (detected.rangeYearMonth) {
+    if (detected.rangeYearMonth !== targetMonth) {
+      return {
+        ok: false, severity: 'block',
+        reason: `ファイルの集計期間（${label(detected.rangeYearMonth)}）が対象月（${label(targetMonth)}）と一致しません`,
+        detected,
+      };
+    }
+    return { ok: true, severity: 'ok', reason: '', detected };
+  }
+  // 範囲行が無く、ファイル名の期間だけがある場合
+  if (detected.fileYearMonth) {
+    if (detected.fileYearMonth === targetMonth) return { ok: true, severity: 'ok', reason: '', detected };
+    if (detected.fileEvidence === 'strong') {
+      // (b) 強い証拠での不一致 → block
+      return {
+        ok: false, severity: 'block',
+        reason: `ファイルの集計期間（${label(detected.fileYearMonth)}）が対象月（${label(targetMonth)}）と一致しません`,
+        detected,
+      };
+    }
+    // (c) 弱い証拠（印字日の可能性）での不一致 → warn
+    return {
+      ok: true, severity: 'warn',
+      reason: `ファイル名の${label(detected.fileYearMonth)}が対象月${label(targetMonth)}と違います。印字日の可能性もあるためPDFの期間を目で確認してください。`,
+      detected,
+    };
+  }
+  // (d) どちらも取れない → warn
+  return { ok: true, severity: 'warn', reason: '集計期間を確認できませんでした。PDFの期間を目で確認してください。', detected };
+}
+
+/**
+ * 抽出済みの売上主要項目の内部整合性を確認する(非block・AI抽出直後の早期シグナル用)。
+ * INC-187（submitSalesData内）は提出直前の最終防衛線(techFee+drugFee vs totalInsurance・10%超でhard
+ * block)。本関数はそれより早い段階(AI抽出直後)で走らせる早期警告(3%超でissue化・保存は止めない)で、
+ * materialFeeも合算に含める点とvisitCount<rxCountの検知を追加する点がINC-187との差分。重複防止のため
+ * 本関数はblockを返さず、提出をブロックする判定はINC-187側に一元化する。
+ * @param {{techFee?:number, drugFee?:number, materialFee?:number, totalInsurance?:number, visitCount?:number, rxCount?:number}} v
+ * @returns {{ok: boolean, issues: string[]}}
+ */
+function _salesConsistencyCheck({ techFee, drugFee, materialFee, totalInsurance, visitCount, rxCount } = {}) {
+  const issues = [];
+  const ti = Number(totalInsurance) || 0;
+  const tf = Number(techFee) || 0;
+  const df = Number(drugFee) || 0;
+  const mf = Number(materialFee) || 0;
+  if (ti > 0 && (tf > 0 || df > 0)) {
+    const sum = tf + df + mf;
+    const diffRate = Math.abs(sum - ti) / ti;
+    if (diffRate > 0.03) {
+      issues.push(`技術料+薬剤料+材料料(${sum.toLocaleString()}円)が保険合計(${ti.toLocaleString()}円)と${(diffRate * 100).toFixed(1)}%ずれています`);
+    }
+  } else {
+    issues.push('技術料・薬剤料・保険合計のいずれかが未取得のため整合チェックをスキップしました');
+  }
+  const vc = Number(visitCount) || 0;
+  const rc = Number(rxCount) || 0;
+  if (vc > 0 && rc > 0) {
+    if (vc < rc) issues.push(`受付回数(${vc.toLocaleString()})がレセ件数(${rc.toLocaleString()})を下回っています`);
+  } else {
+    issues.push('受付回数・レセ件数のいずれかが未取得のため件数チェックをスキップしました');
+  }
+  return { ok: issues.length === 0, issues };
+}
+// ===SALES_PERIOD_GUARD_END===
+
 /**
  * P2: プロファイル駆動Geminiプロンプトを生成する。
  * profile が null の場合は従来の汎用プロンプトを返す（フォールバック）。
@@ -5318,7 +5490,7 @@ function buildGeminiPrompt(profile) {
 
 【重要ルール】
 - 数値のみ（カンマなし整数）で返してください
-- 金額（円）は必ず「円単位のフル金額」で返してください。PDFに「万円」表記がある場合は×10000して円に変換してください（例: 2,606万円 → 26060000、26,061,200円 → 26061200）
+- 金額（円）は必ず「円単位のフル金額」で返してください。PDFに「万円」表記がある場合は×10000して円に変換してください（例: 1,234万円 → 12340000、12,345,678円 → 12345678）
 - 調剤基本料のみ「点」単位の整数で返してください（円換算不要）
 - 「小計」ではなく「合計」行の値を取ること
 - PDFの表のヘッダー行と対応する数値セルを正確に対応させること
@@ -5327,7 +5499,7 @@ function buildGeminiPrompt(profile) {
 {
   "rxCount": レセプト件数（件、整数）,
   "visitCount": 受付回数（回、整数）,
-  "totalInsurance": 保険合計（円単位のフル整数。例: 26,061,200円なら26061200）,
+  "totalInsurance": 保険合計（円単位のフル整数。例: 12,345,678円なら12345678）,
   "techFee": 技術料合計（円単位のフル整数。「技術料」「技術料合計」欄の金額。※足立店のように「技術料」欄が無いPDFではnull。その場合はシステムが調剤技術料+薬学管理料で自動計算する）,
   "dispensingTechFee": 調剤技術料（円単位のフル整数。「調剤技術料」欄の金額。欄が無ければnull）,
   "pharmacyMgmtFee": 薬学管理料（円単位のフル整数。「薬学管理料」欄の金額。欄が無ければnull）,
@@ -5409,7 +5581,7 @@ JSONのみを返してください。説明不要。`;
 
 【重要ルール】
 - 数値のみ（カンマなし整数）で返してください
-- 金額（円）は必ず「円単位のフル金額」で返してください。「万円」表記は×10000して円に変換（例: 2,606万円 → 26060000）
+- 金額（円）は必ず「円単位のフル金額」で返してください。「万円」表記は×10000して円に変換（例: 1,234万円 → 12340000）
 - 調剤基本料は「点」単位の整数で返してください（円換算不要）
 - 「小計」ではなく「合計」行の値を取ること
 - 帳票ラベルを正確に照合し、対応する数値セルを返してください
@@ -5443,6 +5615,32 @@ async function handleSalesPdf(input) {
 
     const pdfData = new Uint8Array(arrayBuffer);
     const base64 = btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ''));
+
+    // INC-598: PDF本文テキストをpdf.jsで抽出（既存の_pdfArrayBufferToLines=在宅内訳と同じ利用箇所を踏襲）。
+    // スキャン画像PDF等でテキスト層が無い場合はfail-softでnullのまま続行（_salesPeriodGuardはwarn判定になる）。
+    _salesPdfText = null;
+    try {
+      const _lines = await _pdfArrayBufferToLines(arrayBuffer.slice(0));
+      _salesPdfText = _lines.join('\n');
+    } catch (_pdfTextErr) {
+      console.warn('[salesPeriodGuard] PDF本文テキスト抽出に失敗（期間照合はファイル名のみで継続）:', _pdfTextErr);
+    }
+
+    // INC-598: 集計期間ガード。対象月(salesMonthのプルダウン現在値)とファイル名/PDF本文の集計期間が
+    // 食い違うPDFを、AI抽出(Gemini呼出)の前に止める。block時は保存に進まずreturnする。
+    const _targetMonthForGuard = document.getElementById('salesMonth').value;
+    _salesPeriodWarnMsg = null;
+    if (_targetMonthForGuard) {
+      const _periodResult = _salesPeriodGuard({ targetMonth: _targetMonthForGuard, fileName: file.name, pdfText: _salesPdfText });
+      if (_periodResult.severity === 'block') {
+        label.style.background = '#e74c3c';
+        label.innerHTML = '❌ 期間不一致 <input type="file" id="salesPdfFile" accept=".pdf" style="display:none" onchange="handleSalesPdf(this)">';
+        label.style.pointerEvents = 'auto';
+        alert('⚠ 取込ブロック: ' + _periodResult.reason + '\n\n対象月の選択、またはファイルを確認してください。');
+        return;
+      }
+      if (_periodResult.severity === 'warn') _salesPeriodWarnMsg = _periodResult.reason;
+    }
 
     // P2: 選択中の部門からプロファイルを取得（未登録なら null → 汎用フォールバック）
     const deptId = document.getElementById('salesDept').value;
@@ -5510,6 +5708,13 @@ async function handleSalesPdf(input) {
     if (salesExtractedData.techFee && salesExtractedData.visitCount) {
       salesExtractedData.techPerVisit = Math.round(salesExtractedData.techFee / salesExtractedData.visitCount);
     }
+
+    // INC-598: 整合性チェック（非block・早期シグナル。最終防衛線のINC-187は従来通りsubmitSalesData側）
+    _salesConsistencyIssues = _salesConsistencyCheck({
+      techFee: salesExtractedData.techFee, drugFee: salesExtractedData.drugFee,
+      materialFee: salesExtractedData.materialFee, totalInsurance: salesExtractedData.totalInsurance,
+      visitCount: salesExtractedData.visitCount, rxCount: salesExtractedData.rxCount,
+    }).issues;
 
     const hasAny = Object.values(salesExtractedData).some(v => v !== null && v !== undefined);
     label.style.background = '#2ecc71';
@@ -5756,6 +5961,23 @@ async function renderSalesExtracted(hasValues, profile) {
   const noExt = document.getElementById('salesNoExtracted');
   if (noExt) noExt.style.display = 'none';
 
+  // INC-598: 集計期間warn・整合性issuesを黄色バナーで表示（block時はhandleSalesPdf側で既にreturn済みのためここに来ない）
+  const _warnBox = document.getElementById('salesPeriodWarningBox');
+  if (_warnBox) {
+    const _msgs = [];
+    if (_salesPeriodWarnMsg) _msgs.push('📅 ' + _salesPeriodWarnMsg);
+    if (_salesConsistencyIssues && _salesConsistencyIssues.length > 0) {
+      _salesConsistencyIssues.forEach(msg => _msgs.push('⚠ ' + msg));
+    }
+    if (_msgs.length > 0) {
+      _warnBox.innerHTML = _msgs.map(m => `<div>${m}</div>`).join('');
+      _warnBox.style.display = 'block';
+    } else {
+      _warnBox.style.display = 'none';
+      _warnBox.innerHTML = '';
+    }
+  }
+
   // 算定件数(kpiCounts)取得: 当該 store/month に既に書込済みならsanteisuu行へ件数列を追加する。
   // 取得失敗・未書込はfail-soft（金額のみの従来表示にフォールバック。追加クエリはdoc.get()1回のみ）
   let kpiCounts = null;
@@ -5891,6 +6113,20 @@ async function submitSalesData() {
 
   // 2026-10-13: 当月以降が選択されたままの誤提出ガード（INC: 10/13 越谷・柏さくら台で当月名義の前月分誤提出）
   if (!confirmIfCurrentOrFutureMonth(month)) return;
+
+  // INC-598: 集計期間ガードの最終再チェック。handleSalesPdf内のチェック(アップロード時点のsalesMonth)から
+  // ここまでの間にsalesMonthのプルダウンが変更された場合に備え、現在値で再判定する（defense in depth。
+  // handleSalesPdf自体はPDFを保存しないため実際の保存はここ=submitSalesDataでのみ発生する）。
+  try {
+    const _fileNameForGuard = document.getElementById('salesFileName')?.textContent || '';
+    const _periodResultFinal = _salesPeriodGuard({ targetMonth: month, fileName: _fileNameForGuard, pdfText: _salesPdfText });
+    if (_periodResultFinal.severity === 'block') {
+      alert('⚠ 提出ブロック: ' + _periodResultFinal.reason + '\n\n対象月の選択、またはファイルを確認してから再度アップロードしてください。');
+      return;
+    }
+  } catch (_guardErrFinal) {
+    console.warn('INC-598集計期間ガード(最終チェック)でエラーが発生しましたが、fail-softのため提出は継続します:', _guardErrFinal);
+  }
 
   // P2: プロファイル取得（値の収集に使用）
   const profile = getProfileForDept(deptId);
@@ -6150,6 +6386,7 @@ async function submitSalesData() {
     lbl.style.pointerEvents = 'auto';
     salesExtractedData = {};
     salesPdfArrayBuffer = null;
+    _salesPdfText = null; _salesPeriodWarnMsg = null; _salesConsistencyIssues = []; // INC-598: 次回アップロード用にリセット
     renderSalesHistory();
   } catch (e) {
     alert('保存エラー: ' + e.message);
@@ -7401,7 +7638,7 @@ function mergeHomecareRows(prevHeader, prevRows, newHeader, newRows) {
 // ===HOMECARE_IRYO_KAIGO_MERGE_START===
 // 改修B（2026-10-19）: 足立(adachi)在宅内訳の医療保険(elysia_r・PDF)と介護保険(elysia_kaigo・CSV)の合算。
 // 背景: 在宅医療の報酬は医療保険(技術料)と介護保険(居宅療養管理指導)の両方から出るが、帳票は別々に提出される
-// （実測: 足立の医療保険7,158,080円＋介護保険632,367単位×10円=6,323,670円＝合計13,481,750円で柏とほぼ同規模）。
+// （実測: 足立は医療保険＋介護保険(単位×10円換算)の合算で柏とほぼ同規模の金額になる）。
 // 設計: homecareRowsを医療側(docId無suffix・既存のまま)と介護側(docId+'__kaigo'・新設)の2バケットに分けて保存し、
 // facilities/totalsは常に両バケットの最新全量から再計算する（upload順に依存しない＝逆順でも同じ結果になる。
 // 再提出・訂正も安全＝片側だけ差し替えても他側は影響を受けない）。_hcJudge・_homecareZeroTechGuardは変更しない。
@@ -7551,7 +7788,7 @@ function _homecareRowToArray(row, header) {
 // INC-595b（2026-10-20）: recomputeHomecareFromRows（「保存データから再集計」ボタン）は、医療(homecareRows/{docId})と
 // 介護(homecareRows/{docId}__kaigo)の一方しか保存されていないとき、その片側だけでfacilities/totalsを上書きし
 // techKindも書き換えてしまう。既存のhomecareData（例: 本部が書いたhomecareData/adachi_202608・techKind:'iryo_kaigo'・
-// 17施設・tech 1,348,175点）が医療＋介護の合算なのに、医療側rowsが保存されておらず介護側rowsだけが存在する場合、
+// 複数施設・tech点数あり）が医療＋介護の合算なのに、医療側rowsが保存されておらず介護側rowsだけが存在する場合、
 // ボタン押下で医療分が消える。書込み前に以下の純関数で判定し、上書きしてよいかを決める（Firestoreへは一切触れない）。
 /**
  * @param {{existingDoc:(object|null), hasIryoRows:boolean, hasKaigoRows:boolean}} params
@@ -7786,8 +8023,8 @@ async function saveHomecareData() {
     // 再利用・複製しない）。**合算後のmergedTotalsで判定する**のが要点。月計表は医療保険と介護保険の両方を含むため、
     // 片側だけの帳票（つなぐ薬局 足立の医療のみ=iryo_tech／介護のみ=kaigo）を単体で突合すると必ず約半分になり、
     // 毎月「乖離」が出て警告に慣れてしまう＝本来の検知が死ぬ。片側だけの状態では突合しない。
-    // 実測（2026-10-19）: 足立8月は 医療7,158,080円＋介護6,323,670円＝13,481,750円 に対し月計表13,577,130円で
-    // 差0.70%＝一致。柏8月は▲0.27%、柏9月は+0.02%。合算後なら月計表と一致する前提が成り立っている。
+    // 実測（2026-10-19）: 足立8月は医療＋介護の合算額が月計表とほぼ一致（差0.70%）。柏8月は▲0.27%、柏9月は+0.02%。
+    // 合算後なら月計表と一致する前提が成り立っている。
     const _partialCoverageKinds = ['iryo_tech', 'kaigo', 'kaigo_kyotaku'];
     const _coversBothInsurances = !_partialCoverageKinds.includes(_techKindForSave);
     if (_techBreakdownForSave && _coversBothInsurances) {

@@ -7171,6 +7171,10 @@ const HOMECARE_CSV_PROFILES = {
     // 以後の新規アップロードはelysia_kaigoを使う。ゼロガード(_homecareZeroTechGuard)のisKaigoCsv分岐は
     // profileId==='elysia'を見るが、新規アップロードではこのIDが二度と付与されないため実質到達不能になる
     // （削除はしない＝「親が本日入れた変更を消さない」指示のため）。
+    // INC-603（2026-10-20）: 本日改修時点ではisKaigoCsvが(profileId==='elysia' || profileId==='elysia_kaigo')の
+    // ままだったため、新規アップロードが実際に使うelysia_kaigo側がゼロガードで常時ブロックされ、足立の介護CSV
+    // 取込が画面から一切できなかった（10/20 11:41報告）。isKaigoCsvをprofileId==='elysia'のみに絞り、
+    // elysia_kaigoは常時ブロックの対象から外した。上記「実質到達不能」は本修正により実際に成立する。
     stores: [],
     // 2026-10-13: 足立SPスタッフ提供サンプル「施設集計(2026年09月01日)～(2026年09月30日).csv」で列構造確定。
     // 列（ヘッダー1行・各フィールドは""で囲まれる。pharmyと違い単位行は無くi=1からデータ）:
@@ -7430,8 +7434,8 @@ document.getElementById('homecareFileInput').addEventListener('change', async fu
 // 正常な提出を誤ブロックする恐れがある（Firestore実データでの裏取り未了・gcloud再認証切れのため未検証）。
 // 誤ブロック回帰を避けるため、判定を「プロファイル種別」ベースに変更する:
 //   1) 取込行が0件 → ブロック
-//   2) プロファイルがelysia（介護保険『施設集計』CSV）→ 常にブロック（この帳票は構造的に医療保険の技術料
-//      を持たないため。INC-555の穴そのもの。insTotal/techの値を問わない）
+//   2) プロファイルがelysia（介護保険『施設集計』CSV・旧ID）→ 常にブロック（この帳票は構造的に医療保険の
+//      技術料を持たないため。INC-555の穴そのもの。insTotal/techの値を問わない）
 //   3) それ以外（pharmy CSV・elysia_r PDF）→ insuranceTotal(点)とtech(技術料内訳の内部集計)が
 //      両方0のときだけブロック。どちらか一方でも正の値なら通す（片方の列だけ欠落しても誤ブロックしない）
 // 「この月は在宅患者なし」報告(reportNoHomecare)はCSV/PDF取込を経由しないため、本ガードの対象外（別経路）。
@@ -7439,13 +7443,19 @@ document.getElementById('homecareFileInput').addEventListener('change', async fu
 // 呼び出し側(homecareFileInputのchangeハンドラ)でpdfResult.profileId='elysia_r'を既に付与している。
 // どちらもparse直後に確定するフィールドのため、プレビュー描画(_renderHomecarePreview)と保存(saveHomecareData)
 // が同じ_homecareResult.profileIdを参照し、判定が2箇所でずれない。
+// 2026-10-20改訂（INC-603）: 上記2)は当初elysia_kaigo（改修B・2026-10-19で追加した「施設集計」CSVの新ID・
+// confirmed:true）も対象にしていたため、足立が介護保険CSVを取り込もうとすると常にブロックされ、改修Bで
+// 実装済みのはずの医療＋介護合算経路に一度も到達できなかった（10/20 11:41 店舗提出が赤警告で停止）。
+// elysia（旧ID・居宅療養管理指導の訪問明細CSV・列構造が未確認のまま＝「⚠️不明列・未確認」）と
+// elysia_kaigo（施設集計CSV・列をヘッダー名で解決する確認済み実装）は別物: elysiaのみ常時ブロックを継続し、
+// elysia_kaigoは「取込行が0件」のときだけブロックする（それ以外はブロックせず改修Bの合算経路に乗せる）。
 /**
  * 在宅内訳プレビュー結果から、技術料（報酬点数）ゼロガードの判定値を計算する純関数
  * （副作用なし・DOM非依存。Node単体テスト可能）。
  * @param {{totals?:{insTotal?:number,tech?:number}, sorted?:Array, rows?:Array, profileId?:string|null}} result
  *   _parseHomecareCSV/HOMECARE_PDF_PROFILES.parseLinesの戻り値（profileId付与済みのもの）
- * @returns {{blocked:boolean, reason:('no_rows'|'kaigo_csv'|'zero_both'|null), techTotalPoints:number,
- *            techPoints:number, facilityCount:number, rowCount:number, profileId:string|null}}
+ * @returns {{blocked:boolean, reason:('no_rows'|'kaigo_csv'|'zero_both'|null), notice:('kaigo_csv_ok'|null),
+ *            techTotalPoints:number, techPoints:number, facilityCount:number, rowCount:number, profileId:string|null}}
  */
 function _homecareZeroTechGuard(result) {
   const totals = (result && result.totals) || {};
@@ -7456,21 +7466,29 @@ function _homecareZeroTechGuard(result) {
   const facilityCount = (result && Array.isArray(result.sorted)) ? result.sorted.length : 0;
   const rowCount = (result && Array.isArray(result.rows)) ? result.rows.length : 0;
   const profileId = (result && result.profileId) || null;
-  const isKaigoCsv = (profileId === 'elysia' || profileId === 'elysia_kaigo');
+  // INC-603（2026-10-20）: isKaigoCsv（常時ブロック）はelysia（旧ID・未確認の訪問明細CSV）のみ。
+  // elysia_kaigo（施設集計CSV・confirmed:true）は常時ブロックの対象から外し、改修Bの合算経路へ通す。
+  const isKaigoCsv = (profileId === 'elysia');
+  const isConfirmedKaigoCsv = (profileId === 'elysia_kaigo');
   let reason = null;
+  let notice = null;
   if (rowCount === 0) reason = 'no_rows';
   else if (isKaigoCsv) reason = 'kaigo_csv';
+  else if (isConfirmedKaigoCsv) notice = 'kaigo_csv_ok'; // rowCount>0確定済み・ブロックしない（情報表示のみ）
   else if (techTotalPoints === 0 && techPoints === 0) reason = 'zero_both';
-  return { blocked: reason !== null, reason, techTotalPoints, techPoints, facilityCount, rowCount, profileId };
+  return { blocked: reason !== null, reason, notice, techTotalPoints, techPoints, facilityCount, rowCount, profileId };
 }
 
-// 介護保険CSV(elysia)専用の警告文（構造的に技術料列を持たない帳票である旨を明示）
+// 介護CSV(elysia・旧ID)専用の警告文（列構造が未確認のまま＝対応していない帳票である旨を明示。INC-603で文面改訂）
 const HOMECARE_ZERO_TECH_MSG_KAIGO_CSV =
-  'このファイルには技術料（報酬点数）が入っていません。在宅内訳には医療保険の『施設集計 R』（患者別調剤報酬明細）が必要です。' +
-  '介護保険の『施設集計』（居宅療養管理指導の明細）は技術料が入っていないため使えません。帳票を出し直してください。';
+  'この介護CSV（訪問明細）はまだ対応していません。介護保険は『施設集計』のCSVを出し直してください。';
 // それ以外（pharmy/elysia_r）で保険計・技術料がいずれも0だった場合の汎用警告文（原因が列欠落か対象月違いか帳票側で特定できないため一般的な確認依頼にする）
 const HOMECARE_ZERO_TECH_MSG_GENERIC =
   'このファイルには技術料（報酬点数）が入っていません。帳票と対象月を確認してください。';
+// elysia_kaigo（施設集計CSV・confirmed）取込時の情報告知（ブロックではない。INC-603で追加）
+const HOMECARE_KAIGO_CSV_OK_NOTICE =
+  '介護保険の施設集計として取り込みます。技術料は居宅療養管理指導の単位（1単位' + HOMECARE_KAIGO_UNIT_YEN + '円換算）です。' +
+  '同じ月に医療保険の『施設集計 R』を取り込むと合算されます。';
 
 /** ガード判定結果(reason)に応じた警告本文（プレーンテキスト）を返す。blocked:falseのときは空文字 */
 function _homecareZeroTechMessage(guard) {
@@ -7479,12 +7497,20 @@ function _homecareZeroTechMessage(guard) {
   return HOMECARE_ZERO_TECH_MSG_GENERIC; // 'no_rows' | 'zero_both'
 }
 
-/** ガード判定結果からプレビュー用の警告HTML（赤枠）を返す。blocked:falseのときは空文字 */
+/** ガード判定結果からプレビュー用の警告HTML（赤枠=ブロック時／情報枠=notice時）を返す。いずれも無ければ空文字 */
 function _homecareZeroTechWarningHtml(guard) {
   const msg = _homecareZeroTechMessage(guard);
-  if (!msg) return '';
-  return '<div style="margin:0 0 10px;padding:8px 12px;background:#fdedec;border:1px solid #e74c3c;border-radius:4px;color:#c0392b;font-size:13px;font-weight:600;">' +
-    '⚠️ ' + msg + '</div>';
+  if (msg) {
+    return '<div style="margin:0 0 10px;padding:8px 12px;background:#fdedec;border:1px solid #e74c3c;border-radius:4px;color:#c0392b;font-size:13px;font-weight:600;">' +
+      '⚠️ ' + msg + '</div>';
+  }
+  // INC-603（2026-10-20）: elysia_kaigo（施設集計CSV）はブロックしないが、1単位=10円換算・合算の挙動を
+  // 画面上で告知する（赤の遮断枠ではなく青の情報枠）。
+  if (guard && guard.notice === 'kaigo_csv_ok') {
+    return '<div style="margin:0 0 10px;padding:8px 12px;background:#eaf2fb;border:1px solid #3498db;border-radius:4px;color:#1a5276;font-size:13px;font-weight:600;">' +
+      'ℹ️ ' + HOMECARE_KAIGO_CSV_OK_NOTICE + '</div>';
+  }
+  return '';
 }
 // ===HOMECARE_ZERO_TECH_GUARD_END===
 

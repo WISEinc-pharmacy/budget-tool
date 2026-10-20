@@ -68,7 +68,12 @@ function extractElysiaProfile() {
   const confirmed = confirmedMatch[1] === 'true';
 
   // 2026-10-13: techBreakdown/techKind/techLabel（医療保険の技術料内訳が無いことの明示フラグ）を抽出
-  const elysiaBlockForAttrs = src.slice(elysiaStart, elysiaStart + 2000); // parse()本体より前の属性群のみでよい
+  // INC-603（2026-10-20）: 固定2000文字の切り出しだと、elysiaブロック冒頭の説明コメントが伸びるたびに
+  // techKind/techLabel（場合によってはtechBreakdownも）が範囲外になり無言でnull化・例外化する
+  // （実測: INC-603でコメント4行追加しただけでtechBreakdownすら拾えなくなった）。固定長をやめ、
+  // parse()本体の直前（次の'parse(lines) {'出現位置）までを動的に切り出す。
+  const parseMarkerIdx = src.indexOf('parse(lines) {', elysiaStart);
+  const elysiaBlockForAttrs = parseMarkerIdx === -1 ? src.slice(elysiaStart, elysiaStart + 2000) : src.slice(elysiaStart, parseMarkerIdx); // parse()本体より前の属性群のみでよい
   const techBreakdownMatch = elysiaBlockForAttrs.match(/techBreakdown:\s*(true|false)/);
   if (!techBreakdownMatch) throw new Error('HOMECARE_CSV_PROFILES.elysia.techBreakdown が見つかりません');
   const techBreakdown = techBreakdownMatch[1] === 'true';

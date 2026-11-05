@@ -768,7 +768,7 @@ let editMode = false; // false=閲覧モード, true=編集モード
 // ===== 科目定義 =====
 const ITEMS = [
   { id: 'sec_uriage', name: '売上', type: 'header' },
-  { id: 'gijutsu', name: '技術料(KGI)', type: 'input', level: 1, plNum: '①' },
+  { id: 'gijutsu', name: '技術料(KPI)', type: 'input', level: 1, plNum: '①' },
   { id: 'yakuzai', name: '薬剤料', type: 'input', level: 1, plNum: '②' },
   { id: 'chiryo', name: '治療器材料', type: 'input', level: 1, plNum: '③' },
   { id: 'uriage_other', name: 'その他売上', type: 'input', level: 1, plNum: '④' },
@@ -832,7 +832,7 @@ const ITEMS = [
       'ryohi','tsushin','shomohin','sharyo','fukuri','kaigi','kosai','shokai',
       'chidai','suido','lease','sga_other','genka_shokyaku','yakuin_hoshu',
       'sozei','hoken','tesuryo']) },
-  { id: 'op_profit_sub', name: '営業利益小計', type: 'calc', level: 1, style: 'profit', plNum: '㊹', plFormula: '＝⑧－㊸',
+  { id: 'op_profit_sub', name: '営業利益小計(KGI)', type: 'calc', level: 1, style: 'profit', plNum: '㊹', plFormula: '＝⑧－㊸',
     calc: (m) => val(m, 'gross_profit') - val(m, 'sga_sub') },
   { id: 'honbu', name: '本部経費（按分）', type: 'calc', level: 1, style: 'calc', plNum: '㊺', plFormula: '＝㊻＋㊼＋㊽',
     calc: (m) => sum(m, ['honbu_yakuin','honbu_somu','naibu_ryuho']) },
@@ -886,10 +886,10 @@ const ITEMS = [
     calc: (m) => val(m, 'keijo_rieki') + val(m, 'tokubetsu_rieki') - val(m, 'tokubetsu_sonshitsu') },
 
   { id: 'sec_kpi', name: 'KPI', type: 'header' },
-  { id: 'kpi_labor', name: '技術料労働分配率', type: 'ratio', level: 1,
+  { id: 'kpi_labor', name: '技術料労働分配率(KPI)', type: 'ratio', level: 1,
     numerator: (m) => sum(m, ['kyuryo','shoyo','shoyo_yakuin','gaicyu_fl','hotei']),
     denominator: (m) => val(m, 'gijutsu') },
-  { id: 'kpi_labor_equip', name: '技術料労働/設備分配率', type: 'ratio', level: 1,
+  { id: 'kpi_labor_equip', name: '技術料労働/設備分配率(KPI)', type: 'ratio', level: 1,
     numerator: (m) => sum(m, ['kyuryo','shoyo','gaicyu_fl','hotei','lease','genka_shokyaku']),
     denominator: (m) => val(m, 'gijutsu') },
   { id: 'kpi_productivity', name: '技術料人時生産性', type: 'kot_kpi', level: 1, actualOnly: true },
@@ -3663,6 +3663,9 @@ async function recomputeGenericFromRows() {
       for (const [itemId, ann] of Object.entries(agg.annualInputs)) D().annualInputs[itemId] = ann;
     }
     scheduleSave(); renderCurrentTab();
+  // KGI/KPI表記の付け替え（2026-11-05 山内さん指示: 技術料・分配率=KPI／営業利益小計=KGI）前後のCSVを相互に通す
+  const noTag = s => s.replace(/\((?:KGI|KPI)\)$/,'');
+  for(const it of ITEMS){if(noTag(it.name.replace(/^・/,'').trim())===noTag(noM)) return it;}
     renderUnmappedList(document.getElementById('importUnmapped'), agg.unmapped);
     if (statusEl) { statusEl.textContent = '✅ 再集計完了（' + agg.matched + '件・' + saved.rows.length + '行から再生成）'; statusEl.style.color = '#27ae60'; }
   } catch (e) {

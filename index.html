@@ -7149,6 +7149,109 @@ function _getHomecarePdfProfileForStore(store) {
 const HOMECARE_KAIGO_UNIT_YEN = 10;
 
 const HOMECARE_CSV_PROFILES = {
+  // ===== task043 pharnes_homecare =====
+  pharnes_homecare: {
+    name: 'ウィーメックス pharnes V-EX',
+    receptor: 'pharnes',
+    confirmed: true,
+    provisional: true,
+    // 暫定対応: 施設別出力の実物CSVが届いたら、区分見出しと金額列の位置を再確認する。
+    parse(lines) {
+      const header = HOMECARE_ROWS_HEADER_PHARMY;
+      const sourceLines = Array.isArray(lines) ? lines : [];
+      const toNumber = (value) => {
+        const normalized = String(value == null ? '' : value).replace(/[,\u00a5円\s]/g, '');
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const numberAt = (cols, index) => toNumber(cols[index]);
+      const numberAfter = (cols, label, offset) => {
+        const index = cols.findIndex(col => String(col || '').trim() === label);
+        return index === -1 ? 0 : numberAt(cols, index + offset);
+      };
+      const facilityMode = sourceLines.slice(0, 3).some(raw =>
+        /集計単位s*(?:[:：=]s*)?施設/.test(String(raw || ''))
+      );
+      const headings = [];
+      sourceLines.forEach((raw, index) => {
+        const line = String(raw == null ? '' : raw).trim();
+        if (/^在宅[:：]/.test(line)) {
+          headings.push({ index, text: line });
+          return;
+        }
+        // 未確認: 集計単位=施設の実物では、カンマを含まない施設名行を区分見出しとみなす。
+        if (facilityMode && index >= 2 && line && !line.includes(',')) {
+          headings.push({ index, text: line });
+        }
+      });
+
+      const rows = [];
+      headings.forEach((heading, headingIndex) => {
+        const end = headingIndex + 1 < headings.length ? headings[headingIndex + 1].index : sourceLines.length;
+        const separatorIndex = heading.text.search(/[:：]/);
+        const facility = separatorIndex === -1
+          ? '（未分類）'
+          : (heading.text.slice(separatorIndex + 1).trim() || '（未分類）');
+        const values = {
+          facility,
+          insuranceType: '',
+          copayRatio: 0,
+          visits: 0,
+          copay: 0,
+          careCopay: 0,
+          selectTherapy: 0,
+          selfPayDrug: 0,
+          billedAmount: 0,
+          paidAmount: 0,
+          unpaidAmount: 0,
+          insuranceTotal: 0,
+          basePoints: 0,
+          timePoints: 0,
+          dispensingPoints: 0,
+          dispensingAddPoints: 0,
+          guidancePoints: 0,
+          oralMedPoints: 0,
+          externalMedPoints: 0,
+          materialPoints: 0
+        };
+        let recognized = false;
+        for (let i = heading.index + 1; i < end; i++) {
+          const line = String(sourceLines[i] == null ? '' : sourceLines[i]).trim();
+          if (!line) continue;
+          const cols = line.split(',');
+          const label = String(cols[0] || '').trim();
+          if (label === '受付回数') {
+            values.visits = numberAt(cols, 2);
+            recognized = true;
+          } else if (label === 'レセプト件数') {
+            values.insuranceTotal = numberAfter(cols, '調剤報酬金額', 2);
+            recognized = true;
+          } else if (label === '【調剤基本料】') {
+            values.basePoints = numberAt(cols, 2);
+            recognized = true;
+          } else if (label === '【薬剤調製料合計】') {
+            values.dispensingPoints = numberAt(cols, 7);
+            recognized = true;
+          } else if (label === '【加算合計】') {
+            values.dispensingAddPoints = numberAt(cols, 7);
+            recognized = true;
+          } else if (label === '【薬剤料合計】') {
+            values.oralMedPoints = numberAt(cols, 7);
+            recognized = true;
+          } else if (label === '【薬学管理料合計】') {
+            values.guidancePoints = numberAt(cols, 7);
+            recognized = true;
+          }
+        }
+        // 未確定: 【その他】は対応する正規化列がないため各列へ流用せず0固定とし、保険計との差額で検算する。
+        if (recognized) rows.push(header.map(key => values[key]));
+      });
+
+      const agg = computeHomecareTotalsFromRows(header, rows, 'pharnes_homecare');
+      if (!agg) return null;
+      return { sorted: agg.sorted, totals: agg.totals, header, rows };
+    }
+  },
   pharmy: {
     name: 'モイネット ファーミー',
     receptor: 'pharmy',

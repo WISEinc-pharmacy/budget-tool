@@ -7151,6 +7151,8 @@ const HOMECARE_KAIGO_UNIT_YEN = 10;
 const HOMECARE_CSV_PROFILES = {
   // ===== task043 pharnes_homecare =====
   pharnes_homecare: {
+    // ===== task071 pharnes units =====
+    techKind: 'zaitaku_only',
     name: 'ウィーメックス pharnes V-EX',
     receptor: 'pharnes',
     confirmed: true,
@@ -7165,12 +7167,13 @@ const HOMECARE_CSV_PROFILES = {
         return Number.isFinite(parsed) ? parsed : 0;
       };
       const numberAt = (cols, index) => toNumber(cols[index]);
+      const pointsAt = (cols, index) => Math.round(numberAt(cols, index) / 10);
       const numberAfter = (cols, label, offset) => {
         const index = cols.findIndex(col => String(col || '').trim() === label);
         return index === -1 ? 0 : numberAt(cols, index + offset);
       };
       const facilityMode = sourceLines.slice(0, 3).some(raw =>
-        /集計単位s*(?:[:：=]s*)?施設/.test(String(raw || ''))
+        /集計単位\s*(?:[:：=]\s*)?施設/.test(String(raw || ''))
       );
       const headings = [];
       sourceLines.forEach((raw, index) => {
@@ -7227,19 +7230,19 @@ const HOMECARE_CSV_PROFILES = {
             values.insuranceTotal = numberAfter(cols, '調剤報酬金額', 2);
             recognized = true;
           } else if (label === '【調剤基本料】') {
-            values.basePoints = numberAt(cols, 2);
+            values.basePoints = pointsAt(cols, 2);
             recognized = true;
           } else if (label === '【薬剤調製料合計】') {
-            values.dispensingPoints = numberAt(cols, 7);
+            values.dispensingPoints = pointsAt(cols, 7);
             recognized = true;
           } else if (label === '【加算合計】') {
-            values.dispensingAddPoints = numberAt(cols, 7);
+            values.dispensingAddPoints = pointsAt(cols, 7);
             recognized = true;
           } else if (label === '【薬剤料合計】') {
-            values.oralMedPoints = numberAt(cols, 7);
+            values.oralMedPoints = pointsAt(cols, 7);
             recognized = true;
           } else if (label === '【薬学管理料合計】') {
-            values.guidancePoints = numberAt(cols, 7);
+            values.guidancePoints = pointsAt(cols, 7);
             recognized = true;
           }
         }
@@ -8274,7 +8277,7 @@ async function saveHomecareData() {
     // 毎月「乖離」が出て警告に慣れてしまう＝本来の検知が死ぬ。片側だけの状態では突合しない。
     // 実測（2026-10-19）: 足立8月は医療＋介護の合算額が月計表とほぼ一致（差0.70%）。柏8月は▲0.27%、柏9月は+0.02%。
     // 合算後なら月計表と一致する前提が成り立っている。
-    const _partialCoverageKinds = ['iryo_tech', 'kaigo', 'kaigo_kyotaku'];
+    const _partialCoverageKinds = ['iryo_tech', 'kaigo', 'kaigo_kyotaku', 'zaitaku_only'];
     const _coversBothInsurances = !_partialCoverageKinds.includes(_techKindForSave);
     if (_techBreakdownForSave && _coversBothInsurances) {
       try {
@@ -8433,6 +8436,9 @@ function readinessJudgeHomecare({ exists, noHomecare, tech, insTotal, techKind, 
   if (exists && noHomecare) return { status: 'no_homecare', label: '在宅患者なし（報告済）' };
   if (!exists) return { status: 'missing', label: '未提出' };
   if (tech === 0) return { status: 'zero', label: '×(技術料ゼロ)' };
+  if (techKind === 'zaitaku_only') {
+    return { status: 'unverifiable', label: '在宅のみの帳票（月計表とは突合しません）' };
+  }
   if (typeof tech === 'number' && typeof insTotal === 'number' && tech === Math.round(insTotal / 10)) {
     return { status: 'legacy', label: '旧式' };
   }

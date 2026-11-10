@@ -3449,6 +3449,9 @@ function findItemByName(name) {
   if(nameToItem['・'+clean]) return nameToItem['・'+clean];
   const noM=clean.replace(/^・/,'');
   for(const it of ITEMS){if(it.name.replace(/^・/,'').trim()===noM) return it;}
+  // KGI/KPI表記の付け替え（2026-11-05 山内さん指示: 技術料・分配率=KPI／営業利益小計=KGI）前後のCSVを相互に通す
+  const noTag = s => s.replace(/\((?:KGI|KPI)\)$/,'');
+  for(const it of ITEMS){if(noTag(it.name.replace(/^・/,'').trim())===noTag(noM)) return it;}
   return null;
 }
 
@@ -3663,9 +3666,6 @@ async function recomputeGenericFromRows() {
       for (const [itemId, ann] of Object.entries(agg.annualInputs)) D().annualInputs[itemId] = ann;
     }
     scheduleSave(); renderCurrentTab();
-  // KGI/KPI表記の付け替え（2026-11-05 山内さん指示: 技術料・分配率=KPI／営業利益小計=KGI）前後のCSVを相互に通す
-  const noTag = s => s.replace(/\((?:KGI|KPI)\)$/,'');
-  for(const it of ITEMS){if(noTag(it.name.replace(/^・/,'').trim())===noTag(noM)) return it;}
     renderUnmappedList(document.getElementById('importUnmapped'), agg.unmapped);
     if (statusEl) { statusEl.textContent = '✅ 再集計完了（' + agg.matched + '件・' + saved.rows.length + '行から再生成）'; statusEl.style.color = '#27ae60'; }
   } catch (e) {
@@ -7704,7 +7704,7 @@ function _renderHomecarePreview(result, pdfProfileObj, append) {
     }
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap;min-width:700px">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';
-    ['施設名','患者数','回数','保険計(点)',previewTechHeader,'薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+    ['施設名','患者数','回数','保険計(点)',previewTechHeader,'薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','時加算(点)','調剤加算(点)','内服薬点'].forEach((h, i) => {
       html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
     });
     html += '</tr></thead><tbody>';
@@ -7720,6 +7720,8 @@ function _renderHomecarePreview(result, pdfProfileObj, append) {
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.base.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.dispensing.toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.guidance.toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (g.timeAdd||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (g.dispAdd||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + g.internal.toLocaleString() + '</td>';
       html += '</tr>';
     });
@@ -7733,6 +7735,8 @@ function _renderHomecarePreview(result, pdfProfileObj, append) {
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.base.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.dispensing.toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.guidance.toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (totals.timeAdd||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (totals.dispAdd||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + totals.internal.toLocaleString() + '</td>';
     html += '</tr>';
     html += '</tbody></table></div>';
@@ -8827,7 +8831,7 @@ async function renderHomecareView(container, dataList) {
     }
     html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;white-space:nowrap">';
     html += '<thead><tr style="background:#1a5276;color:#fff">';
-    ['施設名','患者数','回数','保険計(点)',techHeaderLabel,'薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','内服薬点'].forEach((h, i) => {
+    ['施設名','患者数','回数','保険計(点)',techHeaderLabel,'薬剤料（内服＋内服外＋材料）(点)','基本点','調剤点','指導点','時加算(点)','調剤加算(点)','内服薬点'].forEach((h, i) => {
       html += '<th style="padding:6px 10px;text-align:' + (i===0?'left':'right') + '">' + h + '</th>';
     });
     html += '</tr></thead><tbody>';
@@ -8843,6 +8847,8 @@ async function renderHomecareView(container, dataList) {
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.base||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.dispensing||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.guidance||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.timeAdd||0).toLocaleString() + '</td>';
+      html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.dispAdd||0).toLocaleString() + '</td>';
       html += '<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #ddd">' + (f.internal||0).toLocaleString() + '</td>';
       html += '</tr>';
     });
@@ -8857,6 +8863,8 @@ async function renderHomecareView(container, dataList) {
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.base||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.dispensing||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.guidance||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.timeAdd||0).toLocaleString() + '</td>';
+    html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.dispAdd||0).toLocaleString() + '</td>';
     html += '<td style="padding:5px 10px;text-align:right;border-top:2px solid #1a5276">' + (t.internal||0).toLocaleString() + '</td>';
     html += '</tr>';
     // ===== 月計表突合（INC-401・2026-09-16）: salesData/{yearMonth}_{store} の技術料合計と施設別CSV集計を比較 =====

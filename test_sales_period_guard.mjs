@@ -16,7 +16,13 @@ import path from 'node:path';
 import { extractSalesPeriodGuard } from './tools/hq_backfill_sales_2026/sales_period_guard_extract.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const INDEX_HTML_PATH = path.join(__dirname, 'index.html');
+const htmlArgIndex = process.argv.indexOf('--html');
+if (htmlArgIndex !== -1 && !process.argv[htmlArgIndex + 1]) {
+  throw new Error('--html の後に読取元HTMLのパスを指定してください');
+}
+const INDEX_HTML_PATH = htmlArgIndex === -1
+  ? path.join(__dirname, 'index.html')
+  : path.resolve(process.cwd(), process.argv[htmlArgIndex + 1]);
 const src = readFileSync(INDEX_HTML_PATH, 'utf8');
 
 let pass = 0, fail = 0;
@@ -117,6 +123,38 @@ console.log('=== _salesPeriodFromText: パターン1の「.」区切り対応（
   assertEq(d.fileYearMonth, '2026-03', '(j) 「2026年 3月」(空白区切り)から2026-03を検出');
 }
 
+console.log('=== _salesPeriodFromText: 帳票の作成日・比較用範囲を集計期間と誤認しないこと ===');
+
+const verticalReportText = '調剤報酬統計表(縦版)(介護) ～ 令和08年10月31日 令和08年10月01日 テスト薬局 令和08年11月11日作成 1 頁 123 円 手帳活用実績 R08/08/31～R08/09/30';
+const additionReportText = '加算内訳表 令和08年11月11日作成 テスト薬局 令和08年10月';
+
+// (e1) pdf.jsの並び順でも、比較用の略式範囲より和暦フル表記の集計期間を優先する
+{
+  const r = indexFns._salesPeriodGuard({ targetMonth: '2026-10', fileName: '調剤報酬統計表縦版2026.10.pdf', pdfText: verticalReportText });
+  assertEq(r.severity, 'ok', '(e1) 調剤報酬統計表の集計期間2026-10を優先 → ok');
+  assertEq(r.detected.rangeYearMonth, '2026-10', '(e1) rangeYearMonthは2026-10');
+}
+
+// (e2) 同じ本文を別の対象月へ取り込む場合は従来どおりblockする
+{
+  const r = indexFns._salesPeriodGuard({ targetMonth: '2026-09', fileName: '調剤報酬統計表縦版2026.10.pdf', pdfText: verticalReportText });
+  assertEq(r.severity, 'block', '(e2) 集計期間2026-10 vs 対象2026-09 → block');
+  assertOk(r.reason.includes('2026年10月') && r.reason.includes('2026年9月'), '(e2) reasonに両方の年月が明記されている');
+}
+
+// (e3) 作成日を除外し、加算内訳表の対象月を拾う
+{
+  const r = indexFns._salesPeriodGuard({ targetMonth: '2026-10', fileName: 'merged_20261111.pdf', pdfText: additionReportText });
+  assertEq(r.severity, 'ok', '(e3) 作成日2026-11ではなく対象月2026-10を検出 → ok');
+  assertEq(r.detected.rangeYearMonth, '2026-10', '(e3) rangeYearMonthは2026-10');
+}
+
+// (e4) 既存の和暦略式範囲は引き続き検出する
+{
+  const d = indexFns._salesPeriodFromText({ fileName: '保険合計.pdf', pdfText: 'R08/02/01〜R08/02/28' });
+  assertEq(d.rangeYearMonth, '2026-02', '(e4) 和暦略式範囲から2026-02を検出');
+}
+
 console.log('=== _salesConsistencyCheck（値はすべて架空。性質のみ実例に合わせる） ===');
 
 // corrupted: 合算が保険合計から20%以上ずれ、受付回数(1)がレセ件数を下回る → issues 2件
@@ -144,6 +182,12 @@ console.log('=== HQ取込経路(extractSalesPeriodGuard)がindex.html側と同�
 
   const argsF = { targetMonth: '2026-03', fileName: '保険合計_2026-04-07.pdf', pdfText: null };
   assertEq(hqFns._salesPeriodGuard(argsF), indexFns._salesPeriodGuard(argsF), 'HQ経路(f・弱い証拠warn)がindex.html側と同一結果');
+
+  const argsE1 = { targetMonth: '2026-10', fileName: '調剤報酬統計表縦版2026.10.pdf', pdfText: verticalReportText };
+  assertEq(hqFns._salesPeriodGuard(argsE1), indexFns._salesPeriodGuard(argsE1), '(e5-1) HQ経路(e1)がindex.html側と同一結果');
+
+  const argsE3 = { targetMonth: '2026-10', fileName: 'merged_20261111.pdf', pdfText: additionReportText };
+  assertEq(hqFns._salesPeriodGuard(argsE3), indexFns._salesPeriodGuard(argsE3), '(e5-2) HQ経路(e3)がindex.html側と同一結果');
 
   assertEq(hqFns._salesConsistencyCheck(corrupted), indexFns._salesConsistencyCheck(corrupted), 'HQ経路の_salesConsistencyCheckがindex.html側と同一結果');
 }
